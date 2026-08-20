@@ -55,7 +55,14 @@ class Settings(BaseSettings):
 
     # Upload limits
     upload_max_bytes: int = 10_485_760
+    upload_max_expanded_bytes: int = 209_715_200
     upload_max_rows: int = 100_000
+    upload_max_columns: int = 50
+    upload_max_cell_length: int = 500
+
+    # Quarantine storage: outside the webroot, non-executable.
+    quarantine_dir: str = "/var/lib/ciphercontact/quarantine"
+    import_expiry_hours: int = 72
 
     # Operational
     log_level: str = "INFO"

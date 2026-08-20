@@ -32,6 +32,9 @@ class ImportJob(UUIDMixin, TimestampMixin, Base):
     error_summary: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Recorded at commit time so a repeated idempotency key can return the same result
+    # without recomputing it (plan 11.8 Stage F item 7).
+    committed_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class ImportRow(UUIDMixin, Base):
