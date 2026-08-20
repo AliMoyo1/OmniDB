@@ -1,18 +1,18 @@
-"""CipherContact application entry point.
-
-Steps 1-3 expose only health endpoints. Authentication, authorization, and business
-routes are added in later Phase 1 steps.
-"""
+"""CipherContact application entry point."""
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from sqlalchemy import text
 
 from app.api.admin import router as admin_router
 from app.auth.router import router as auth_router
 from app.config import get_settings
 from app.db import engine
+from app.logging_setup import configure_logging
+from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+
+configure_logging(get_settings().log_level)
 
 app = FastAPI(
     title="CipherContact",
@@ -21,19 +21,29 @@ app = FastAPI(
     openapi_url=None,
 )
 
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestContextMiddleware)
+
 app.include_router(auth_router)
 app.include_router(admin_router)
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    """Liveness: the process is up and serving."""
+    """Liveness: the process is up and serving. Public and minimal."""
     return {"status": "ok"}
 
 
 @app.get("/readyz")
-def readyz(response: Response) -> dict[str, str]:
-    """Readiness: required dependencies respond. Returns 503 if any check fails."""
+def readyz(request: Request, response: Response) -> dict[str, str]:
+    """Readiness with dependency checks. Gated by a health token when one is configured."""
+    settings = get_settings()
+    token = settings.health_token.get_secret_value()
+    if token and request.headers.get("x-health-token") != token:
+        # Hide the endpoint's existence from untrusted callers.
+        response.status_code = 404
+        return {"status": "not found"}
+
     checks: dict[str, str] = {}
     healthy = True
 
@@ -48,8 +58,7 @@ def readyz(response: Response) -> dict[str, str]:
     try:
         import redis
 
-        client = redis.Redis.from_url(get_settings().redis_url)
-        client.ping()
+        redis.Redis.from_url(settings.redis_url).ping()
         checks["redis"] = "ok"
     except Exception:
         checks["redis"] = "error"
