@@ -1,4 +1,4 @@
-"""Integration tests. Require a database and Redis (CI provides both)."""
+"""Integration tests for authentication. Require a database and Redis (CI provides both)."""
 
 from __future__ import annotations
 
@@ -7,29 +7,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-
-@pytest.fixture
-def client() -> TestClient:
-    from app.main import app
-
-    return TestClient(app)
-
-
-def _make_user(email: str, password: str) -> None:
-    from app.db import SessionLocal
-    from app.models.identity import User
-    from app.security.passwords import hash_password
-
-    with SessionLocal() as db:
-        db.add(
-            User(
-                workforce_id=email.split("@")[0],
-                email=email,
-                display_name="Test User",
-                password_hash=hash_password(password),
-            )
-        )
-        db.commit()
+from tests.integration.conftest import TEST_PASSWORD, make_user
 
 
 @pytest.mark.integration
@@ -42,10 +20,11 @@ def test_healthz(client: TestClient):
 @pytest.mark.integration
 def test_login_then_me(client: TestClient):
     email = f"user-{uuid.uuid4().hex[:8]}@example.com"
-    password = "correct horse battery staple"
-    _make_user(email, password)
+    make_user(email)
 
-    login = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    login = client.post(
+        "/api/v1/auth/login", json={"email": email, "password": TEST_PASSWORD}
+    )
     assert login.status_code == 200, login.text
     assert "cc_session" in login.cookies
 
