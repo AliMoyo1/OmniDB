@@ -1,8 +1,8 @@
 name: ciphercontact
 
-# Steps 1-3 stack: postgres, redis, web, caddy. Worker and scheduler are added
-# with the background-jobs step. No database or app ports are published to the host;
-# only Caddy publishes 80/443 on the LAN.
+# postgres, redis, web, worker, beat, caddy. No database or app ports are published to
+# the host; only Caddy publishes 80/443 on the LAN. web and worker share the quarantine
+# volume: web writes uploads there, the worker reads and parses them.
 
 services:
   postgres:
@@ -49,6 +49,8 @@ services:
       - app_secret_key
       - field_encryption_key
       - phone_fingerprint_hmac_key
+    volumes:
+      - quarantine:/var/lib/ciphercontact/quarantine
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,6 +65,56 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    env_file: [.env]
+    environment:
+      DB_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+    secrets:
+      - db_password
+      - app_secret_key
+      - field_encryption_key
+      - phone_fingerprint_hmac_key
+    volumes:
+      - quarantine:/var/lib/ciphercontact/quarantine
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  beat:
+    build: .
+    command: ["celery", "-A", "app.worker.celery_app", "beat", "--loglevel=info"]
+    env_file: [.env]
+    environment:
+      DB_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+    secrets:
+      - db_password
+      - app_secret_key
+      - field_encryption_key
+      - phone_fingerprint_hmac_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - data
     restart: unless-stopped
 
   caddy:
@@ -94,6 +146,7 @@ volumes:
   redisdata:
   caddydata:
   caddyconfig:
+  quarantine:
 
 secrets:
   db_password:
