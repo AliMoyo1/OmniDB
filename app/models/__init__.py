@@ -5,8 +5,17 @@ from __future__ import annotations
 from app.models.audit import AuditEvent
 from app.models.authz import Delegation, ReportingAssignment, RoleAssignment
 from app.models.base import Base
+from app.models.campaign import (
+    Campaign,
+    CampaignDispositionDefinition,
+    CampaignTeamAssignment,
+    CampaignUserAssignment,
+)
+from app.models.contact import CampaignContact, Contact, SuppressionEntry
 from app.models.identity import Organization, Team, TeamMembership, User
+from app.models.imports import ImportDecision, ImportJob, ImportRow
 from app.models.session import Session
+from app.models.work import Batch, CallAttempt, WorkItem
 
 __all__ = [
     "Base",
@@ -19,4 +28,17 @@ __all__ = [
     "Delegation",
     "Session",
     "AuditEvent",
+    "Campaign",
+    "CampaignTeamAssignment",
+    "CampaignUserAssignment",
+    "CampaignDispositionDefinition",
+    "Contact",
+    "CampaignContact",
+    "SuppressionEntry",
+    "Batch",
+    "WorkItem",
+    "CallAttempt",
+    "ImportJob",
+    "ImportRow",
+    "ImportDecision",
 ]
