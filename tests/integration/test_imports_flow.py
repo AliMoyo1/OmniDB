@@ -179,7 +179,9 @@ def test_stale_decision_version_is_rejected(manager_client):
     upload_resp = _upload(client, headers, campaign_id, f"phone,name\n{n},Dora\n")
     job_id = upload_resp.json()["id"]
 
-    client.patch(f"/api/v1/imports/{job_id}/decisions", json={"decision": "approve"}, headers=headers)
+    client.patch(
+        f"/api/v1/imports/{job_id}/decisions", json={"decision": "approve"}, headers=headers
+    )
 
     commit = client.post(
         f"/api/v1/imports/{job_id}/commit",

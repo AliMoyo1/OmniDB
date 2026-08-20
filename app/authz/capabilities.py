@@ -27,6 +27,9 @@ PAUSE_CAMPAIGN = "pause_campaign"
 LAUNCH_CAMPAIGN = "launch_campaign"
 ARCHIVE_CAMPAIGN = "archive_campaign"
 
+# Agent work queue (Phase 3)
+WORK_QUEUE = "work_queue"
+
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MANAGER = "manager"
 ROLE_TEAM_LEADER = "team_leader"
@@ -57,6 +60,6 @@ ROLE_CAPABILITIES: dict[str, set[str]] = {
         PAUSE_CAMPAIGN,
     },
     ROLE_TEAM_CAPTAIN: {CREATE_AGENT, VIEW_CAMPAIGN},
-    ROLE_AGENT: set(),
+    ROLE_AGENT: {WORK_QUEUE},
     ROLE_VIEWER: set(),
 }

@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 _PHONE_RE = re.compile(r"\+?\d[\d\s().-]{7,}\d")
 
@@ -33,7 +33,7 @@ class RedactionFilter(logging.Filter):
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "time": datetime.now(timezone.utc).isoformat(),
+            "time": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

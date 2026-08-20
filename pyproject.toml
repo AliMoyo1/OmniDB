@@ -32,7 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "ruff>=0.8,<0.9",
+  "ruff>=0.8,<1",
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<0.26",
@@ -51,9 +51,27 @@ line-length = 100
 # E/F pyflakes, I imports, B bugbear, UP pyupgrade, S bandit-security, ASYNC
 select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection system requires Depends(...) (and friends) as default
+# argument values; they are evaluated once and are immutable, unlike the general
+# mutable-default footgun B008 otherwise guards against. Standard FastAPI+ruff config.
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.params.Depends",
+  "fastapi.Query",
+  "fastapi.Path",
+  "fastapi.Body",
+  "fastapi.Header",
+  "fastapi.Cookie",
+  "fastapi.File",
+  "fastapi.Form",
+]
+
 [tool.ruff.lint.per-file-ignores]
 "migrations/*" = ["E501"]
-"tests/*" = ["S101"]
+# S101 asserts are the normal pytest idiom. S105/S108 flag fixed test credentials and
+# paths as if they were production secrets; they are deliberate, known-fake test fixtures.
+"tests/*" = ["S101", "S105", "S108"]
 
 [tool.mypy]
 # Pragmatic to start; tighten toward strict as the codebase settles.

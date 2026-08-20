@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app.api.admin import router as admin_router
 from app.api.campaigns import campaigns_router, imports_router
+from app.api.work import agent_router, work_router
 from app.auth.router import router as auth_router
 from app.config import get_settings
 from app.db import engine
@@ -29,6 +30,8 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(campaigns_router)
 app.include_router(imports_router)
+app.include_router(work_router)
+app.include_router(agent_router)
 
 
 @app.get("/healthz")

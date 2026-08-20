@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import get_current_user, require_csrf
 from app.authz import service as authz
 from app.authz.capabilities import (
     ARCHIVE_CAMPAIGN,
@@ -18,7 +19,6 @@ from app.authz.capabilities import (
     PAUSE_CAMPAIGN,
     VIEW_CAMPAIGN,
 )
-from app.auth.dependencies import get_current_user, require_csrf
 from app.campaigns import service as campaign_service
 from app.campaigns.schemas import (
     CampaignCreateRequest,

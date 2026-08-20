@@ -21,6 +21,9 @@ from app.models.identity import User
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
+_require_reset_auth = Depends(require_capability(RESET_USER_AUTH))
+_require_view_audit = Depends(require_capability(VIEW_AUDIT))
+
 
 @router.get("/whoami")
 def whoami(
@@ -40,7 +43,7 @@ def whoami(
 def reset_2fa(
     user_id: uuid.UUID,
     db: Session = Depends(get_session),
-    actor: User = Depends(require_capability(RESET_USER_AUTH)),
+    actor: User = _require_reset_auth,
 ) -> dict[str, str]:
     target = db.get(User, user_id)
     if target is None:
@@ -60,7 +63,7 @@ def reset_2fa(
 def reset_password(
     user_id: uuid.UUID,
     db: Session = Depends(get_session),
-    actor: User = Depends(require_capability(RESET_USER_AUTH)),
+    actor: User = _require_reset_auth,
 ) -> dict[str, str]:
     target = db.get(User, user_id)
     if target is None:
@@ -81,7 +84,7 @@ def reset_password(
 def audit_events(
     limit: int = 50,
     db: Session = Depends(get_session),
-    actor: User = Depends(require_capability(VIEW_AUDIT)),
+    actor: User = _require_view_audit,
 ) -> list[dict]:
     rows = db.scalars(
         select(AuditEvent).order_by(desc(AuditEvent.occurred_at)).limit(min(limit, 200))

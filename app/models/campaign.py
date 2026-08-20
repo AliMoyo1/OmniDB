@@ -24,7 +24,9 @@ class Campaign(UUIDMixin, TimestampMixin, Base):
     purpose: Mapped[str | None] = mapped_column(String(500), nullable=True)
     data_source: Mapped[str | None] = mapped_column(String(300), nullable=True)
     data_obtained_at: Mapped[date | None] = mapped_column(Date, nullable=True)
-    lawful_basis_or_consent_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    lawful_basis_or_consent_reference: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
 
     default_region: Mapped[str] = mapped_column(String(2), default="ZW")
     timezone: Mapped[str] = mapped_column(String(64), default="Africa/Harare")

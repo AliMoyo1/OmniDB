@@ -9,8 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
-from app.auth import csrf, ratelimit
-from app.auth import service
+from app.auth import csrf, ratelimit, service
 from app.auth import sessions as sess
 from app.auth import totp as totp_mod
 from app.auth.dependencies import get_current_session, get_current_user, require_csrf

@@ -369,7 +369,8 @@ def complete_work_item(
 
     record_audit(
         db, action="work.complete", result="success", actor_user_id=agent_id,
-        target_type="work_item", target_id=work_item.id, reason_code=disposition.stable_semantic_code,
+        target_type="work_item", target_id=work_item.id,
+        reason_code=disposition.stable_semantic_code,
     )
 
     return CompletionResult(
@@ -405,3 +406,38 @@ def skip_work_item(
         target_type="work_item", target_id=work_item.id, reason_code=reason[:50],
     )
     return work_item
+
+
+@dataclass(frozen=True)
+class CallbackListItem:
+    work_item_id: uuid.UUID
+    campaign_id: uuid.UUID
+    campaign_name: str
+    reference: str
+    due_at: datetime | None
+
+
+def list_agent_callbacks(db: Session, agent_id: uuid.UUID) -> list[CallbackListItem]:
+    """Masked callback references only (plan invariant 3): a name if one was imported,
+    otherwise a short non-reversible fragment. Never the phone number - revealing it
+    still requires leasing the item, same as any other work."""
+    rows = db.execute(
+        select(WorkItem, CampaignContact, Campaign)
+        .join(CampaignContact, WorkItem.campaign_contact_id == CampaignContact.id)
+        .join(Campaign, CampaignContact.campaign_id == Campaign.id)
+        .where(WorkItem.state == "callback_wait", WorkItem.assigned_agent_id == agent_id)
+        .order_by(WorkItem.due_at.asc())
+    )
+    results = []
+    for work_item, campaign_contact, campaign in rows:
+        reference = campaign_contact.campaign_name_value or f"Contact #{str(work_item.id)[:8]}"
+        results.append(
+            CallbackListItem(
+                work_item_id=work_item.id,
+                campaign_id=campaign.id,
+                campaign_name=campaign.name,
+                reference=reference,
+                due_at=work_item.due_at,
+            )
+        )
+    return results

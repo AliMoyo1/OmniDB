@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -53,7 +53,7 @@ def make_user_with_role(
                 user_id=user.id,
                 role_code=role_code,
                 scope_type=scope_type,
-                effective_from=datetime.now(timezone.utc),
+                effective_from=datetime.now(UTC),
             )
         )
         db.commit()
