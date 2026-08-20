@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Response
 from sqlalchemy import text
 
+from app.api.admin import router as admin_router
 from app.auth.router import router as auth_router
 from app.config import get_settings
 from app.db import engine
@@ -21,6 +22,7 @@ app = FastAPI(
 )
 
 app.include_router(auth_router)
+app.include_router(admin_router)
 
 
 @app.get("/healthz")
