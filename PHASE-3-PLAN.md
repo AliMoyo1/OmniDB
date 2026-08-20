@@ -5,7 +5,7 @@ callbacks, skip handling, agent stats. Target/exemption display and agent self-s
 exemption requests are DEFERRED (D-19/D-20). This is API-only; the desktop UI (two-column
 agent page, keyboard behavior, watermark) is a separate follow-up once the API is proven.
 
-## 3A: foundation - config, migration 0004, no-store headers  [ ]
+## 3A: foundation - config, migration 0004, no-store headers  [x]
 - [ ] settings: lease_duration_minutes, max_skips_before_review
 - [ ] migration 0004: work_items.skip_count (separate from attempt_count so skip
       behavior doesn't distort call-attempt reporting later)
@@ -13,7 +13,7 @@ agent page, keyboard behavior, watermark) is a separate follow-up once the API i
       requires this on personal-data responses; the lease endpoint is the first place a
       raw phone number leaves the server, making this load-bearing now)
 
-## 3B: leasing service  [ ]
+## 3B: leasing service  [x]
 - [ ] lease_next: campaign-assignment eligibility, campaign must be active, due
       callbacks owned by the agent take priority over shared-pool queued items,
       SELECT...FOR UPDATE SKIP LOCKED for queue selection (no duplicate active leases
@@ -23,7 +23,7 @@ agent page, keyboard behavior, watermark) is a separate follow-up once the API i
 - [ ] expired-lease reclaim: leased items past lease_expires_at return to their
       pre-lease state (callback_wait if assigned_agent_id is set, else queued)
 
-## 3C: completion service  [ ]
+## 3C: completion service  [x]
 - [ ] complete_work_item: idempotent on (agent_id, idempotency_key); validates lease
       ownership and disposition belongs to the campaign; encrypts notes; branches on
       disposition (causes_dnc / requires_callback_time / next_action)
@@ -37,12 +37,17 @@ agent page, keyboard behavior, watermark) is a separate follow-up once the API i
 - [ ] skip_work_item: mandatory reason, immutable audit event, past threshold routes
       to review
 
-## 3D: agent API  [ ]
-- [ ] POST /api/v1/work/next, POST /api/v1/work/{id}/complete,
+## 3D: agent API  [x]
+- [x] POST /api/v1/work/next, POST /api/v1/work/{id}/complete,
       POST /api/v1/work/{id}/skip, POST /api/v1/work/{id}/lease/renew
-- [ ] GET /api/v1/agent/callbacks - masked (name or short reference, never the number)
-- [ ] GET /api/v1/agent/stats - aggregate from immutable attempts
-- [ ] WORK_QUEUE capability for the agent role
+- [x] GET /api/v1/agent/callbacks - masked (name or short reference, never the number)
+- [x] GET /api/v1/agent/stats - aggregate from immutable attempts
+- [x] WORK_QUEUE capability for the agent role
+
+Note: this increment's commit got merged with a separate lint-cleanup commit (ruff was
+installed and run for real for the first time partway through this increment; see
+commit cfe4b42 for both the API code and the lint fixes together). Content is correct
+and pushed; only the commit-message scope is imprecise.
 
 ## 3E: background jobs  [ ]
 - [ ] expired-lease cleanup task on Celery Beat

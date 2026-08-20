@@ -34,6 +34,10 @@ celery_app.conf.beat_schedule = {
         "task": "app.imports.tasks.cleanup_expired_imports_task",
         "schedule": 3600.0,
     },
+    "reclaim-expired-leases": {
+        "task": "app.work.tasks.reclaim_expired_leases_task",
+        "schedule": 120.0,
+    },
 }
 
-celery_app.autodiscover_tasks(["app.imports"])
+celery_app.autodiscover_tasks(["app.imports", "app.work"])
