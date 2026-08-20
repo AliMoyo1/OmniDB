@@ -25,6 +25,8 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_time_limit=600,
     task_soft_time_limit=540,
+    task_always_eager=_settings.celery_task_always_eager,
+    task_eager_propagates=_settings.celery_task_always_eager,
 )
 
 celery_app.conf.beat_schedule = {

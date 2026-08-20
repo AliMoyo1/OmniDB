@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     quarantine_dir: str = "/var/lib/ciphercontact/quarantine"
     import_expiry_hours: int = 72
 
+    # Run Celery tasks synchronously in-process (tests only; never in production).
+    celery_task_always_eager: bool = False
+
     # Operational
     log_level: str = "INFO"
     health_token: SecretStr = SecretStr("")

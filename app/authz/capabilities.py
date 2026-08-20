@@ -19,6 +19,14 @@ APPOINT_TEAM_LEADER = "appoint_team_leader"
 APPOINT_TEAM_CAPTAIN = "appoint_team_captain"
 CREATE_AGENT = "create_agent"
 
+# Campaigns and imports (plan 6.3; Phase 2 scope)
+CREATE_CAMPAIGN = "create_campaign"
+VIEW_CAMPAIGN = "view_campaign"
+MANAGE_CAMPAIGN = "manage_campaign"  # edit draft, manage imports, dispositions
+PAUSE_CAMPAIGN = "pause_campaign"
+LAUNCH_CAMPAIGN = "launch_campaign"
+ARCHIVE_CAMPAIGN = "archive_campaign"
+
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MANAGER = "manager"
 ROLE_TEAM_LEADER = "team_leader"
@@ -28,9 +36,27 @@ ROLE_VIEWER = "viewer"
 
 ROLE_CAPABILITIES: dict[str, set[str]] = {
     ROLE_SUPER_ADMIN: {TECHNICAL_CONFIG, RESET_USER_AUTH, VIEW_AUDIT, CREATE_MANAGER, MANAGE_ROLES},
-    ROLE_MANAGER: {APPOINT_TEAM_LEADER, APPOINT_TEAM_CAPTAIN, CREATE_AGENT, MANAGE_ROLES},
-    ROLE_TEAM_LEADER: {APPOINT_TEAM_CAPTAIN, CREATE_AGENT},
-    ROLE_TEAM_CAPTAIN: {CREATE_AGENT},
+    ROLE_MANAGER: {
+        APPOINT_TEAM_LEADER,
+        APPOINT_TEAM_CAPTAIN,
+        CREATE_AGENT,
+        MANAGE_ROLES,
+        CREATE_CAMPAIGN,
+        VIEW_CAMPAIGN,
+        MANAGE_CAMPAIGN,
+        PAUSE_CAMPAIGN,
+        LAUNCH_CAMPAIGN,
+        ARCHIVE_CAMPAIGN,
+    },
+    ROLE_TEAM_LEADER: {
+        APPOINT_TEAM_CAPTAIN,
+        CREATE_AGENT,
+        CREATE_CAMPAIGN,
+        VIEW_CAMPAIGN,
+        MANAGE_CAMPAIGN,
+        PAUSE_CAMPAIGN,
+    },
+    ROLE_TEAM_CAPTAIN: {CREATE_AGENT, VIEW_CAMPAIGN},
     ROLE_AGENT: set(),
     ROLE_VIEWER: set(),
 }
