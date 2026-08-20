@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     upload_max_bytes: int = 10_485_760
     upload_max_rows: int = 100_000
 
+    # Operational
+    log_level: str = "INFO"
+    health_token: SecretStr = SecretStr("")
+    # Set false only for local HTTP development; production is always HTTPS.
+    cookie_secure: bool = True
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
