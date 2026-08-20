@@ -1,38 +1,51 @@
 # Phase 1 plan: secure platform foundation
 
-Steps 1 to 3 are BUILT (2026-08-20). Steps 4 to 8 follow.
+All eight steps are BUILT (2026-08-20). Runtime validation (docker compose up, alembic
+upgrade, CI) runs in the build/CI environment; locally verified with py_compile, docker
+compose config, and shell syntax checks.
 
 ## Step 1: tooling, dependencies, config  [done]
-- [x] pyproject with constrained deps + hatchling build backend
-- [ ] hashed lockfile (run scripts/lock.sh in an env with PyPI access, then commit)
-- [x] app/config.py: pydantic-settings, secret-file loading from /run/secrets, computed DATABASE_URL
-- [x] .env.example (non-secret config) and deploy/secrets/*.example (+ README)
-- [x] ruff + mypy + pytest config
-
 ## Step 2: container stack  [done]
-- [x] Dockerfile (non-root, slim) and .dockerignore
-- [x] compose.yaml: postgres, redis, web, caddy; networks edge/data (data internal); health checks; no published DB or app ports
-- [x] deploy/caddy/Caddyfile: LAN HTTPS via Caddy internal CA (SERVER_HOST), HSTS and security headers, reverse_proxy to web
-- [ ] worker + scheduler services (added with the background-jobs step)
-
 ## Step 3: schema + Alembic baseline  [done]
-- [x] app/db.py (sync engine, sessionmaker, get_session)
-- [x] app/models: organization, team, user (workforce_id = email username), team_membership, role_assignment, reporting_assignment, delegation, session, audit_event
-- [x] alembic.ini + migrations/env.py + 0001_baseline migration
-- [x] app/main.py: /healthz (liveness), /readyz (db and redis)
 
-## Verification (this session)
-- [x] py_compile of app + migrations: PASS
-- [x] docker compose config validate: PASS
-- [ ] runtime model/migration load (deps not installed here; run in the build env: docker compose run --rm web alembic upgrade head)
-- [ ] docker compose up, port scan, TLS and cookie inspection (build env)
+## Step 4: authentication  [done]
+Argon2id passwords, opaque Postgres-authoritative sessions (sliding idle + absolute),
+signed session-bound CSRF, TOTP 2FA (encrypted secret), Redis login rate limit, and the
+auth API (login, logout, me, reauthenticate, session list/revoke, activation). Fernet
+field encryption.
 
-## Next: Step 4 (authentication)
-Opaque server-side sessions (PostgreSQL authoritative), CSRF, login/logout, Argon2id,
-TOTP 2FA enroll and verify, Super Admin reset. Then Step 5 authorization (default-deny,
-scoped helpers, session rotation, self-approval prevention), Step 6 redacted logging and
-health hardening, Step 7 encrypted backup and tested restore, Step 8 CI and release manifest.
+## Step 5: authorization  [done]
+Default-deny capability service, effective-dated role resolution, scope coverage,
+self-approval guard, session invalidation on privilege change. Admin API: whoami, Super
+Admin reset-2fa and reset-password (D-06), audit-events search.
+
+## Step 6: logging + health  [done]
+Structured JSON logging with a redaction backstop, request-context and security-header
+middleware (CSP, frame-ancestors, Referrer-Policy, Permissions-Policy, nosniff), token-gated
+/readyz, public minimal /healthz.
+
+## Step 7: backup + restore  [done]
+Encrypted pg_dump backups (gpg AES256), restore, and a restore-test that proves
+restorability into a throwaway database. Runbook in docs/operations/backup-restore.md.
+
+## Step 8: CI + tests + release manifest  [done]
+GitHub Actions: ruff, mypy (advisory), unit + authorization tests, integration tests with
+Postgres and Redis (alembic up plus down/up reversibility), pip-audit (advisory), gitleaks
+secret scan, docker build. Tests under tests/. scripts/release-manifest.sh.
+
+## Verification status
+- [x] py_compile (app + migrations + tests)
+- [x] docker compose config
+- [x] shell syntax (bash -n) on all scripts
+- [x] CI YAML parses
+- [ ] CI green on GitHub (the first run may surface lint/type/test fixes; CI could not be executed locally)
+- [ ] docker compose up + alembic upgrade head on the Linux host
+
+## Notes and follow-ups
+- Generate the hash-pinned lockfile in the build env (scripts/lock.sh) and switch the
+  Dockerfile to install from it.
+- mypy and pip-audit are advisory in CI; flip to blocking once green.
+- Phase 1 is code-complete. Phase 2 (canonical data model + safe import pipeline) is next.
 
 ## Log
-- 2026-08-20: completed steps 1 to 3. Syntax and compose validated locally; runtime DB
-  checks deferred to the build env. Run instructions in docs/operations/running.md.
+- 2026-08-20: completed steps 1 to 8.

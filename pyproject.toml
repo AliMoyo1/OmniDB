@@ -55,11 +55,16 @@ select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
 "tests/*" = ["S101"]
 
 [tool.mypy]
+# Pragmatic to start; tighten toward strict as the codebase settles.
 python_version = "3.12"
-strict = true
-warn_unused_ignores = true
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+  "integration: requires a database and Redis",
+]

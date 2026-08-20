@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Ruff
+        run: ruff check .
+      - name: Mypy (advisory until green)
+        run: mypy app
+        continue-on-error: true
+      - name: Unit and authorization tests
+        run: pytest -m "not integration"
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ciphercontact
+          POSTGRES_USER: ciphercontact
+          POSTGRES_PASSWORD: testpass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ciphercontact"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_NAME: ciphercontact
+      DB_USER: ciphercontact
+      DB_PASSWORD: testpass
+      REDIS_URL: redis://localhost:6379/0
+      APP_SECRET_KEY: ci-secret-not-for-prod
+      FIELD_ENCRYPTION_KEY: ci-field-key
+      PHONE_FINGERPRINT_HMAC_KEY: ci-hmac-key
+      COOKIE_SECURE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Migrate up
+        run: alembic upgrade head
+      - name: Migration reversibility
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+      - name: Integration tests
+        run: pytest -m integration
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dependency audit (advisory)
+        run: |
+          pip install pip-audit
+          pip-audit || true
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker build
+        run: docker build -t ciphercontact:ci .

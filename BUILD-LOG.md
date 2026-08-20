@@ -36,6 +36,16 @@ Foundation scaffold with real code (no auth or business logic yet). See PHASE-1-
 - Verified locally: py_compile PASS, docker compose config PASS. Runtime DB migration to be run in the build env. Lockfile (scripts/lock.sh) to be generated where PyPI is reachable.
 - Run instructions: docs/operations/running.md.
 
+## 2026-08-20: Phase 1 steps 4 to 8 built
+
+- Step 4 auth: Argon2id, opaque Postgres-authoritative sessions, session-bound CSRF, TOTP 2FA, Redis login rate limit, auth API, Fernet field encryption.
+- Step 5 authz: default-deny capability service, effective-dated roles, scope coverage, self-approval guard, session invalidation on privilege change; admin API incl. Super Admin reset (D-06) and audit search.
+- Step 6: structured JSON logging + redaction, request-context and security-header middleware, token-gated /readyz.
+- Step 7: encrypted gpg backup, restore, and restore-test (proves restorability); runbook.
+- Step 8: GitHub Actions CI (ruff, mypy advisory, unit + integration tests with PG/Redis, migration reversibility, pip-audit, gitleaks, docker build), tests/, release-manifest script.
+- Verified locally: py_compile, docker compose config, shell bash -n, CI YAML parse. CI green and host runtime (compose up + alembic upgrade) pending in the build env.
+- Phase 1 is code-complete. Next: Phase 2 (canonical data model + safe import pipeline).
+
 Next (Phase 1, after Phase 0 sign-off):
 - [ ] Locked dependency file with hashes.
 - [ ] FastAPI app, opaque sessions, CSRF, default-deny authorization helpers.
