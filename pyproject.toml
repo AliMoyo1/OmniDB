@@ -1,0 +1,51 @@
+[project]
+name = "ciphercontact"
+version = "0.0.0"
+description = "CipherContact: secure internal database DLP management and distribution for call campaigns"
+requires-python = ">=3.12"
+
+# NOTE: these are planning placeholders. Before Phase 1 exit, resolve to reviewed,
+# locked versions with hashes (see plan sections 14.1 and 14.3). Do not ship open bounds.
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "jinja2",
+  "sqlalchemy>=2",
+  "alembic",
+  "psycopg[binary]",
+  "redis",
+  "celery",
+  "pydantic",
+  "pydantic-settings",
+  "pwdlib[argon2]",
+  "python-multipart",
+  "phonenumbers",
+  "itsdangerous",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "mypy",
+  "pytest",
+  "pytest-asyncio",
+  "hypothesis",
+  "playwright",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# E/F pyflakes, I imports, B bugbear, UP pyupgrade, S bandit-security, ASYNC
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

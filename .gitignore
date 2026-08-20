@@ -1,0 +1,39 @@
+# Secrets and config
+.env
+*.env
+!.env.example
+secrets/
+*.key
+*.pem
+
+# Data: never commit imported or exported personal data
+data/
+exports/
+uploads/
+quarantine/
+backups/
+*.csv
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local databases and logs
+*.sqlite
+*.db
+*.log
