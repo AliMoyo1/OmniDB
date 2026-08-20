@@ -5,8 +5,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# Non-root runtime user
-RUN groupadd --system app && useradd --system --gid app --home-dir /app app
+# Non-root runtime user. Pre-create and own the quarantine mount point: it lives under
+# /var/lib (root-owned by default) and both web and worker mount the same named volume
+# there, so ownership must be set here for Docker to carry it into the fresh volume.
+RUN groupadd --system app && useradd --system --gid app --home-dir /app app && \
+    mkdir -p /var/lib/ciphercontact/quarantine && \
+    chown -R app:app /var/lib/ciphercontact
 
 WORKDIR /app
 

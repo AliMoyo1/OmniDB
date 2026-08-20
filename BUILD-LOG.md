@@ -46,6 +46,44 @@ Foundation scaffold with real code (no auth or business logic yet). See PHASE-1-
 - Verified locally: py_compile, docker compose config, shell bash -n, CI YAML parse. CI green and host runtime (compose up + alembic upgrade) pending in the build env.
 - Phase 1 is code-complete. Next: Phase 2 (canonical data model + safe import pipeline).
 
+## 2026-08-20: Phase 2 built (all increments 2A-2F)
+
+Scope: canonical data model + safe staged import pipeline. Targets/exemptions/bulk-
+workforce-import stay deferred per D-19/D-20/D-21 (see PHASE-2-PLAN.md).
+
+- 2A: migration 0002 - campaigns, campaign_team/user_assignments, disposition
+  definitions, contacts, campaign_contacts, suppression_entries, batches, work_items,
+  call_attempts, import_jobs/rows/decisions, with the full invariant-backing constraint
+  set (unique fingerprint, unique campaign+contact, one active work item per contact,
+  one active primary campaign assignment per agent, unique active suppression, attempt
+  and import idempotency).
+- 2B: app/security/phone.py - E.164 normalization, keyed-HMAC fingerprint (ADR-019),
+  Fernet encryption, combined into protect().
+- 2C: app/imports/ - quarantine storage, upload validators (extension/signature/XLSX
+  container structure, macro and external-link rejection, zip-bomb size cap), bounded
+  CSV/XLSX parser (formulas never evaluated), classification, and the orchestrating
+  service (parse -> preview -> versioned decision -> atomic idempotent commit with
+  commit-time DNC/duplicate revalidation -> cleanup). Migration 0003 adds
+  import_jobs.committed_result for idempotent replay. Celery worker + tasks.
+- 2D: app/campaigns/ + app/api/campaigns.py - campaign lifecycle (real preconditions
+  on launch/pause/archive) and import API, capability-gated and campaign-scope-aware
+  ahead of Phase 4's scoped-role-assignment UI. Disposition creation enforces invariant
+  9 (only "explicit_dnc" may cause suppression).
+- 2E: compose worker + beat services; shared quarantine volume between web and worker.
+  Dockerfile fix: pre-create and chown the quarantine mount point before switching to
+  the non-root user (caught during review - the app user had no write access to
+  /var/lib without this).
+- 2F: tests/ packaged with __init__.py; shared integration fixtures; phone unit tests;
+  a full import-flow integration test plus DNC-after-preview, stale-decision-version,
+  launch-precondition, malicious-file, and authorization-negative tests.
+
+Verified locally: py_compile after every increment, docker compose config, and a
+careful manual trace of the migration DDL's FK creation order and reverse-order
+downgrade (could not execute against a live Postgres here). Not yet observed: a real
+CI run and docker compose up on the Linux host. Phase 2 is code-complete; next is
+Phase 3 (agent workflow: leasing, disposition completion, callbacks) or bringing the
+stack up on the host to validate everything built so far.
+
 Next (Phase 1, after Phase 0 sign-off):
 - [ ] Locked dependency file with hashes.
 - [ ] FastAPI app, opaque sessions, CSRF, default-deny authorization helpers.
