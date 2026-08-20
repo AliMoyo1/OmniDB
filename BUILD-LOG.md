@@ -90,3 +90,39 @@ Next (Phase 1, after Phase 0 sign-off):
 - [ ] Initial PostgreSQL schema and Alembic baseline.
 - [ ] Docker Compose, Caddy LAN HTTPS, Tailscale Serve, health checks.
 - [ ] CI checks, and encrypted backup with a tested restore.
+
+## 2026-08-21: Phase 3 built (agent workflow vertical slice, all increments 3A-3F)
+
+Transactional leasing, idempotent completion, explicit DNC via disposition, callbacks,
+skip handling, agent stats. API-only; desktop UI is a follow-up. See PHASE-3-PLAN.md.
+
+- 3A: lease_duration_minutes/max_skips_before_review config, migration 0004
+  (work_items.skip_count), and a fix for a gap from Phase 1/2: Cache-Control: no-store
+  on every /api/ response - load-bearing now since leasing is the first place a raw
+  phone number leaves the server.
+- 3B: app/work/service.py leasing - SELECT...FOR UPDATE OF work_items SKIP LOCKED,
+  due-callback priority, one contact decrypted per lease, renew_lease,
+  reclaim_expired_leases.
+- 3C: idempotent complete_work_item with disposition branching (DNC sweep across ALL
+  campaigns for the contact, callback scheduling, requeue-with-attempt-limit, review),
+  skip_work_item.
+- 3D: app/api/work.py (work/agent routers), app/reporting/agent_stats.py, WORK_QUEUE
+  capability.
+- 3E: expired-lease reclaim on Celery Beat.
+- 3F: tests/integration/test_work_flow.py and tests/concurrency/test_leasing_concurrency.py
+  (real threads, real separate Postgres connections, proves no duplicate active leases).
+
+Also: installed ruff locally and ran it for real for the first time this session (previously
+only py_compile). Found and fixed real issues, including one predating this phase (an
+import-order bug in Phase 2D's app/api/campaigns.py that would have failed CI). Full
+list in PHASE-3-PLAN.md and the "Lint cleanup" commit. Discovered this local shell's
+Python (3.14) breaks SQLAlchemy 2.0.x at import time and the local package index won't
+resolve the full dev dependency set - neither reflects the real target (Dockerfile
+pins python:3.12-slim), so no version changes were made to chase either mismatch; ruff
+itself is unaffected and stays in use. CI green, docker compose up on the host, and
+actual pytest execution remain to be observed on the real build host.
+
+Phase 3 is code-complete. Next: either Phase 4 pieces (management dashboards, workforce
+assignment, campaign transfer) or, preferably, bring the stack up on the Linux host to
+finally validate Phases 1-3 end to end - this is now the highest-value next step given
+how much has been built without a live runtime check.

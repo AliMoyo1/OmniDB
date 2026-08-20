@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.db import SessionLocal
 from app.models.authz import RoleAssignment
+from app.models.campaign import CampaignUserAssignment
 from app.models.identity import User
 from app.security.passwords import hash_password
 
@@ -89,3 +90,50 @@ def agent_client(client: TestClient) -> TestClient:
     make_user_with_role(email, ROLE_AGENT)
     login(client, email)
     return client
+
+
+def zw_numbers(count: int) -> list[str]:
+    """A handful of distinct, individually-valid Zimbabwe national numbers, derived by
+    varying the trailing digit of the library's own example number and keeping only
+    variants that still validate. Not exhaustive, but stable enough for test fixtures."""
+    import phonenumbers
+
+    example = phonenumbers.example_number("ZW")
+    if example is None:
+        pytest.skip("no example number available for region ZW")
+    base = str(example.national_number)
+    prefix, last = base[:-1], base[-1]
+    candidates = [base] + [prefix + str(d) for d in range(10) if str(d) != last]
+
+    valid = []
+    for candidate in candidates:
+        try:
+            parsed = phonenumbers.parse(candidate, "ZW")
+        except phonenumbers.NumberParseException:
+            continue
+        if phonenumbers.is_valid_number(parsed):
+            valid.append(candidate)
+        if len(valid) >= count:
+            break
+
+    if len(valid) < count:
+        pytest.skip(f"could not derive {count} distinct valid ZW numbers for this fixture")
+    return valid[:count]
+
+
+def assign_agent_to_campaign(
+    agent_id: uuid.UUID, campaign_id: uuid.UUID, *, assignment_type: str = "primary"
+) -> None:
+    """Direct DB insert: campaign-user-assignment issuance has no API yet (Phase 4)."""
+    with SessionLocal() as db:
+        db.add(
+            CampaignUserAssignment(
+                campaign_id=campaign_id,
+                user_id=agent_id,
+                campaign_role="agent",
+                assignment_type=assignment_type,
+                effective_from=datetime.now(UTC),
+                status="active",
+            )
+        )
+        db.commit()

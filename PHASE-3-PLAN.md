@@ -1,71 +1,91 @@
 # Phase 3 plan: agent workflow vertical slice
 
-Scope: transactional leasing, idempotent completion, explicit DNC via disposition,
-callbacks, skip handling, agent stats. Target/exemption display and agent self-service
-exemption requests are DEFERRED (D-19/D-20). This is API-only; the desktop UI (two-column
-agent page, keyboard behavior, watermark) is a separate follow-up once the API is proven.
+Status: ALL INCREMENTS BUILT (2026-08-21). API-only; the desktop UI (two-column agent
+page, keyboard behavior, watermark) is a separate follow-up once the API is proven on
+the host. Target/adjusted-target/exemption display stays deferred (D-19/D-20).
 
-## 3A: foundation - config, migration 0004, no-store headers  [x]
-- [ ] settings: lease_duration_minutes, max_skips_before_review
-- [ ] migration 0004: work_items.skip_count (separate from attempt_count so skip
-      behavior doesn't distort call-attempt reporting later)
-- [ ] Cache-Control: no-store on all /api/ responses (gap from Phase 1/2: plan 7.8
-      requires this on personal-data responses; the lease endpoint is the first place a
-      raw phone number leaves the server, making this load-bearing now)
+## 3A: foundation - config, migration 0004, no-store headers  [done]
+lease_duration_minutes, max_skips_before_review settings. Migration 0004 adds
+work_items.skip_count (kept separate from attempt_count). Fixed a gap carried from
+Phase 1/2: Cache-Control: no-store (+ Pragma: no-cache) on every /api/ response (plan
+7.8) - load-bearing now since the lease endpoint is the first place a raw phone number
+leaves the server.
 
-## 3B: leasing service  [x]
-- [ ] lease_next: campaign-assignment eligibility, campaign must be active, due
-      callbacks owned by the agent take priority over shared-pool queued items,
-      SELECT...FOR UPDATE SKIP LOCKED for queue selection (no duplicate active leases
-      under concurrency), decrypt the one contact's phone for the response only,
-      viewed-contact audit event without the raw number
-- [ ] renew_lease: extend expiry only if lease_id matches and not expired
-- [ ] expired-lease reclaim: leased items past lease_expires_at return to their
-      pre-lease state (callback_wait if assigned_agent_id is set, else queued)
+## 3B: leasing service  [done]
+lease_next: SELECT ... FOR UPDATE OF work_items SKIP LOCKED for queue selection (no
+duplicate active leases under concurrency - see 3F). Due callbacks the agent already
+owns take priority over shared-pool queued work, both gated on the campaign being
+active. Decrypts exactly one contact's phone for the response, no queue-size or
+other-contact leakage, plus a viewed-contact audit event without the raw number.
+renew_lease and reclaim_expired_leases (pre-lease-state-aware) also here.
 
-## 3C: completion service  [x]
-- [ ] complete_work_item: idempotent on (agent_id, idempotency_key); validates lease
-      ownership and disposition belongs to the campaign; encrypts notes; branches on
-      disposition (causes_dnc / requires_callback_time / next_action)
-- [ ] explicit DNC branch: create/reuse an active SuppressionEntry, and suppress EVERY
-      pending work item for that contact across ALL campaigns (invariant 7 in full, not
-      just the current campaign)
-- [ ] callback branch: work item -> callback_wait, due_at = callback_at, ownership
-      assigned to the completing agent
-- [ ] requeue branch: attempt_count increments; past max_attempts routes to review
-      instead of looping forever
-- [ ] skip_work_item: mandatory reason, immutable audit event, past threshold routes
-      to review
+## 3C: completion service  [done]
+complete_work_item is idempotent per (agent_id, idempotency_key), checked before any
+write. Validates lease ownership and that the disposition belongs to the campaign and
+is active. Branches on disposition: causes_dnc sweeps every non-terminal work item for
+the contact across ALL campaigns to suppressed (invariant 7 in full, including closing
+the current lease as a side effect of the same sweep); requires_callback_time schedules
+a callback owned by the completing agent; otherwise next_action drives complete/
+requeue-with-attempt-limit/review. skip_work_item requires a reason and routes to
+review past a threshold, deliberately without its own idempotency key since the
+lease_id is already single-use.
 
-## 3D: agent API  [x]
-- [x] POST /api/v1/work/next, POST /api/v1/work/{id}/complete,
-      POST /api/v1/work/{id}/skip, POST /api/v1/work/{id}/lease/renew
-- [x] GET /api/v1/agent/callbacks - masked (name or short reference, never the number)
-- [x] GET /api/v1/agent/stats - aggregate from immutable attempts
-- [x] WORK_QUEUE capability for the agent role
+## 3D: agent API  [done]
+POST /api/v1/work/next (returns a raw Response for the no-work 204 case rather than
+mixing an Optional response_model with a dynamic status code), .../complete, .../skip,
+.../lease/renew. GET /api/v1/agent/callbacks (masked reference, never the number) and
+/stats (from app/reporting/agent_stats.py, live aggregates over immutable attempts).
+WORK_QUEUE capability for the agent role.
 
-Note: this increment's commit got merged with a separate lint-cleanup commit (ruff was
-installed and run for real for the first time partway through this increment; see
-commit cfe4b42 for both the API code and the lint fixes together). Content is correct
-and pushed; only the commit-message scope is imprecise.
+## 3E: background jobs  [done]
+app/work/tasks.py: expired-lease reclaim on Celery Beat every 2 minutes.
 
-## 3E: background jobs  [ ]
-- [ ] expired-lease cleanup task on Celery Beat
+## 3F: tests  [done]
+tests/integration/test_work_flow.py: no-assignment 204, lease response shape (proves
+no extra leakage by checking the exact key set), idempotent completion, wrong-lease
+rejection, DNC suppression swept across two separate campaigns for the same contact
+(verified via direct DB check), requeue-then-review at attempt limit, callback
+scheduling + masked callback-list reference + immediate re-lease as a callback,
+skip validation and threshold-to-review, lease-expiry reclaim, lease renewal.
+tests/concurrency/test_leasing_concurrency.py: 10 agents, each in its own thread with
+its own DB session (genuinely separate Postgres connections, not simulated), lease
+simultaneously from a 6-item shared pool; asserts every item goes to exactly one agent
+and every leased item has a distinct owner.
 
-## 3F: tests  [ ]
-- [ ] integration: lease hides queue size, no assignment -> no work, idempotent
-      completion, wrong lease rejected, DNC suppresses across campaigns, requeue +
-      attempt-limit review routing, callback ownership, skip + reason + threshold,
-      lease expiry reclaim, callback list never exposes the raw number
-- [ ] concurrency: N agents leasing simultaneously from a small shared pool produces
-      zero duplicate active leases (real threaded test against Postgres)
+## Real bugs found and fixed via this session's first genuine ruff run
+- app/api/campaigns.py (Phase 2D): app.authz.* imported before app.auth.dependencies -
+  wrong alphabetical order, would have failed the blocking ruff-check CI step.
+- app/api/work.py: unused get_current_user import.
+- tests/integration/conftest.py: leftover timezone.utc reference after an earlier
+  auto-fix converted the rest of the file to the datetime.UTC alias.
+- test_work_flow.py: caught and removed dead/nonsensical placeholder code left over
+  from drafting the DNC cross-campaign test.
+- 66 false-positive B008 findings (FastAPI's Depends(...)-as-default pattern) resolved
+  via the standard extend-immutable-calls config, not suppression.
+See the "Lint cleanup" commit for the full list; ruff is now installed and used for
+the rest of this build (it's a static parser, unaffected by the local Python
+3.14-vs-pinned-SQLAlchemy-2.0 runtime mismatch discovered in this same pass).
 
-## Deferred to Phase 4 (documented, not built)
-- Target/adjusted-target/exemption-status display on the agent view.
-- Team Captain review/reassignment queues, DNC correction UI (ADR-009 override is a
-  management action; the suppression MECHANISM built here is what it would act on).
-- The actual two-column desktop UI, keyboard shortcuts, watermark, copy action -
-  this phase is the API the UI will call.
+## Verification status
+- [x] py_compile across app/tests/migrations after every increment
+- [x] Real ruff check (not just py_compile) across the entire repository - zero errors
+- [x] docker compose config
+- [x] Manual trace of the leasing/completion service logic, including race-window
+      reasoning for the DNC-sweep-vs-concurrent-lease scenario
+- [ ] CI green on GitHub, docker compose up + alembic upgrade on the host, and actual
+      pytest execution (blocked locally by the Python 3.14/SQLAlchemy 2.0 mismatch and
+      a restricted local package index - neither reflects the real target)
+
+## Known simplifications (documented, not bugs)
+- Campaign-user-assignment issuance has no API yet (tests insert directly); that's
+  Phase 4 workforce management.
+- "Today" in agent stats is a UTC calendar day, not the campaign's own timezone -
+  acceptable for a first pass, worth revisiting once a campaign's timezone field is
+  actually exercised operationally.
+- Callback ownership doesn't yet participate in campaign-transfer handoff (Phase 4).
+- No requeue_policy_id / attempt-timing rules beyond a flat max_attempts + a single
+  global max_skips_before_review; per-campaign policy tuning is a later refinement.
 
 ## Log
-- 2026-08-21: started.
+- 2026-08-21: built and pushed 3A through 3F, plus a real ruff pass across the whole
+  repository that found and fixed issues predating this phase.
