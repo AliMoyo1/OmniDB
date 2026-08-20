@@ -1,0 +1,24 @@
+{
+	# Caddy's internal CA issues the LAN/IP certificate. Install its root on each
+	# device once (see ADR-003). This keeps HTTPS trusted without a public domain.
+	local_certs
+	auto_https disable_redirects
+}
+
+# HTTPS on the LAN host. Set SERVER_HOST to the server's LAN IP in production.
+https://{$SERVER_HOST:localhost} {
+	reverse_proxy web:8000
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		-Server
+	}
+}
+
+# Redirect plain HTTP to HTTPS.
+http://{$SERVER_HOST:localhost} {
+	redir https://{host}{uri} permanent
+}
