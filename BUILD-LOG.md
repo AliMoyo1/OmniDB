@@ -20,8 +20,12 @@ Done:
 
 Open:
 - [x] D-01 product naming: DECIDED as CipherContact (product); build repo remains OmniDB.
-- [ ] Confirm the local repo home and whether to clone and push to the GitHub OmniDB repo.
-- [ ] Resolve Phase 0 decisions D-01 through D-08 before any Phase 1 code.
+- [x] Scaffold pushed to https://github.com/AliMoyo1/OmniDB (main).
+- [x] Phase 0 decisions D-01 through D-08 resolved 2026-08-20 (see decision-log.md and ADRs).
+
+## 2026-08-20: Phase 0 decisions resolved
+
+All blocking decisions recorded in docs/decisions/decision-log.md, with ADRs for the significant ones (003 access, 004A auth, 009 DNC, 005C workforce ID, 017 notifications, 020 retention). Architecture changes from the plan: Tailscale removed (LAN-only, IP access, unmanaged laptops); TOTP 2FA local auth; DNC label-and-skip with Team Captain override; 60-day completion-triggered retention with Team Captain Excel export. Target policy, exemptions, and bulk import deferred from the first pilot. Two flags stand: DNC-override legal review (D-02) and the export DLP note (D-09). Phase 1 is now unblocked.
 
 Next (Phase 1, after Phase 0 sign-off):
 - [ ] Locked dependency file with hashes.

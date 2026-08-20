@@ -9,6 +9,21 @@
 **Revision note:** v0.3 (2026-08-20) applied review corrections (session-store authority, keyed phone fingerprint, callback-list masking, notification and approval channel), split Phase 4, re-sliced the first pilot, and set the build repository to https://github.com/AliMoyo1/OmniDB. v0.2 expanded workforce hierarchy, campaign mobility, target exemptions, and bulk-user management on 2026-08-20.  
 **Implementation authorization:** This document is a plan. It does not authorize deployment or production data processing.
 
+## Decisions applied (2026-08-20, supersede conflicting text below)
+
+Phase 0 decisions are recorded in `docs/decisions/decision-log.md` with ADRs. Where this plan still describes something the decisions changed, the decision-log and ADRs are authoritative, and a v0.4 pass will integrate them. Key changes:
+
+- Access is LAN HTTPS only for all roles, on site. Tailscale and all remote-access text are superseded and removed (ADR-003).
+- Laptops are unmanaged; users reach the app by LAN IP; certificate trust is a one-time CA-root install or a first-use exception (ADR-003).
+- Host OS is Linux LTS on an x86 mini PC.
+- Authentication is local accounts with TOTP 2FA and Super Admin password and 2FA reset (ADR-004A).
+- DNC numbers are labeled and auto-skipped; a Team Captain may override with a mandatory justification and audit (ADR-009). This supersedes the earlier immediate-global-suppression-only wording. Legal review pending (D-02).
+- Retention: a campaign database is complete when every number has a disposition, calling agent, and usage record; a visible 60-day countdown then runs; a Team Captain may export to Excel and delete; auto-delete at 60 days (ADR-020).
+- Workforce ID is the login-email username, immutable once set (ADR-005C).
+- Notifications use an in-app inbox; email capability is built but dormant until a Microsoft service account exists (ADR-017).
+- Jurisdiction: Zimbabwe DPA baseline, kept configurable for other countries.
+- Deferred from the first pilot: target policy, exemptions, and bulk-workforce import. Pilot users are created manually.
+
 ## 1. Executive outcome
 
 CipherContact should be delivered as a secure internal campaign and call-work management system. It should preserve the strongest ideas from the original specification:
