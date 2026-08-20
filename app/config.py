@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # Run Celery tasks synchronously in-process (tests only; never in production).
     celery_task_always_eager: bool = False
 
+    # Agent work queue
+    lease_duration_minutes: int = 15
+    max_skips_before_review: int = 3
+
     # Operational
     log_level: str = "INFO"
     health_token: SecretStr = SecretStr("")

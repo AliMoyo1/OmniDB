@@ -41,6 +41,7 @@ class WorkItem(UUIDMixin, TimestampMixin, Base):
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=5)
+    skip_count: Mapped[int] = mapped_column(Integer, default=0)
     lease_owner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     lease_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(

@@ -50,4 +50,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Content-Security-Policy",
             "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         )
+        # Every /api/ response can carry personal or session data (plan 7.8). Static
+        # assets, once self-hosted, live outside this prefix and may cache normally.
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
         return response
