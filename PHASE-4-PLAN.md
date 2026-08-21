@@ -1,0 +1,153 @@
+# Phase 4 plan: management hierarchy, workforce, viewer, and administration
+
+Status: 4A-1 built and verified (2026-08-21).
+
+## Scope reconciliation against the decision log
+
+The master plan (`docs/architecture/CipherContact - Detailed Implementation Plan
+v0.3.md`, section "Phase 4") splits the original Phase 4 into 4A/4B/4C because the
+bundled 3-to-5-week estimate wasn't credible for the surface area. The decision log
+then deferred two of those three sub-phases from the first pilot entirely:
+
+- **4A** (Manager/Team Leader/Team Captain dashboards, manual non-bulk user/
+  membership/role/reporting-line/campaign assignment, viewer scope, protected audit
+  search) - **in scope**. D-18 (transfer preflight, decided) also lives here.
+- **4B** (staged bulk-workforce import) - **deferred**, D-21: create pilot users
+  manually instead.
+- **4C** (target policies, exemptions, proration, performance periods) - **deferred**,
+  D-19/D-20: this is effectively an embedded performance-management module and the
+  plan itself names it "the strongest candidate to defer until after the first pilot
+  proves the core call-work loop."
+
+So "Phase 4" in this build means 4A only. The authoritative capability matrix is
+plan section 6.3; the role hierarchy and scope rules are 6.2 and 6.4. `app/authz/
+capabilities.py` already defines every capability constant 6.3's non-target/non-bulk
+rows need (`CREATE_MANAGER`, `APPOINT_TEAM_LEADER`, `APPOINT_TEAM_CAPTAIN`,
+`CREATE_AGENT`, `MANAGE_ROLES`) and the starter `ROLE_CAPABILITIES` map already
+matches those rows - Phase 1 anticipated this correctly, so 4A needs no new
+capability constants, only the service/API/UI layers that use the ones already there.
+Likewise every core data model (`Organization`, `Team`, `TeamMembership`,
+`RoleAssignment`, `ReportingAssignment`, `Delegation`, `CampaignTeamAssignment`,
+`CampaignUserAssignment`) already exists from Phase 1/2A - 4A is new service and API
+code against an existing schema, not a new migration, except where noted below.
+
+## 4A-1: workforce foundation - users, roles, teams, reporting lines [done]
+
+The prerequisite everything else in 4A needs: an actual API to create a user and
+grant a role, where today only test fixtures do this via direct DB insert (flagged
+as a gap in both PHASE-2-PLAN.md and PHASE-3-PLAN.md).
+
+- `app/workforce/service.py`: `create_user` (mirrors `reset_password`'s
+  activation-token pattern - a new user gets an activation token back, no password
+  is ever set by an admin), `assign_role` / `end_role_assignment`, `disable_user` /
+  `reactivate_user`, `create_team`, `add_team_membership` / `end_team_membership`,
+  `set_reporting_line`.
+- Role-appointment capability is looked up per target role_code
+  (`ROLE_MANAGER -> CREATE_MANAGER`, `ROLE_TEAM_LEADER -> APPOINT_TEAM_LEADER`,
+  `ROLE_TEAM_CAPTAIN -> APPOINT_TEAM_CAPTAIN`, `ROLE_AGENT -> CREATE_AGENT`,
+  `ROLE_VIEWER -> MANAGE_ROLES`, matching the diagram's "Manager grants report
+  scope to Viewer") and checked with `authz.has_scope_capability` against the
+  assignment's own target scope - the same function `create_campaign` already uses,
+  not a new authorization primitive. `super_admin` is intentionally not assignable
+  through this API; it stays a manual/ops-provisioned role, consistent with how the
+  very first Manager account in this build was created outside the app.
+- Self-appointment and self-supervision are blocked (`authz.assert_not_self`,
+  reused) - plan 6.4's "requester and approver are not the same person" and 6.5's
+  explicit self-approval test case.
+- Assigning a role the target already actively holds at the same scope ends the
+  prior assignment before creating the new one (no overlapping duplicates), and
+  every role grant or end calls `authz.invalidate_sessions_on_privilege_change`
+  (built in Phase 1, never called until now) per plan 6.4: "role changes rotate or
+  invalidate sessions."
+- Disabling a user revokes sessions **and** reclaims active leases - plan 6.4 names
+  both explicitly. Lease reclaim needed a small addition: `app/work/service.py`
+  gains `reclaim_leases_for_user`, mirroring the existing `reclaim_expired_leases`
+  (callback leases return to `callback_wait`, shared-pool leases to `queued`) but
+  filtered by owner instead of expiry.
+- `set_reporting_line` rejects self-supervision and ends any prior active `primary`
+  assignment for the same (subordinate, context) pair first, mirroring the D-17
+  one-active-primary-assignment pattern already used for campaigns.
+- `app/api/workforce.py` (`/api/v1/workforce`): users, roles, disable/reactivate,
+  teams, memberships, reporting line. Kept separate from `/api/v1/admin` (Super
+  Admin technical actions - password/2FA reset, audit search) since this is the
+  business-hierarchy surface Manager/Team Leader/Team Captain use day to day, not a
+  technical-config surface.
+- User listing is scope-filtered (Super Admin and org-wide Manager see everyone;
+  Team Leader/Team Captain see only users who share an active team membership with
+  them), the same "don't leak across scope" principle the security-hardening commit
+  already enforced for campaigns.
+
+Deferred out of 4A-1 specifically (not out of Phase 4 - just later increments):
+- Delegation/acting-role API. The model exists; wiring delegated capabilities into
+  `has_capability`'s resolution path is a distinct, non-trivial change worth its own
+  increment rather than folding into the foundational one.
+- Anything Viewer can actually view (no `VIEW_ANALYTICS`-style capability or report
+  endpoint exists yet - that belongs with 4A-4/reporting, not the identity/role
+  foundation).
+
+## 4A-2: campaign assignment API and transfer (D-18) [not started]
+
+Replace `tests/integration/conftest.py::assign_agent_to_campaign`'s direct-DB-insert
+(flagged as a gap in PHASE-2-PLAN.md and PHASE-3-PLAN.md) with a real, capability-
+gated endpoint. Add campaign-team assignment (model already exists, unused so far).
+Add transfer preflight per D-18: active leases, callbacks, schedule, and destination
+staffing capacity - target effects are explicitly out per D-19/D-20.
+
+## 4A-3: protected audit search and Viewer role [not started]
+
+Today `GET /api/v1/admin/audit-events` is an unscoped global list gated only by
+Super Admin's `VIEW_AUDIT`. Plan 6.3 gives Manager/Team Leader/Team Captain their
+own bounded analytics visibility ("Authorized portfolio" / "Assigned teams" /
+"Direct team"), and Viewer's whole purpose is a read-only aggregate scope with
+explicit non-access to raw contacts, notes, imports, and DNC entries. Needs a scoped
+audit query and a first real capability for Viewer.
+
+## 4A-4: Manager / Team Leader / Team Captain dashboards [not started]
+
+The first server-rendered UI in this build. `app/templates/` and `app/static/` exist
+as empty scaffold directories only - Jinja2Templates/StaticFiles aren't wired into
+`app/main.py` yet, there's no HTML-page session auth pattern (only JSON API auth
+exists today), and no base layout. Treated as its own increment rather than folded
+into the API work above, since it's a materially different kind of work (needs
+browser-based verification per the UI workflow, not just pytest).
+
+## 4A-5: tests and the authorization-negative matrix [ongoing alongside each increment]
+
+Plan 6.5's test matrix (wrong team, lower role, expired assignment, guessed UUID
+belonging to someone else's scope, self-approval, etc.) applies directly to 4A-1 and
+4A-2's new endpoints. Each increment ships with its own integration tests rather
+than deferring verification to the end, matching how Phases 1-3 were built and
+reviewed.
+
+## 4A-1 verification status
+- [x] Migration 0008 (partial unique indexes on role_assignments and
+      reporting_assignments, `NULLS NOT DISTINCT`) applied and round-tripped
+      (downgrade -1 / upgrade head) against real Postgres.
+- [x] ruff clean across every new and modified file, repository-wide sweep clean.
+- [x] 14 new integration tests in `tests/integration/test_workforce_flow.py`, plus
+      the full existing 62-test suite still green (76 passed total) - no regressions.
+- [ ] mypy - not runnable in this dev environment (documented Python 3.14 mismatch,
+      see PHASE-1-PLAN.md); CI's blocking mypy step is the first real check of this
+      increment's type annotations.
+- [ ] Live verification through the actual HTTPS/Caddy stack (curl or browser) - the
+      integration tests already exercise real Postgres, real session cookies, and
+      real CSRF tokens end to end; a separate manual pass wasn't done for this
+      increment specifically.
+
+### A design property worth noting, found while writing the tests
+`can_manage_user` only ever authorizes appointment capability held over a role
+*strictly below* the target's own role - by construction, no role can ever satisfy
+this check against a target holding the same role (a Manager can't "manage" another
+Manager this way, let alone themselves). This means an actor can never target
+themselves through `disable_user`, `reactivate_user`, or `set_reporting_line`: the
+403 from `can_manage_user` fires before any of those functions' own self-approval or
+self-supervision guards would matter. Those service-layer guards stay in place as
+defense in depth for future callers of the service functions directly (bulk import,
+delegation), but the first self-supervision test had to be rewritten to use a
+Manager acting on a separate Agent (naming that agent as their own supervisor)
+rather than a Manager acting on themselves, to isolate the domain check from the
+authorization gate. Not a bug - just worth knowing before extending this area.
+
+## Log
+- 2026-08-21: reconciled Phase 4 scope against D-19/D-20/D-21, wrote this plan,
+  built and verified 4A-1 (workforce foundation).

@@ -392,6 +392,30 @@ def reclaim_expired_leases(db: Session) -> int:
     return count
 
 
+def reclaim_leases_for_user(db: Session, agent_id: uuid.UUID) -> int:
+    """Return every item currently leased by agent_id to its pre-lease state.
+
+    Used when a user is disabled (plan 6.4: disabling a user immediately revokes
+    active sessions and leases). Same pre-lease-state rule as reclaim_expired_leases:
+    a callback returns to callback_wait still owned by the same agent, a shared-pool
+    item returns to queued.
+    """
+    leased = db.scalars(
+        select(WorkItem)
+        .where(WorkItem.state == "leased", WorkItem.lease_owner_id == agent_id)
+        .with_for_update(skip_locked=True)
+    )
+    count = 0
+    for item in leased:
+        item.state = "callback_wait" if item.assigned_agent_id is not None else "queued"
+        item.lease_owner_id = None
+        item.lease_id = None
+        item.lease_expires_at = None
+        item.version += 1
+        count += 1
+    return count
+
+
 def _load_leased_item(
     db: Session, work_item_id: uuid.UUID, agent_id: uuid.UUID, lease_id: uuid.UUID
 ) -> WorkItem:

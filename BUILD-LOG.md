@@ -415,3 +415,74 @@ Pushed and watched the real run on GitHub Actions (run 32488321998): quality,
 security, integration (including the "Integration tests" step, the exact step that
 had failed every single prior run this session), and build all passed. This is the
 first genuinely green CI run this project has had.
+
+## 2026-08-21: Phase 4A-1 - workforce foundation (users, roles, teams, reporting lines)
+
+Reconciled the master plan's Phase 4 against the decision log first: D-19 (target
+policy) and D-20 (exemptions) are deferred, D-21 defers bulk import in favor of
+manual user creation, which leaves 4A (dashboards, manual workforce/role/campaign
+assignment, viewer scope, audit search) as the only in-scope slice of the original
+Phase 4A/4B/4C split. Wrote PHASE-4-PLAN.md with the full 4A breakdown before
+building. Every core data model this increment needed (`Organization`, `Team`,
+`TeamMembership`, `RoleAssignment`, `ReportingAssignment`, `Delegation`) and every
+capability constant the plan's section 6.3 matrix needs already existed from
+Phase 1 - this was new service/API code against an existing, well-anticipated
+schema, not new modeling work.
+
+Built `app/workforce/service.py` (create/disable/reactivate a user, assign/end a
+role, create a team, add/end team membership, set a reporting line) and
+`app/api/workforce.py` (`/api/v1/workforce`, kept separate from `/api/v1/admin`'s
+Super Admin technical surface). Role-appointment authorization is looked up per
+target role_code against the plan's own capability matrix (Manager appoints Team
+Leader, Team Leader appoints Team Captain, either appoints Agent, `super_admin` is
+never assignable through this API), checked with `authz.has_scope_capability` - the
+same function `create_campaign` already uses, not a new authorization primitive.
+Every role grant or end now calls `authz.invalidate_sessions_on_privilege_change`,
+a hook Phase 1 built and nothing had ever called until this increment. Disabling a
+user reclaims their active work-item leases too (plan 6.4 names both explicitly),
+which needed one small addition to `app/work/service.py`:
+`reclaim_leases_for_user`, mirroring the existing `reclaim_expired_leases` but
+filtered by owner instead of expiry.
+
+Found one real, pre-existing gap while building this: `role_assignments` and
+`reporting_assignments` have existed since the baseline migration but nothing had
+ever written to them outside test fixtures, so neither had the partial-unique-index
+protection this codebase already uses everywhere else for "one active X" invariants
+(`uq_cua_one_primary_active` for campaigns, `uq_team_memberships_active`). Added
+migration 0008 (`uq_role_assignments_active`, `uq_reporting_assignments_primary`,
+both `NULLS NOT DISTINCT` for the same reason 0006 needed it) so a race between two
+concurrent appointments can't create two overlapping active grants - not just
+application-level checking. Verified the downgrade/upgrade round-trip.
+
+Also hit a real Docker gotcha worth remembering: `docker compose run` starts a
+*fresh* container from the built image, not from the running, `docker cp`-patched
+container - so `alembic upgrade head` run via `docker compose run` silently didn't
+see migration 0008 at all, while `docker compose exec` (which runs inside the
+already-running, patched container) did. Any migration work done by patching a live
+container's filesystem directly needs `exec`, not `run`.
+
+Wrote 14 integration tests (`tests/integration/test_workforce_flow.py`) covering
+the appointment-capability matrix in both directions (correct role/scope succeeds,
+wrong scope or too-low a role 403s), self-appointment and self-supervision guards,
+re-granting the same role superseding rather than stacking, session invalidation on
+role end, the disable-reclaims-active-lease path end to end, and that a Team
+Leader's user listing is scoped to their own team and cannot see another team's
+members. One test needed correcting, not the code: a literal
+Manager-acting-on-themselves self-supervision test always 403s before reaching the
+self-supervision check, because `can_manage_user` only ever authorizes appointment
+capability held over a role strictly *below* the target's - no role can pass that
+check against an identically-roled target, including itself. Documented as a real
+design property in PHASE-4-PLAN.md, not a bug: the service-layer guards stay as
+defense in depth for future callers (bulk import, delegation) that won't all go
+through this same authorization gate.
+
+Full 76-test suite (62 existing plus 14 new) green from a cold reset, ruff clean
+repository-wide. mypy still isn't runnable in this dev environment (same Python
+3.14 mismatch noted since Phase 1) - CI's blocking mypy step is this increment's
+first real type check, same as everything else built this session.
+
+Remaining in Phase 4A: campaign-user/team assignment API and transfer (D-18),
+protected/scoped audit search and a first real Viewer capability, and the
+Manager/Team Leader/Team Captain dashboards themselves (the first server-rendered
+UI in this build - `app/templates` and `app/static` are still empty scaffold
+directories). See PHASE-4-PLAN.md for the full breakdown.
