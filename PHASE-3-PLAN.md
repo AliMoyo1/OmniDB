@@ -84,10 +84,11 @@ the rest of this build (it's a static parser, unaffected by the local Python
       once due, and skip with reason validation). GET /api/v1/agent/stats reconciled
       exactly against a direct database query with zero discrepancy. No new bugs found
       in this pass.
-- [ ] CI green on GitHub Actions specifically, and actual `pytest` execution (still
-      blocked locally by the Python 3.14/SQLAlchemy 2.0 mismatch and a restricted local
-      package index - neither reflects the real target; live curl-based verification
-      through the running stack substituted for this - see BUILD-LOG.md)
+- [ ] CI green on GitHub Actions specifically - 2026-08-21: root-caused and fixed the
+      standing failure (a test-isolation bug in the shared `zw_numbers()` fixture, not
+      an application defect - see BUILD-LOG.md), verified clean locally (full 62-test
+      suite, cold and warm reset, ruff clean); pushing now to confirm on the real
+      runner
 
 ## Known simplifications (documented, not bugs)
 - Campaign-user-assignment issuance has no API yet (tests insert directly); that's

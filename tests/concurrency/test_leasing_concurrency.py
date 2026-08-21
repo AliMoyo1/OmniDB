@@ -43,11 +43,16 @@ def _setup(numbers: list[str]) -> tuple[uuid.UUID, list[uuid.UUID]]:
 
         for number in numbers:
             protected = protect(number, "ZW")
-            contact = Contact(
-                phone_ciphertext=protected.ciphertext, phone_fingerprint=protected.fingerprint
+            contact = db.scalar(
+                select(Contact).where(Contact.phone_fingerprint == protected.fingerprint)
             )
-            db.add(contact)
-            db.flush()
+            if contact is None:
+                contact = Contact(
+                    phone_ciphertext=protected.ciphertext,
+                    phone_fingerprint=protected.fingerprint,
+                )
+                db.add(contact)
+                db.flush()
             campaign_contact = CampaignContact(
                 campaign_id=campaign.id,
                 contact_id=contact.id,

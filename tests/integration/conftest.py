@@ -103,32 +103,41 @@ def agent_client() -> Iterator[TestClient]:
 
 
 def zw_numbers(count: int) -> list[str]:
-    """A handful of distinct, individually-valid Zimbabwe national numbers, derived by
-    varying the trailing digit of the library's own example number and keeping only
-    variants that still validate. Not exhaustive, but stable enough for test fixtures."""
+    """count distinct, individually-valid Zimbabwe national numbers, derived by
+    randomizing the trailing 4 digits of the library's own example number and keeping
+    only variants that still validate. Randomized rather than fixed: DNC-suppression
+    tests permanently and correctly suppress whichever number they touch (suppression
+    is real, cross-campaign, and not rolled back between tests), so two unrelated
+    tests must never be handed the same number in the same run."""
+    import secrets
+
     import phonenumbers
 
     example = phonenumbers.example_number("ZW")
     if example is None:
         pytest.skip("no example number available for region ZW")
     base = str(example.national_number)
-    prefix, last = base[:-1], base[-1]
-    candidates = [base] + [prefix + str(d) for d in range(10) if str(d) != last]
+    prefix, suffix_len = base[:-4], 4
 
-    valid = []
-    for candidate in candidates:
+    seen: set[str] = set()
+    valid: list[str] = []
+    for _ in range(500):
+        if len(valid) >= count:
+            break
+        candidate = prefix + f"{secrets.randbelow(10**suffix_len):0{suffix_len}d}"
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         try:
             parsed = phonenumbers.parse(candidate, "ZW")
         except phonenumbers.NumberParseException:
             continue
         if phonenumbers.is_valid_number(parsed):
             valid.append(candidate)
-        if len(valid) >= count:
-            break
 
     if len(valid) < count:
         pytest.skip(f"could not derive {count} distinct valid ZW numbers for this fixture")
-    return valid[:count]
+    return valid
 
 
 def assign_agent_to_campaign(

@@ -19,7 +19,7 @@ from app.db import SessionLocal
 from app.models.base import utcnow
 from app.models.contact import SuppressionEntry
 from app.security.phone import protect
-from tests.integration.conftest import csrf_headers
+from tests.integration.conftest import csrf_headers, zw_numbers
 
 pytestmark = pytest.mark.integration
 
@@ -119,7 +119,7 @@ def test_suppression_added_after_preview_is_excluded_at_commit(manager_client):
     headers = csrf_headers(client)
     campaign_id = _create_campaign(client, headers)
 
-    n = _zw_number()
+    n = zw_numbers(1)[0]
     upload_resp = _upload(client, headers, campaign_id, f"phone,name\n{n},Bob\n")
     job_id = upload_resp.json()["id"]
 

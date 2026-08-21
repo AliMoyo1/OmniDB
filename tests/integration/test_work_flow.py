@@ -321,7 +321,7 @@ def test_callback_disposition_schedules_and_masks_reference(manager_client, agen
     )
 
     lease = agent_client.post("/api/v1/work/next", headers=csrf_headers(agent_client)).json()
-    callback_at = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    callback_at = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
     complete = agent_client.post(
         f"/api/v1/work/{lease['work_item_id']}/complete",
         json={
@@ -339,7 +339,13 @@ def test_callback_disposition_schedules_and_masks_reference(manager_client, agen
     assert callbacks[0]["reference"] == "Contact0"
     assert "+263" not in callbacks[0]["reference"]
 
-    # And it is immediately leasable again as the due callback.
+    # Scheduling requires a future time, so backdate it directly to make it due,
+    # then confirm it is immediately leasable again as the due callback.
+    with SessionLocal() as db:
+        item = db.get(WorkItem, uuid.UUID(lease["work_item_id"]))
+        item.due_at = datetime.now(UTC) - timedelta(minutes=1)
+        db.commit()
+
     release = agent_client.post("/api/v1/work/next", headers=csrf_headers(agent_client)).json()
     assert release["work_item_id"] == lease["work_item_id"]
     assert release["is_callback"] is True

@@ -347,3 +347,66 @@ Test data (1 campaign, 2 users, 5 contacts, 5 call attempts, 1 suppression entry
 remains in the local database for further exploration, alongside the admin/target
 users from the bring-up pass above - none of this is real production data, this is
 still the same first-ever local Docker Desktop environment.
+
+## 2026-08-21: Root-caused and fixed the standing CI failure (test isolation, not app logic)
+
+Every CI run this session had failed on `pytest -m integration`, always the same 10
+tests in `tests/integration/test_work_flow.py` from `test_complete_work_item_is_idempotent`
+onward, always `.json()` raising on a 204-empty-body response from `POST
+/api/v1/work/next`. Reproduced it exactly locally (10 failed, 25 passed, identical
+names) by fully resetting Postgres (`alembic downgrade base` + `upgrade head`) and
+Redis (`FLUSHALL`) before running the suite the same way CI does. Diagnostic prints
+added directly to a copy of the failing test (Campaign/CampaignContact/WorkItem/
+CampaignUserAssignment state, DB `now()`, raw lease response) showed the campaign's
+one contact was already `status=suppressed` with zero work items *before* the test's
+own lease call - the app was correctly reporting no work available; nothing to fix
+there.
+
+Root cause: `tests/integration/conftest.py::zw_numbers()` is deterministic - it always
+returns the same handful of numbers, always starting with the exact same base number,
+regardless of which test calls it or how many numbers are requested. Several tests
+correctly and permanently suppress whichever number they touch, as real DNC behavior
+requires: `test_imports_flow.py::test_suppression_added_after_preview_is_excluded_at_commit`
+inserted a suppression entry directly for that same shared base number (via its own,
+separately-deterministic `_zw_number()` helper), and
+`test_work_flow.py::test_explicit_dnc_suppresses_the_contact_across_campaigns`
+legitimately disposes a contact as DNC, which is its actual test purpose. Since
+integration tests share one real Postgres database with no per-test rollback, either
+one permanently poisons that number for every later test in the same run that reuses
+it via `_setup_campaign_with_agent()`'s default `contact_count=1` - which is most of
+the file. This was a test-fixture collision, not an application defect: DNC
+suppression being real, permanent, and cross-campaign is exactly invariant 7 working
+as designed.
+
+Fixed `zw_numbers()` to draw randomly from a 10,000-value trailing-digit space instead
+of a fixed deterministic sequence, so unrelated tests can no longer collide on the
+same number (commit-message-worthy detail: the ZW example number's national digits
+are `1312345`, a synthetic sequential placeholder, not a real assigned range, so
+varying its trailing 4 digits stays safely within valid-number territory). Pointed
+`test_suppression_added_after_preview_is_excluded_at_commit` at the same fixture
+instead of its own separate, equally-deterministic helper. While in the same area,
+also fixed an already-known, separate, non-CI-blocking bug in
+`tests/concurrency/test_leasing_concurrency.py::_setup()`: it inserted a `Contact` per
+number unconditionally instead of checking for an existing one first, so it would
+`IntegrityError` if ever re-run against a non-fresh database - now matches the real
+import pipeline's get-or-create pattern (`app/imports/service.py`'s `commit_job`).
+
+Along the way, found one more real, unrelated failure once the 204/JSONDecodeError
+noise cleared: `test_callback_disposition_schedules_and_masks_reference` passed a
+`callback_at` one minute in the *past*, which the security-hardening commit's
+`complete_work_item` now correctly rejects (callback times must be in the future -
+this is the same validation already noted as "incidentally re-confirmed" during the
+live-flow verification entry above, from an actual test-authoring mistake). Fixed by
+scheduling a future callback, then backdating `WorkItem.due_at` directly via the DB
+afterward to still exercise the "due callback is immediately re-leasable" path, the
+same pattern `test_lease_expiry_reclaim_returns_item_to_queue` already uses in the
+same file.
+
+Verified clean: full suite (`pytest` with no marker filter, 62 tests) green from a
+cold reset, green again immediately re-run against the same warm database with no
+reset (confirming the get-or-create fix actually holds), and `ruff check` clean on
+all four touched files (one real finding along the way - S311 on `random.randint`,
+resolved by switching to `secrets.randbelow`, not a suppression).
+
+Files changed: `tests/integration/conftest.py`, `tests/integration/test_imports_flow.py`,
+`tests/integration/test_work_flow.py`, `tests/concurrency/test_leasing_concurrency.py`.
