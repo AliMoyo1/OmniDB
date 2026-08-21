@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
@@ -411,6 +411,46 @@ def reclaim_leases_for_user(db: Session, agent_id: uuid.UUID) -> int:
         item.lease_owner_id = None
         item.lease_id = None
         item.lease_expires_at = None
+        item.version += 1
+        count += 1
+    return count
+
+
+def release_campaign_work_for_agent(
+    db: Session, agent_id: uuid.UUID, campaign_id: uuid.UUID
+) -> int:
+    """Fully release every item this agent holds - leased or a pending callback - in
+    one campaign back to that campaign's shared queue. Used when the agent's
+    assignment to this specific campaign ends (removal or transfer), not when their
+    whole account is disabled.
+
+    Unlike reclaim_expired_leases/reclaim_leases_for_user, a callback does not stay
+    owned by them here: they are leaving this campaign, so nothing can go on being
+    theirs to service there. lease_next's callback path requires an active
+    assignment on the same campaign (see _next_callback_candidate), so leaving a
+    callback "retained" after the assignment ends would silently orphan it - exactly
+    the failure the plan warns a campaign transfer must not cause.
+    """
+    items = db.scalars(
+        select(WorkItem)
+        .join(CampaignContact, WorkItem.campaign_contact_id == CampaignContact.id)
+        .where(
+            CampaignContact.campaign_id == campaign_id,
+            or_(
+                and_(WorkItem.state == "leased", WorkItem.lease_owner_id == agent_id),
+                and_(WorkItem.state == "callback_wait", WorkItem.assigned_agent_id == agent_id),
+            ),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    count = 0
+    for item in items:
+        item.state = "queued"
+        item.lease_owner_id = None
+        item.lease_id = None
+        item.lease_expires_at = None
+        item.assigned_agent_id = None
+        item.due_at = None
         item.version += 1
         count += 1
     return count

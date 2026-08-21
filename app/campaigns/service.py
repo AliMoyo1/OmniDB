@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
 from app.models.base import utcnow
-from app.models.campaign import Campaign, CampaignDispositionDefinition
+from app.models.campaign import (
+    Campaign,
+    CampaignDispositionDefinition,
+    CampaignTeamAssignment,
+    CampaignUserAssignment,
+)
 from app.models.contact import CampaignContact
+from app.work.service import release_campaign_work_for_agent
 
 # Only this stable semantic code may set causes_dnc=True (ADR-009).
 PROTECTED_DNC_SEMANTIC_CODES = {"explicit_dnc"}
@@ -27,6 +33,224 @@ class CampaignStateError(Exception):
 
 class DispositionPolicyError(Exception):
     pass
+
+
+class CampaignAssignmentError(Exception):
+    pass
+
+
+def _check_staffing_capacity(
+    db: Session, campaign_id: uuid.UUID, team_id: uuid.UUID | None
+) -> None:
+    """Plan 6, Phase 4A step 6: a transfer (or a plain assignment) must respect the
+    destination's staffing capacity where one is set. No team, or a team with no
+    capacity configured, means unlimited - staffing_capacity is optional (plan 4C's
+    fuller staffing model is out of scope; this is the minimal real check D-18's
+    "destination capacity" preflight needs)."""
+    if team_id is None:
+        return
+    now = utcnow()
+    team_assignment = db.scalar(
+        select(CampaignTeamAssignment).where(
+            CampaignTeamAssignment.campaign_id == campaign_id,
+            CampaignTeamAssignment.team_id == team_id,
+            CampaignTeamAssignment.status == "active",
+            CampaignTeamAssignment.effective_from <= now,
+            or_(
+                CampaignTeamAssignment.effective_to.is_(None),
+                CampaignTeamAssignment.effective_to > now,
+            ),
+        )
+    )
+    if team_assignment is None or team_assignment.staffing_capacity is None:
+        return
+    current_count = db.scalar(
+        select(func.count(CampaignUserAssignment.id)).where(
+            CampaignUserAssignment.campaign_id == campaign_id,
+            CampaignUserAssignment.team_id == team_id,
+            CampaignUserAssignment.status == "active",
+            CampaignUserAssignment.effective_to.is_(None),
+        )
+    )
+    if current_count >= team_assignment.staffing_capacity:
+        raise CampaignAssignmentError(
+            f"destination campaign is at staffing capacity for this team "
+            f"({current_count}/{team_assignment.staffing_capacity})"
+        )
+
+
+def assign_team_to_campaign(
+    db: Session,
+    campaign: Campaign,
+    *,
+    team_id: uuid.UUID,
+    staffing_capacity: int | None,
+    actor_id: uuid.UUID,
+) -> CampaignTeamAssignment:
+    assignment = CampaignTeamAssignment(
+        campaign_id=campaign.id,
+        team_id=team_id,
+        effective_from=utcnow(),
+        staffing_capacity=staffing_capacity,
+        assigned_by=actor_id,
+    )
+    db.add(assignment)
+    db.flush()
+    record_audit(
+        db, action="campaign.team_assignment.create", result="success", actor_user_id=actor_id,
+        target_type="campaign", target_id=campaign.id, event_metadata={"team_id": str(team_id)},
+    )
+    return assignment
+
+
+def end_team_assignment(
+    db: Session, assignment: CampaignTeamAssignment, *, actor_id: uuid.UUID
+) -> CampaignTeamAssignment:
+    assignment.status = "ended"
+    assignment.effective_to = utcnow()
+    record_audit(
+        db, action="campaign.team_assignment.end", result="success", actor_user_id=actor_id,
+        target_type="campaign", target_id=assignment.campaign_id,
+        event_metadata={"team_id": str(assignment.team_id)},
+    )
+    return assignment
+
+
+def assign_agent_to_campaign(
+    db: Session,
+    campaign: Campaign,
+    *,
+    agent_id: uuid.UUID,
+    team_id: uuid.UUID | None,
+    actor_id: uuid.UUID,
+    assignment_type: str = "primary",
+    priority: int | None = None,
+    allocation_percentage: int | None = None,
+    shift_reference: str | None = None,
+) -> CampaignUserAssignment:
+    """A fresh assignment for an agent who does not currently have an active primary
+    one anywhere. Moving an agent who already has one is transfer_agent's job - this
+    function deliberately does not supersede an existing primary assignment, so every
+    move goes through the one path that reclaims in-flight work and checks
+    destination capacity, rather than two independent ways to reach the same state."""
+    if assignment_type == "primary":
+        existing_primary = db.scalar(
+            select(CampaignUserAssignment).where(
+                CampaignUserAssignment.user_id == agent_id,
+                CampaignUserAssignment.assignment_type == "primary",
+                CampaignUserAssignment.status == "active",
+                CampaignUserAssignment.effective_to.is_(None),
+            )
+        )
+        if existing_primary is not None:
+            raise CampaignAssignmentError(
+                "agent already has an active primary assignment; use transfer instead"
+            )
+    _check_staffing_capacity(db, campaign.id, team_id)
+    assignment = CampaignUserAssignment(
+        campaign_id=campaign.id,
+        user_id=agent_id,
+        team_id=team_id,
+        campaign_role="agent",
+        assignment_type=assignment_type,
+        effective_from=utcnow(),
+        priority=priority,
+        allocation_percentage=allocation_percentage,
+        shift_reference=shift_reference,
+        assigned_by=actor_id,
+    )
+    db.add(assignment)
+    db.flush()
+    record_audit(
+        db, action="campaign.assignment.create", result="success", actor_user_id=actor_id,
+        target_type="campaign", target_id=campaign.id,
+        event_metadata={"agent_id": str(agent_id), "assignment_type": assignment_type},
+    )
+    return assignment
+
+
+def end_user_assignment(
+    db: Session,
+    assignment: CampaignUserAssignment,
+    *,
+    actor_id: uuid.UUID,
+    reason_code: str | None = None,
+) -> CampaignUserAssignment:
+    assignment.status = "ended"
+    assignment.effective_to = utcnow()
+    released = release_campaign_work_for_agent(db, assignment.user_id, assignment.campaign_id)
+    record_audit(
+        db, action="campaign.assignment.end", result="success", actor_user_id=actor_id,
+        target_type="campaign", target_id=assignment.campaign_id, reason_code=reason_code,
+        event_metadata={
+            "agent_id": str(assignment.user_id), "work_items_released": released,
+        },
+    )
+    return assignment
+
+
+def transfer_agent(
+    db: Session,
+    *,
+    agent_id: uuid.UUID,
+    from_campaign: Campaign,
+    to_campaign: Campaign,
+    team_id: uuid.UUID | None,
+    actor_id: uuid.UUID,
+    reason_code: str | None = None,
+) -> CampaignUserAssignment:
+    """D-18: transfer preflight. Lease and callback treatment is fixed at "return to
+    the source queue" - not configurable per call, since ops's own resolution was
+    "pick the defaults" rather than name a treatment, and this is the same treatment
+    already used for reclaim_leases_for_user (disabling a user). Target proration is
+    correctly absent: D-19/D-20 defer the whole target subsystem from this pilot."""
+    if from_campaign.id == to_campaign.id:
+        raise CampaignAssignmentError("source and destination campaign must differ")
+    source = db.scalar(
+        select(CampaignUserAssignment).where(
+            CampaignUserAssignment.user_id == agent_id,
+            CampaignUserAssignment.campaign_id == from_campaign.id,
+            CampaignUserAssignment.assignment_type == "primary",
+            CampaignUserAssignment.status == "active",
+            CampaignUserAssignment.effective_to.is_(None),
+        )
+    )
+    if source is None:
+        raise CampaignAssignmentError(
+            "agent has no active primary assignment on the source campaign"
+        )
+    if to_campaign.status != "active":
+        raise CampaignAssignmentError("destination campaign is not active")
+    _check_staffing_capacity(db, to_campaign.id, team_id)
+
+    now = utcnow()
+    source.status = "ended"
+    source.effective_to = now
+    db.flush()
+    released = release_campaign_work_for_agent(db, agent_id, from_campaign.id)
+
+    destination = CampaignUserAssignment(
+        campaign_id=to_campaign.id,
+        user_id=agent_id,
+        team_id=team_id,
+        campaign_role="agent",
+        assignment_type="primary",
+        effective_from=now,
+        assigned_by=actor_id,
+    )
+    db.add(destination)
+    db.flush()
+    record_audit(
+        db, action="campaign.assignment.transfer", result="success", actor_user_id=actor_id,
+        target_type="campaign", target_id=to_campaign.id, reason_code=reason_code,
+        event_metadata={
+            "agent_id": str(agent_id),
+            "from_campaign_id": str(from_campaign.id),
+            "to_campaign_id": str(to_campaign.id),
+            "work_items_released": released,
+        },
+    )
+    return destination
 
 
 def create_campaign(

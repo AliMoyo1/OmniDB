@@ -486,3 +486,56 @@ protected/scoped audit search and a first real Viewer capability, and the
 Manager/Team Leader/Team Captain dashboards themselves (the first server-rendered
 UI in this build - `app/templates` and `app/static` are still empty scaffold
 directories). See PHASE-4-PLAN.md for the full breakdown.
+
+## 2026-08-21: Phase 4A-2 - campaign assignment API and transfer (D-18)
+
+Added the real API for something only test fixtures could do before: assign a team
+or an agent to a campaign, end either assignment, and transfer an agent between
+campaigns. New capability `ASSIGN_CAMPAIGN_AGENT` (plan 6.3's "Assign Agent to
+campaign" and "Move Agent between campaigns" rows share the same three grantees -
+Manager, Team Leader, Team Captain - so one capability covers both), authorized
+through the existing `has_campaign_capability`, no new authorization primitive.
+
+A real design question came up immediately: should assigning an agent who already
+has an active primary assignment elsewhere just supersede it, the way 4A-1's role
+re-assignment does? Decided no - a campaign move has real consequences (an agent
+mid-lease, a scheduled callback) that only a proper transfer preflight handles
+safely, so `assign_agent_to_campaign` now refuses that case (409, directing the
+caller to transfer) rather than opening a second, unsafe path to the same state.
+
+D-18's own decision text just says "adopt transfer preflight, ops picks defaults" -
+the actual lease/callback treatment was left for this build to choose. Picked
+"return to the source queue" for a transferred agent's active lease, matching the
+same treatment 4A-1's `reclaim_leases_for_user` already uses for a disabled user.
+For callbacks specifically, traced `_next_callback_candidate` before assuming
+"retain" (do nothing) was safe, and it isn't: leasing a due callback requires an
+active assignment on that same campaign, so a callback left assigned to an agent
+whose campaign assignment just ended would become silently unleaseable by anyone -
+exactly the "orphaned callback" failure point the plan names as something a
+transfer must not cause. Both cases now go through one new function,
+`app/work/service.py::release_campaign_work_for_agent`, scoped to a single (agent,
+campaign) pair - a deliberately different, narrower tool than 4A-1's
+`reclaim_leases_for_user`, which is right for a full account disable but too broad
+for a single-campaign transfer (it would touch every campaign the agent is on).
+
+Destination "staffing capacity" preflight is real but intentionally minimal: it
+only applies when the assignment names a team and that team has an active
+`CampaignTeamAssignment` with a set capacity on the destination campaign;
+otherwise unlimited. Target proration is correctly absent - D-19/D-20 defer the
+whole target subsystem, so there's nothing to prorate in this pilot. Transfer
+checks `ASSIGN_CAMPAIGN_AGENT` on **both** the source and destination campaign, so
+authority to move agents out of one campaign doesn't imply authority to place them
+into an unrelated one.
+
+10 new integration tests, including one specifically proving the pending-callback
+case releases cleanly instead of orphaning (leases a callback-disposition item,
+schedules a future callback, transfers the agent before it's due, confirms the
+work item is back in the shared queue with no owner and no due_at - not stuck in
+callback_wait). Full suite - 86 passed, no regressions. ruff clean repository-wide.
+No new migration needed: campaign_team_assignments and campaign_user_assignments
+have existed since Phase 2A, this was new service/API code against an existing,
+already-correct schema.
+
+Remaining in Phase 4A: protected/scoped audit search and a first real Viewer
+capability (4A-3), and the Manager/Team Leader/Team Captain dashboards (4A-4, the
+first server-rendered UI in this build).

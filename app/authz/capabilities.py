@@ -30,6 +30,10 @@ ARCHIVE_CAMPAIGN = "archive_campaign"
 # Agent work queue (Phase 3)
 WORK_QUEUE = "work_queue"
 
+# Campaign staffing: assign, remove, or transfer an agent between campaigns (plan
+# 6.3 "Assign Agent to campaign" / "Move Agent between campaigns" - Phase 4A)
+ASSIGN_CAMPAIGN_AGENT = "assign_campaign_agent"
+
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MANAGER = "manager"
 ROLE_TEAM_LEADER = "team_leader"
@@ -50,6 +54,7 @@ ROLE_CAPABILITIES: dict[str, set[str]] = {
         PAUSE_CAMPAIGN,
         LAUNCH_CAMPAIGN,
         ARCHIVE_CAMPAIGN,
+        ASSIGN_CAMPAIGN_AGENT,
     },
     ROLE_TEAM_LEADER: {
         APPOINT_TEAM_CAPTAIN,
@@ -58,8 +63,9 @@ ROLE_CAPABILITIES: dict[str, set[str]] = {
         VIEW_CAMPAIGN,
         MANAGE_CAMPAIGN,
         PAUSE_CAMPAIGN,
+        ASSIGN_CAMPAIGN_AGENT,
     },
-    ROLE_TEAM_CAPTAIN: {CREATE_AGENT, VIEW_CAMPAIGN},
+    ROLE_TEAM_CAPTAIN: {CREATE_AGENT, VIEW_CAMPAIGN, ASSIGN_CAMPAIGN_AGENT},
     ROLE_AGENT: {WORK_QUEUE},
     ROLE_VIEWER: set(),
 }

@@ -85,13 +85,45 @@ Deferred out of 4A-1 specifically (not out of Phase 4 - just later increments):
   endpoint exists yet - that belongs with 4A-4/reporting, not the identity/role
   foundation).
 
-## 4A-2: campaign assignment API and transfer (D-18) [not started]
+## 4A-2: campaign assignment API and transfer (D-18) [done]
 
-Replace `tests/integration/conftest.py::assign_agent_to_campaign`'s direct-DB-insert
-(flagged as a gap in PHASE-2-PLAN.md and PHASE-3-PLAN.md) with a real, capability-
-gated endpoint. Add campaign-team assignment (model already exists, unused so far).
-Add transfer preflight per D-18: active leases, callbacks, schedule, and destination
-staffing capacity - target effects are explicitly out per D-19/D-20.
+Added a real, capability-gated API for what only test fixtures could do before
+(flagged as a gap in PHASE-2-PLAN.md and PHASE-3-PLAN.md): assign a team or an
+agent to a campaign, end either assignment, and transfer an agent between campaigns.
+`tests/integration/conftest.py::assign_agent_to_campaign` stays as a fast direct-
+DB test-setup helper (same call as 4A-1 made for `make_user_with_role` staying
+alongside the real workforce API) - it isn't removed, just no longer the only way.
+
+- New capability `ASSIGN_CAMPAIGN_AGENT` (plan 6.3's "Assign Agent to campaign" /
+  "Move Agent between campaigns" rows share the same grantees: Manager, Team
+  Leader, Team Captain), checked with the existing `has_campaign_capability`.
+- `assign_agent_to_campaign` deliberately refuses to move an agent who already has
+  an active primary assignment elsewhere (409, "use transfer instead") rather than
+  silently superseding it the way 4A-1's role re-assignment does - a campaign move
+  has real consequences (in-flight leases, pending callbacks) that only
+  `transfer_agent`'s preflight handles safely; letting a plain assign silently
+  supersede would open a second, unsafe path to the same state.
+- D-18's decision text ("adopt transfer preflight, ops picks defaults") left the
+  lease/callback treatment for us to pick a default for. Chose "return to the
+  source queue" for leases - the same treatment `reclaim_leases_for_user` (4A-1)
+  already uses for a disabled user - and, after tracing `_next_callback_candidate`,
+  found that "retain" (do nothing) is actually unsafe for callbacks specifically:
+  leasing a due callback requires an active assignment on that same campaign, so a
+  callback left assigned to an agent whose assignment just ended would be silently
+  unleaseable by anyone - exactly the "orphaned callback" failure point the plan
+  names. Both lease and callback release now go through one new function,
+  `app/work/service.py::release_campaign_work_for_agent`, scoped to a single
+  (agent, campaign) pair - distinct from 4A-1's `reclaim_leases_for_user`, which is
+  correct for a full account disable but too broad for a single-campaign transfer.
+- Destination "staffing capacity" preflight: real but minimal - only applies when
+  the assignment names a `team_id` and that team has an active `CampaignTeamAssignment`
+  with a set `staffing_capacity` on the destination; otherwise unlimited. The fuller
+  staffing/workforce-allocation model is 4C territory (deferred with targets).
+- Target proration is correctly absent from `transfer_agent` - D-19/D-20 defer the
+  whole target subsystem from this pilot, so there is nothing to prorate yet.
+- Transfer checks `ASSIGN_CAMPAIGN_AGENT` on **both** the source and destination
+  campaign - an actor authorized to move agents out of campaign A cannot use that
+  same authority to place them into a campaign B they have no standing over.
 
 ## 4A-3: protected audit search and Viewer role [not started]
 
@@ -148,6 +180,24 @@ Manager acting on a separate Agent (naming that agent as their own supervisor)
 rather than a Manager acting on themselves, to isolate the domain check from the
 authorization gate. Not a bug - just worth knowing before extending this area.
 
+## 4A-2 verification status
+- [x] No migration needed - campaign_team_assignments and campaign_user_assignments
+      have existed since migration 0002; this was new service/API code against an
+      existing schema, same story as 4A-1.
+- [x] ruff clean across every new and modified file, repository-wide sweep clean.
+- [x] 10 new integration tests in `tests/integration/test_campaign_assignment_flow.py`
+      (assign/end team and agent, the double-primary guard, staffing capacity, a
+      full transfer that both moves the assignment and releases a leased item, the
+      pending-callback-not-orphaned case specifically, capability required on both
+      campaigns, destination-not-active rejection, and two authorization-negative
+      cases), plus the full existing suite - 86 passed total, no regressions.
+- [ ] mypy / real CI - not runnable locally, same as every increment this session;
+      pending the next push.
+- [ ] Live verification through the actual HTTPS/Caddy stack - not done separately
+      for this increment either, same reasoning as 4A-1 (the integration tests
+      already exercise the real stack end to end).
+
 ## Log
 - 2026-08-21: reconciled Phase 4 scope against D-19/D-20/D-21, wrote this plan,
-  built and verified 4A-1 (workforce foundation).
+  built and verified 4A-1 (workforce foundation) and 4A-2 (campaign assignment API
+  and transfer).

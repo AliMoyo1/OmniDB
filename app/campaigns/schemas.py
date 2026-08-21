@@ -72,3 +72,46 @@ class DispositionOut(BaseModel):
     stable_semantic_code: str
     causes_dnc: bool
     active: bool
+
+
+class TeamAssignmentRequest(BaseModel):
+    team_id: uuid.UUID
+    staffing_capacity: int | None = None
+
+
+class TeamAssignmentOut(BaseModel):
+    id: str
+    campaign_id: str
+    team_id: str
+    status: str
+    staffing_capacity: int | None
+    effective_from: datetime
+    effective_to: datetime | None
+
+
+class UserAssignmentRequest(BaseModel):
+    agent_id: uuid.UUID
+    team_id: uuid.UUID | None = None
+    assignment_type: Literal["primary", "secondary", "callback_only"] = "primary"
+    priority: int | None = None
+    allocation_percentage: int | None = None
+    shift_reference: str | None = None
+
+
+class UserAssignmentOut(BaseModel):
+    id: str
+    campaign_id: str
+    user_id: str
+    team_id: str | None
+    campaign_role: str
+    assignment_type: str
+    status: str
+    effective_from: datetime
+    effective_to: datetime | None
+
+
+class AgentTransferRequest(BaseModel):
+    agent_id: uuid.UUID
+    to_campaign_id: uuid.UUID
+    team_id: uuid.UUID | None = None
+    reason_code: str | None = None

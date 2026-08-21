@@ -14,6 +14,7 @@ from app.auth.dependencies import get_current_user, require_csrf
 from app.authz import service as authz
 from app.authz.capabilities import (
     ARCHIVE_CAMPAIGN,
+    ASSIGN_CAMPAIGN_AGENT,
     CREATE_CAMPAIGN,
     LAUNCH_CAMPAIGN,
     MANAGE_CAMPAIGN,
@@ -22,13 +23,22 @@ from app.authz.capabilities import (
 )
 from app.campaigns import service as campaign_service
 from app.campaigns.schemas import (
+    AgentTransferRequest,
     CampaignCreateRequest,
     CampaignOut,
     CampaignUpdateRequest,
     DispositionCreateRequest,
     DispositionOut,
+    TeamAssignmentOut,
+    TeamAssignmentRequest,
+    UserAssignmentOut,
+    UserAssignmentRequest,
 )
-from app.campaigns.service import CampaignStateError, DispositionPolicyError
+from app.campaigns.service import (
+    CampaignAssignmentError,
+    CampaignStateError,
+    DispositionPolicyError,
+)
 from app.db import get_session
 from app.imports import service as import_service
 from app.imports.schemas import (
@@ -47,7 +57,7 @@ from app.imports.service import (
     UploadRejected,
 )
 from app.imports.tasks import parse_import_job_task
-from app.models.campaign import Campaign
+from app.models.campaign import Campaign, CampaignTeamAssignment, CampaignUserAssignment
 from app.models.identity import Organization, Team, User
 from app.models.imports import ImportJob
 
@@ -256,6 +266,181 @@ def create_disposition(
         stable_semantic_code=disposition.stable_semantic_code,
         causes_dnc=disposition.causes_dnc, active=disposition.active,
     )
+
+
+def _team_assignment_out(a: CampaignTeamAssignment) -> TeamAssignmentOut:
+    return TeamAssignmentOut(
+        id=str(a.id), campaign_id=str(a.campaign_id), team_id=str(a.team_id), status=a.status,
+        staffing_capacity=a.staffing_capacity, effective_from=a.effective_from,
+        effective_to=a.effective_to,
+    )
+
+
+def _user_assignment_out(a: CampaignUserAssignment) -> UserAssignmentOut:
+    return UserAssignmentOut(
+        id=str(a.id), campaign_id=str(a.campaign_id), user_id=str(a.user_id),
+        team_id=str(a.team_id) if a.team_id else None, campaign_role=a.campaign_role,
+        assignment_type=a.assignment_type, status=a.status, effective_from=a.effective_from,
+        effective_to=a.effective_to,
+    )
+
+
+@campaigns_router.post(
+    "/{campaign_id}/team-assignments",
+    response_model=TeamAssignmentOut,
+    dependencies=[Depends(require_csrf)],
+)
+def assign_team(
+    campaign_id: uuid.UUID,
+    payload: TeamAssignmentRequest,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> TeamAssignmentOut:
+    campaign = _load_campaign_or_404(db, campaign_id)
+    _require_campaign_capability(db, user, MANAGE_CAMPAIGN, campaign)
+    team = db.get(Team, payload.team_id)
+    if team is None or team.status != "active":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid team")
+    assignment = campaign_service.assign_team_to_campaign(
+        db, campaign, team_id=payload.team_id, staffing_capacity=payload.staffing_capacity,
+        actor_id=user.id,
+    )
+    db.commit()
+    return _team_assignment_out(assignment)
+
+
+@campaigns_router.get("/{campaign_id}/team-assignments", response_model=list[TeamAssignmentOut])
+def list_team_assignments(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> list[TeamAssignmentOut]:
+    campaign = _load_campaign_or_404(db, campaign_id)
+    _require_campaign_capability(db, user, VIEW_CAMPAIGN, campaign)
+    rows = db.scalars(
+        select(CampaignTeamAssignment)
+        .where(CampaignTeamAssignment.campaign_id == campaign_id)
+        .order_by(CampaignTeamAssignment.created_at.desc())
+    )
+    return [_team_assignment_out(a) for a in rows]
+
+
+@campaigns_router.post(
+    "/{campaign_id}/team-assignments/{assignment_id}/end",
+    response_model=TeamAssignmentOut,
+    dependencies=[Depends(require_csrf)],
+)
+def end_team_assignment(
+    campaign_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> TeamAssignmentOut:
+    campaign = _load_campaign_or_404(db, campaign_id)
+    _require_campaign_capability(db, user, MANAGE_CAMPAIGN, campaign)
+    assignment = db.get(CampaignTeamAssignment, assignment_id)
+    if assignment is None or assignment.campaign_id != campaign_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "team assignment not found")
+    campaign_service.end_team_assignment(db, assignment, actor_id=user.id)
+    db.commit()
+    return _team_assignment_out(assignment)
+
+
+@campaigns_router.post(
+    "/{campaign_id}/assignments",
+    response_model=UserAssignmentOut,
+    dependencies=[Depends(require_csrf)],
+)
+def assign_agent(
+    campaign_id: uuid.UUID,
+    payload: UserAssignmentRequest,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> UserAssignmentOut:
+    campaign = _load_campaign_or_404(db, campaign_id)
+    _require_campaign_capability(db, user, ASSIGN_CAMPAIGN_AGENT, campaign)
+    if payload.team_id is not None:
+        team = db.get(Team, payload.team_id)
+        if team is None or team.status != "active":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid team")
+    try:
+        assignment = campaign_service.assign_agent_to_campaign(
+            db, campaign, agent_id=payload.agent_id, team_id=payload.team_id,
+            actor_id=user.id, assignment_type=payload.assignment_type,
+            priority=payload.priority, allocation_percentage=payload.allocation_percentage,
+            shift_reference=payload.shift_reference,
+        )
+    except CampaignAssignmentError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    db.commit()
+    return _user_assignment_out(assignment)
+
+
+@campaigns_router.get("/{campaign_id}/assignments", response_model=list[UserAssignmentOut])
+def list_agent_assignments(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> list[UserAssignmentOut]:
+    campaign = _load_campaign_or_404(db, campaign_id)
+    _require_campaign_capability(db, user, VIEW_CAMPAIGN, campaign)
+    rows = db.scalars(
+        select(CampaignUserAssignment)
+        .where(CampaignUserAssignment.campaign_id == campaign_id)
+        .order_by(CampaignUserAssignment.created_at.desc())
+    )
+    return [_user_assignment_out(a) for a in rows]
+
+
+@campaigns_router.post(
+    "/{campaign_id}/assignments/{assignment_id}/end",
+    response_model=UserAssignmentOut,
+    dependencies=[Depends(require_csrf)],
+)
+def end_agent_assignment(
+    campaign_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> UserAssignmentOut:
+    campaign = _load_campaign_or_404(db, campaign_id)
+    _require_campaign_capability(db, user, ASSIGN_CAMPAIGN_AGENT, campaign)
+    assignment = db.get(CampaignUserAssignment, assignment_id)
+    if assignment is None or assignment.campaign_id != campaign_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "assignment not found")
+    campaign_service.end_user_assignment(db, assignment, actor_id=user.id)
+    db.commit()
+    return _user_assignment_out(assignment)
+
+
+@campaigns_router.post(
+    "/{campaign_id}/transfer",
+    response_model=UserAssignmentOut,
+    dependencies=[Depends(require_csrf)],
+)
+def transfer_agent(
+    campaign_id: uuid.UUID,
+    payload: AgentTransferRequest,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> UserAssignmentOut:
+    from_campaign = _load_campaign_or_404(db, campaign_id)
+    to_campaign = _load_campaign_or_404(db, payload.to_campaign_id)
+    _require_campaign_capability(db, user, ASSIGN_CAMPAIGN_AGENT, from_campaign)
+    _require_campaign_capability(db, user, ASSIGN_CAMPAIGN_AGENT, to_campaign)
+    if payload.team_id is not None:
+        team = db.get(Team, payload.team_id)
+        if team is None or team.status != "active":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid team")
+    try:
+        assignment = campaign_service.transfer_agent(
+            db, agent_id=payload.agent_id, from_campaign=from_campaign, to_campaign=to_campaign,
+            team_id=payload.team_id, actor_id=user.id, reason_code=payload.reason_code,
+        )
+    except CampaignAssignmentError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    db.commit()
+    return _user_assignment_out(assignment)
 
 
 def _read_chunks(fileobj) -> Generator[bytes, None, None]:
