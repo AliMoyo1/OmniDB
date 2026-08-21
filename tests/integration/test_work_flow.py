@@ -155,6 +155,49 @@ def test_complete_work_item_is_idempotent(manager_client, agent_client):
     assert second.json() == first.json()
 
 
+def test_idempotency_key_cannot_be_reused_for_another_work_item(
+    manager_client, agent_client
+):
+    agent_id = _get_agent_id(agent_client)
+    campaign_id, _ = _setup_campaign_with_agent(
+        manager_client, agent_client, agent_id, contact_count=2
+    )
+    disposition_id = _create_disposition(
+        manager_client, csrf_headers(manager_client), campaign_id
+    )
+    idem_key = str(uuid.uuid4())
+
+    first_lease = agent_client.post(
+        "/api/v1/work/next", headers=csrf_headers(agent_client)
+    ).json()
+    first = agent_client.post(
+        f"/api/v1/work/{first_lease['work_item_id']}/complete",
+        json={
+            "lease_id": first_lease["lease_id"],
+            "disposition_id": disposition_id,
+            "idempotency_key": idem_key,
+        },
+        headers=csrf_headers(agent_client),
+    )
+    assert first.status_code == 200, first.text
+
+    second_lease = agent_client.post(
+        "/api/v1/work/next", headers=csrf_headers(agent_client)
+    ).json()
+    conflict = agent_client.post(
+        f"/api/v1/work/{second_lease['work_item_id']}/complete",
+        json={
+            "lease_id": second_lease["lease_id"],
+            "disposition_id": disposition_id,
+            "idempotency_key": idem_key,
+        },
+        headers=csrf_headers(agent_client),
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+
+
 def test_complete_with_wrong_lease_id_is_rejected(manager_client, agent_client):
     agent_id = _get_agent_id(agent_client)
     campaign_id, _ = _setup_campaign_with_agent(manager_client, agent_client, agent_id)

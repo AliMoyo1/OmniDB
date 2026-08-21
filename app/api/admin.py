@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
 from app.auth import sessions as sess
-from app.auth.dependencies import get_current_user, require_csrf
+from app.auth.dependencies import (
+    get_current_user,
+    require_csrf,
+    require_recent_reauthentication,
+)
 from app.auth.service import issue_activation_token
 from app.authz import service as authz
 from app.authz.capabilities import RESET_USER_AUTH, VIEW_AUDIT
@@ -39,7 +43,19 @@ def whoami(
     }
 
 
-@router.post("/users/{user_id}/reset-2fa", dependencies=[Depends(require_csrf)])
+def _assert_not_self(actor_id: uuid.UUID, target_id: uuid.UUID) -> None:
+    try:
+        authz.assert_not_self(actor_id, target_id)
+    except authz.SelfApprovalError:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "self-service credential reset is not allowed here"
+        ) from None
+
+
+@router.post(
+    "/users/{user_id}/reset-2fa",
+    dependencies=[Depends(require_csrf), Depends(require_recent_reauthentication)],
+)
 def reset_2fa(
     user_id: uuid.UUID,
     db: Session = Depends(get_session),
@@ -48,6 +64,7 @@ def reset_2fa(
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    _assert_not_self(actor.id, target.id)
     target.totp_secret_ciphertext = None
     target.totp_enrolled = False
     sess.revoke_all_for_user(db, target.id)
@@ -59,7 +76,10 @@ def reset_2fa(
     return {"status": "ok"}
 
 
-@router.post("/users/{user_id}/reset-password", dependencies=[Depends(require_csrf)])
+@router.post(
+    "/users/{user_id}/reset-password",
+    dependencies=[Depends(require_csrf), Depends(require_recent_reauthentication)],
+)
 def reset_password(
     user_id: uuid.UUID,
     db: Session = Depends(get_session),
@@ -68,9 +88,10 @@ def reset_password(
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    _assert_not_self(actor.id, target.id)
     target.password_hash = None  # cleared; the user must re-activate
     sess.revoke_all_for_user(db, target.id)
-    token = issue_activation_token(target.id)
+    token = issue_activation_token(db, target.id, created_by=actor.id)
     record_audit(
         db, action="admin.reset_password", result="success", actor_user_id=actor.id,
         target_type="user", target_id=target.id,

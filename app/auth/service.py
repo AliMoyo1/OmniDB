@@ -1,28 +1,26 @@
-"""Authentication service: credential checks and activation tokens."""
+"""Authentication service: credential checks and one-time activation tokens."""
 
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
-from itsdangerous import BadSignature, URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from app.auth import totp as totp_mod
-from app.config import get_settings
+from app.models.activation import ActivationToken
+from app.models.base import utcnow
 from app.models.identity import User
 from app.security.passwords import dummy_verify, verify_password
+from app.security.tokens import generate_token, hash_token
 
-_ACTIVATION_SALT = "activation"
 _ACTIVATION_MAX_AGE = 24 * 3600
+_ACTIVATION_PURPOSE = "password_activation"
 
 
 class AuthError(Exception):
     """Login failed. The message is intentionally generic to avoid enumeration."""
-
-
-def _serializer(salt: str) -> URLSafeTimedSerializer:
-    return URLSafeTimedSerializer(get_settings().app_secret_key.get_secret_value(), salt=salt)
 
 
 def normalize_email(email: str) -> str:
@@ -49,16 +47,78 @@ def authenticate(db: DbSession, email: str, password: str, totp_code: str | None
     return user
 
 
-def issue_activation_token(user_id: uuid.UUID) -> str:
-    return _serializer(_ACTIVATION_SALT).dumps(str(user_id))
+def issue_activation_token(
+    db: DbSession,
+    user_id: uuid.UUID,
+    *,
+    created_by: uuid.UUID | None = None,
+) -> str:
+    """Issue one opaque token and invalidate every prior unused token for the user."""
+    locked_user_id = db.scalar(
+        select(User.id).where(User.id == user_id).with_for_update()
+    )
+    if locked_user_id is None:
+        raise ValueError("activation user does not exist")
+    now = utcnow()
+    prior_tokens = db.scalars(
+        select(ActivationToken).where(
+            ActivationToken.user_id == user_id,
+            ActivationToken.purpose == _ACTIVATION_PURPOSE,
+            ActivationToken.used_at.is_(None),
+        )
+    )
+    for prior in prior_tokens:
+        prior.used_at = now
+
+    token = generate_token()
+    db.add(
+        ActivationToken(
+            user_id=user_id,
+            token_hash=hash_token(token),
+            purpose=_ACTIVATION_PURPOSE,
+            expires_at=now + timedelta(seconds=_ACTIVATION_MAX_AGE),
+            created_by=created_by,
+        )
+    )
+    db.flush()
+    return token
 
 
-def verify_activation_token(token: str) -> uuid.UUID | None:
-    try:
-        raw = _serializer(_ACTIVATION_SALT).loads(token, max_age=_ACTIVATION_MAX_AGE)
-    except BadSignature:
+def consume_activation_token(db: DbSession, token: str) -> uuid.UUID | None:
+    """Atomically consume a valid token. A successful token can never be replayed."""
+    now = utcnow()
+    token_hash = hash_token(token)
+    candidate_user_id = db.scalar(
+        select(ActivationToken.user_id).where(
+            ActivationToken.token_hash == token_hash,
+            ActivationToken.purpose == _ACTIVATION_PURPOSE,
+            ActivationToken.used_at.is_(None),
+            ActivationToken.expires_at > now,
+        )
+    )
+    if candidate_user_id is None:
         return None
-    try:
-        return uuid.UUID(raw)
-    except (ValueError, TypeError):
+
+    # Reset issuance also locks the user before inspecting tokens. Keeping the same
+    # order prevents an activation/reset deadlock and makes their ordering explicit.
+    locked_user_id = db.scalar(
+        select(User.id).where(User.id == candidate_user_id).with_for_update()
+    )
+    if locked_user_id is None:
         return None
+    row = db.scalar(
+        select(ActivationToken)
+        .where(
+            ActivationToken.token_hash == token_hash,
+            ActivationToken.user_id == locked_user_id,
+            ActivationToken.purpose == _ACTIVATION_PURPOSE,
+            ActivationToken.used_at.is_(None),
+            ActivationToken.expires_at > now,
+        )
+        .with_for_update()
+    )
+    if row is None:
+        return None
+    row.used_at = now
+    db.flush()
+    return row.user_id

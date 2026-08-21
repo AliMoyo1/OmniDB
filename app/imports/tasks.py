@@ -12,9 +12,14 @@ from app.worker import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="app.imports.tasks.parse_import_job_task", bind=True, max_retries=2)
+@celery_app.task(
+    name="app.imports.tasks.parse_import_job_task",
+    autoretry_for=(Exception,),
+    retry_kwargs={"max_retries": 2},
+    retry_backoff=True,
+    retry_jitter=True,
+)
 def parse_import_job_task(
-    self,
     job_id: str,
     phone_column: str,
     name_column: str | None,
@@ -36,7 +41,13 @@ def parse_import_job_task(
             raise
 
 
-@celery_app.task(name="app.imports.tasks.cleanup_expired_imports_task")
+@celery_app.task(
+    name="app.imports.tasks.cleanup_expired_imports_task",
+    autoretry_for=(Exception,),
+    retry_kwargs={"max_retries": 2},
+    retry_backoff=True,
+    retry_jitter=True,
+)
 def cleanup_expired_imports_task() -> int:
     with SessionLocal() as db:
         try:

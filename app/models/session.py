@@ -22,3 +22,6 @@ class Session(UUIDMixin, TimestampMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
     mfa_state: Mapped[str] = mapped_column(String(20), default="none")
+    reauthenticated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

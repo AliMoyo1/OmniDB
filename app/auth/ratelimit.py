@@ -1,38 +1,66 @@
-"""Best-effort login rate limiting backed by Redis.
-
-Fails open on Redis errors (the caller logs the failure). Full rate limiting by
-account, source, and global signals is refined in a later step.
-"""
+"""Atomic, privacy-preserving login rate limiting backed by Redis."""
 
 from __future__ import annotations
+
+import hashlib
+import logging
+from typing import cast
 
 import redis
 
 from app.config import get_settings
 
-_MAX_ATTEMPTS = 10
 _WINDOW_SECONDS = 900
+_ACCOUNT_LIMIT = 10
+_SOURCE_LIMIT = 100
+_GLOBAL_LIMIT = 1_000
+
+_INCREMENT_SCRIPT = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
+logger = logging.getLogger(__name__)
 
 
 def _client() -> redis.Redis:
     return redis.Redis.from_url(get_settings().redis_url)
 
 
-def check_and_increment(key: str) -> bool:
-    """Return True if the attempt is allowed, False if over the limit."""
+def _key(signal: str, value: str) -> str:
+    digest = hashlib.sha256(value.encode()).hexdigest()
+    return f"login_attempts:{signal}:{digest}"
+
+
+def _increment(client: redis.Redis, key: str, limit: int) -> bool:
+    count = cast(int, client.eval(_INCREMENT_SCRIPT, 1, key, str(_WINDOW_SECONDS)))
+    return count <= limit
+
+
+def check_and_increment(account: str, source: str | None) -> bool:
+    """Count all login signals and return whether every limit still allows the attempt."""
     try:
         client = _client()
-        redis_key = f"login_attempts:{key}"
-        count = client.incr(redis_key)
-        if count == 1:
-            client.expire(redis_key, _WINDOW_SECONDS)
-        return int(count) <= _MAX_ATTEMPTS
+        decisions = (
+            _increment(client, _key("account", account), _ACCOUNT_LIMIT),
+            _increment(client, _key("source", source or "unknown"), _SOURCE_LIMIT),
+            _increment(client, "login_attempts:global", _GLOBAL_LIMIT),
+        )
+        return all(decisions)
     except Exception:
-        return True
+        logger.exception("login rate limiter unavailable")
+        # Redis is a required production dependency. Bypassing controls because it
+        # is unavailable would turn an infrastructure failure into an auth bypass.
+        return get_settings().app_env != "production"
 
 
-def reset(key: str) -> None:
+def reset_account(account: str) -> None:
+    """Clear only the authenticated account signal after a successful login."""
     try:
-        _client().delete(f"login_attempts:{key}")
+        _client().delete(_key("account", account))
     except Exception:
+        logger.exception("could not reset account login rate limit")
         return

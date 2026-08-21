@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.models.activation import ActivationToken
 from app.models.audit import AuditEvent
 from app.models.authz import Delegation, ReportingAssignment, RoleAssignment
 from app.models.base import Base
@@ -19,6 +20,7 @@ from app.models.work import Batch, CallAttempt, WorkItem
 
 __all__ = [
     "Base",
+    "ActivationToken",
     "Organization",
     "Team",
     "User",

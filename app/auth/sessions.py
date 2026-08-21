@@ -34,6 +34,7 @@ def create_session(
         absolute_expires_at=now + timedelta(hours=settings.session_absolute_hours),
         source_summary=source_summary,
         mfa_state=mfa_state,
+        reauthenticated_at=now,
     )
     db.add(row)
     db.flush()

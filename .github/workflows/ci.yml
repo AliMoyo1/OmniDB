@@ -19,9 +19,8 @@ jobs:
           pip install -e ".[dev]"
       - name: Ruff
         run: ruff check .
-      - name: Mypy (advisory until green)
+      - name: Mypy
         run: mypy app
-        continue-on-error: true
       - name: Unit and authorization tests
         run: pytest -m "not integration"
 
@@ -80,10 +79,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Dependency audit (advisory)
+      - name: Dependency audit
         run: |
           pip install pip-audit
-          pip-audit || true
+          pip-audit --strict --progress-spinner off .
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
         env:

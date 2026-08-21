@@ -10,7 +10,9 @@ import json
 import logging
 import re
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 
 _PHONE_RE = re.compile(r"\+?\d[\d\s().-]{7,}\d")
 
@@ -19,14 +21,25 @@ def _redact(text: str) -> str:
     return _PHONE_RE.sub("[redacted-number]", text)
 
 
+def _redact_value(value: Any) -> Any:
+    """Redact strings without changing logging's argument container shape."""
+    if isinstance(value, str):
+        return _redact(value)
+    if isinstance(value, Mapping):
+        return {key: _redact_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_redact_value(item) for item in value)
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value
+
+
 class RedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
             record.msg = _redact(record.msg)
         if record.args:
-            record.args = tuple(
-                _redact(arg) if isinstance(arg, str) else arg for arg in record.args
-            )
+            record.args = _redact_value(record.args)
         return True
 
 
@@ -42,7 +55,7 @@ class JsonFormatter(logging.Formatter):
         if request_id:
             payload["request_id"] = request_id
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            payload["exc"] = _redact(self.formatException(record.exc_info))
         return json.dumps(payload)
 
 

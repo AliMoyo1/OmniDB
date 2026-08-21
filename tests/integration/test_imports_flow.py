@@ -297,6 +297,22 @@ def test_disposition_approved_dnc_code_is_allowed(manager_client):
     assert resp.json()["causes_dnc"] is True
 
 
+def test_protected_dnc_code_cannot_disable_suppression(manager_client):
+    client = manager_client
+    headers = csrf_headers(client)
+    campaign_id = _create_campaign(client, headers)
+    resp = client.post(
+        f"/api/v1/campaigns/{campaign_id}/dispositions",
+        json={
+            "label": "Misconfigured DNC",
+            "stable_semantic_code": "explicit_dnc",
+            "causes_dnc": False,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 400
+
+
 def test_agent_cannot_create_campaign(agent_client):
     client = agent_client
     resp = client.post(

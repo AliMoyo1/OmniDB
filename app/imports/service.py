@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
 from app.config import get_settings
+from app.db_locks import lock_phone_fingerprint
 from app.imports import classify, parser, storage, validators
 from app.imports.parser import ParseLimitExceeded
 from app.models.base import utcnow
@@ -125,6 +126,19 @@ def parse_job(
     db.flush()
 
     campaign = db.get(Campaign, job.campaign_id)
+    if campaign is None:
+        job.state = "failed"
+        job.error_summary = "campaign for import job no longer exists"
+        record_audit(
+            db,
+            action="import.parse",
+            result="failure",
+            actor_user_id=job.uploader_id,
+            target_type="import_job",
+            target_id=job.id,
+            reason_code="campaign_missing",
+        )
+        return
     ext = validators.check_extension(job.source_filename_display)
     path = storage.path_for(job.generated_storage_key)
 
@@ -301,7 +315,7 @@ def commit_job(
             ImportRow.import_job_id == job.id,
             ImportRow.validation_result == "valid",
             ImportRow.duplicate_category.is_(None),
-        )
+        ).order_by(ImportRow.phone_fingerprint.asc(), ImportRow.row_number.asc())
     )
 
     now = utcnow()
@@ -309,6 +323,13 @@ def commit_job(
     suppressed_count = 0
 
     for row in rows:
+        if row.phone_fingerprint is None or row.raw_phone_protected is None:
+            continue
+
+        # This lock also guards the absence of a suppression row. DNC creation and
+        # leasing use the same key, making the check and work-item creation atomic
+        # with respect to those transactions.
+        lock_phone_fingerprint(db, row.phone_fingerprint)
         contact = db.scalar(
             select(Contact).where(Contact.phone_fingerprint == row.phone_fingerprint)
         )
@@ -358,23 +379,31 @@ def commit_job(
         target_type="import_job", target_id=job.id, event_metadata=result,
     )
 
-    storage.delete(job.generated_storage_key)
     return result
 
 
+def cleanup_committed_source(job: ImportJob) -> None:
+    """Delete staged input only after the caller has committed the database result."""
+    storage.delete(job.generated_storage_key)
+
+
 def cleanup_expired_jobs(db: Session) -> int:
-    """Delete quarantine files and row staging for expired, uncommitted jobs."""
+    """Delete expired staging and retry source cleanup for committed jobs."""
     now = utcnow()
     expired = db.scalars(
         select(ImportJob).where(
             ImportJob.expires_at < now,
-            ImportJob.state.notin_(("committed",)),
         )
     )
     count = 0
     for job in expired:
         storage.delete(job.generated_storage_key)
-        db.query(ImportRow).filter(ImportRow.import_job_id == job.id).delete()
-        job.state = "expired"
+        if job.state == "committed":
+            # A committed job is retained for audit and idempotent replay, but a
+            # successful source deletion must not stay in the hourly retry set.
+            job.expires_at = None
+        else:
+            db.query(ImportRow).filter(ImportRow.import_job_id == job.id).delete()
+            job.state = "expired"
         count += 1
     return count

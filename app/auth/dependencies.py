@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.auth import csrf
 from app.auth import sessions as sess
+from app.config import get_settings
 from app.db import get_session
+from app.models.base import utcnow
 from app.models.identity import User
 from app.models.session import Session as SessionModel
 
@@ -19,6 +23,9 @@ def get_current_session(
     row = sess.load_session(db, token)
     if row is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="not authenticated")
+    # load_session slides the idle deadline. Persist it here because read-only
+    # endpoints do not otherwise commit their database session.
+    db.commit()
     return row
 
 
@@ -42,3 +49,14 @@ def require_csrf(
     token = request.headers.get(csrf.CSRF_HEADER)
     if not csrf.validate(token, str(session.id)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid csrf token")
+
+
+def require_recent_reauthentication(
+    session: SessionModel = Depends(get_current_session),
+) -> None:
+    cutoff = utcnow() - timedelta(minutes=get_settings().step_up_minutes)
+    if session.reauthenticated_at is None or session.reauthenticated_at < cutoff:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "reauthentication_required"},
+        )

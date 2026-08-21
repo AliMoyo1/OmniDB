@@ -151,6 +151,12 @@ def create_disposition(
         raise DispositionPolicyError(
             "only an approved protected semantic code may cause global DNC suppression"
         )
+    if stable_semantic_code in PROTECTED_DNC_SEMANTIC_CODES and not causes_dnc:
+        raise DispositionPolicyError(
+            "the protected explicit-DNC semantic code must cause global DNC suppression"
+        )
+    if next_action not in (None, "complete", "review", "requeue"):
+        raise DispositionPolicyError("next action must be complete, review, or requeue")
     disposition = CampaignDispositionDefinition(
         campaign_id=campaign.id,
         label=label,

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Generator
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -47,13 +48,14 @@ from app.imports.service import (
 )
 from app.imports.tasks import parse_import_job_task
 from app.models.campaign import Campaign
-from app.models.identity import User
+from app.models.identity import Organization, Team, User
 from app.models.imports import ImportJob
 
 campaigns_router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 imports_router = APIRouter(prefix="/api/v1/imports", tags=["imports"])
 
 _UPLOAD_CHUNK_SIZE = 65536
+_logger = logging.getLogger(__name__)
 
 
 def _load_campaign_or_404(db: Session, campaign_id: uuid.UUID) -> Campaign:
@@ -66,9 +68,7 @@ def _load_campaign_or_404(db: Session, campaign_id: uuid.UUID) -> Campaign:
 def _require_campaign_capability(
     db: Session, user: User, capability: str, campaign: Campaign
 ) -> None:
-    if not authz.has_capability(
-        db, user.id, capability, scope_type="campaign", scope_id=campaign.id
-    ):
+    if not authz.has_campaign_capability(db, user.id, capability, campaign.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not authorized")
 
 
@@ -99,9 +99,23 @@ def create_campaign(
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> CampaignOut:
-    if not authz.has_capability(db, user.id, CREATE_CAMPAIGN):
+    owning_scope_id = payload.owning_scope_id
+    if not authz.has_scope_capability(
+        db,
+        user.id,
+        CREATE_CAMPAIGN,
+        scope_type=payload.owning_scope_type,
+        scope_id=owning_scope_id,
+    ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not authorized")
-    owning_scope_id = uuid.UUID(payload.owning_scope_id) if payload.owning_scope_id else None
+    if payload.owning_scope_type == "team":
+        team = db.get(Team, owning_scope_id)
+        if team is None or team.status != "active":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid owning team")
+    elif owning_scope_id is not None:
+        organization = db.get(Organization, owning_scope_id)
+        if organization is None or organization.status != "active":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid owning organization")
     campaign = campaign_service.create_campaign(
         db, created_by=user.id, name=payload.name, description=payload.description,
         owning_scope_type=payload.owning_scope_type, owning_scope_id=owning_scope_id,
@@ -116,14 +130,17 @@ def create_campaign(
 
 @campaigns_router.get("", response_model=list[CampaignOut])
 def list_campaigns(
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> list[CampaignOut]:
-    if not authz.has_capability(db, user.id, VIEW_CAMPAIGN):
+    if not authz.has_assigned_capability(db, user.id, VIEW_CAMPAIGN):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not authorized")
     rows = db.scalars(
-        select(Campaign).order_by(Campaign.created_at.desc()).limit(min(limit, 200))
+        select(Campaign)
+        .where(authz.campaign_scope_filter(db, user.id, VIEW_CAMPAIGN))
+        .order_by(Campaign.created_at.desc())
+        .limit(limit)
     )
     return [_campaign_out(c) for c in rows]
 
@@ -371,4 +388,10 @@ def commit_import(
             status.HTTP_409_CONFLICT, {"code": "approval_required", "message": str(exc)}
         ) from None
     db.commit()
+    try:
+        import_service.cleanup_committed_source(job)
+    except OSError:
+        # The business transaction is already durable. Retain a visible operational
+        # error and let expiry cleanup retry instead of returning a false rollback.
+        _logger.exception("Committed import source cleanup failed for job %s", job.id)
     return ImportCommitOut(**result)

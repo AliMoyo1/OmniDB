@@ -8,9 +8,21 @@ and fall back to environment variables for local development.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal, Self
 
-from pydantic import SecretStr, computed_field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import SecretStr, model_validator
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from sqlalchemy.engine import URL
+
+_PLACEHOLDER_MARKERS = (
+    "change-me",
+    "dev-only",
+    "example",
+    "not-for-prod",
+    "placeholder",
+    "replace-with",
+    "test-secret",
+)
 
 
 class Settings(BaseSettings):
@@ -21,7 +33,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_env: str = "development"
+    app_env: Literal["development", "test", "production"] = "development"
 
     # LAN host Caddy serves on (server IP in production)
     server_host: str = "localhost"
@@ -39,6 +51,7 @@ class Settings(BaseSettings):
     # Sessions
     session_idle_minutes: int = 30
     session_absolute_hours: int = 8
+    step_up_minutes: int = 10
 
     # App secret for session and CSRF signing
     app_secret_key: SecretStr = SecretStr("")
@@ -77,14 +90,62 @@ class Settings(BaseSettings):
     # Set false only for local HTTP development; production is always HTTPS.
     cookie_secure: bool = True
 
-    @computed_field  # type: ignore[prop-decorator]
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Docker secret files outrank process and dotenv values. Locally there is no
+        # secrets directory, so ordinary environment configuration still works.
+        return init_settings, file_secret_settings, env_settings, dotenv_settings
+
+    @model_validator(mode="after")
+    def validate_production_safety(self) -> Self:
+        if self.app_env != "production":
+            return self
+
+        required = {
+            "DB_PASSWORD": (self.db_password.get_secret_value(), 24),
+            "APP_SECRET_KEY": (self.app_secret_key.get_secret_value(), 32),
+            "FIELD_ENCRYPTION_KEY": (self.field_encryption_key.get_secret_value(), 32),
+            "PHONE_FINGERPRINT_HMAC_KEY": (
+                self.phone_fingerprint_hmac_key.get_secret_value(),
+                32,
+            ),
+            "HEALTH_TOKEN": (self.health_token.get_secret_value(), 32),
+        }
+        for name, (value, minimum_length) in required.items():
+            normalized = value.strip().lower()
+            if len(value) < minimum_length:
+                raise ValueError(f"{name} must contain at least {minimum_length} characters")
+            if any(marker in normalized for marker in _PLACEHOLDER_MARKERS):
+                raise ValueError(f"{name} contains a known placeholder value")
+            if len(set(value)) < 12:
+                raise ValueError(f"{name} does not contain enough character diversity")
+
+        secret_values = [value for value, _ in required.values()]
+        if len(set(secret_values)) != len(secret_values):
+            raise ValueError("production secrets must use distinct values")
+        if not self.cookie_secure:
+            raise ValueError("COOKIE_SECURE must be true in production")
+        if self.celery_task_always_eager:
+            raise ValueError("CELERY_TASK_ALWAYS_EAGER must be false in production")
+        return self
+
     @property
     def database_url(self) -> str:
-        password = self.db_password.get_secret_value()
-        return (
-            f"postgresql+psycopg://{self.db_user}:{password}"
-            f"@{self.db_host}:{self.db_port}/{self.db_name}"
-        )
+        return URL.create(
+            "postgresql+psycopg",
+            username=self.db_user,
+            password=self.db_password.get_secret_value(),
+            host=self.db_host,
+            port=self.db_port,
+            database=self.db_name,
+        ).render_as_string(hide_password=False)
 
 
 @lru_cache

@@ -74,6 +74,7 @@ class CallAttempt(UUIDMixin, Base):
     explicit_dnc_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     callback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(100))
+    resulting_work_item_state: Mapped[str] = mapped_column(String(20))
     correction_of_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("call_attempts.id"), nullable=True
     )

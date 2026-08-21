@@ -31,6 +31,7 @@ from app.work.schemas import (
 )
 from app.work.service import (
     DispositionMismatch,
+    IdempotencyConflict,
     LeaseConflict,
     MissingRequiredField,
 )
@@ -84,8 +85,8 @@ def complete_work_item(
             db,
             work_item_id=work_item_id,
             agent_id=user.id,
-            lease_id=uuid.UUID(payload.lease_id),
-            disposition_id=uuid.UUID(payload.disposition_id),
+            lease_id=payload.lease_id,
+            disposition_id=payload.disposition_id,
             notes=payload.notes,
             callback_at=payload.callback_at,
             self_reported_duration_seconds=payload.self_reported_duration_seconds,
@@ -94,6 +95,11 @@ def complete_work_item(
     except LeaseConflict as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT, {"code": "lease_conflict", "message": str(exc)}
+        ) from None
+    except IdempotencyConflict as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "idempotency_conflict", "message": str(exc)},
         ) from None
     except (DispositionMismatch, MissingRequiredField) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
@@ -114,7 +120,7 @@ def skip_work_item(
     try:
         work_item = work_service.skip_work_item(
             db, work_item_id=work_item_id, agent_id=user.id,
-            lease_id=uuid.UUID(payload.lease_id), reason=payload.reason,
+            lease_id=payload.lease_id, reason=payload.reason,
         )
     except LeaseConflict as exc:
         raise HTTPException(
@@ -137,7 +143,7 @@ def renew_lease(
 ) -> RenewOut:
     try:
         work_item = work_service.renew_lease(
-            db, work_item_id, user.id, uuid.UUID(payload.lease_id)
+            db, work_item_id, user.id, payload.lease_id
         )
     except LeaseConflict as exc:
         raise HTTPException(

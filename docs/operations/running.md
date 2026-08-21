@@ -8,6 +8,8 @@ Run each command on its own.
     cp .env.example .env
 
 Edit `.env`: set `SERVER_HOST` to the server's LAN IP, and review the non-secret values.
+Do not add secret values to this file. For local development, start from
+`.env.development.example` instead.
 
 ## 2. Create secret files
 
@@ -18,6 +20,8 @@ Edit `.env`: set `SERVER_HOST` to the server's LAN IP, and review the non-secret
     openssl rand -base64 48 > deploy/secrets/field_encryption_key
 
     openssl rand -base64 48 > deploy/secrets/phone_fingerprint_hmac_key
+
+    openssl rand -base64 48 > deploy/secrets/health_token
 
 Never commit `.env` or the real secret files. Keep the field-encryption and
 phone-fingerprint keys in separate custody.

@@ -12,6 +12,7 @@ strong random value. For example:
     openssl rand -base64 48 > deploy/secrets/app_secret_key
     openssl rand -base64 48 > deploy/secrets/field_encryption_key
     openssl rand -base64 48 > deploy/secrets/phone_fingerprint_hmac_key
+    openssl rand -base64 48 > deploy/secrets/health_token
     openssl rand -base64 32 > deploy/secrets/db_password
 
 Never commit the real files. Keep the field-encryption and phone-fingerprint keys in

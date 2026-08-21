@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel, Field
 
 
 class LeaseOut(BaseModel):
@@ -20,12 +21,12 @@ class LeaseOut(BaseModel):
 
 
 class CompleteRequest(BaseModel):
-    lease_id: str
-    disposition_id: str
-    notes: str | None = None
-    callback_at: datetime | None = None
-    self_reported_duration_seconds: int | None = None
-    idempotency_key: str
+    lease_id: uuid.UUID
+    disposition_id: uuid.UUID
+    notes: str | None = Field(default=None, max_length=3000)
+    callback_at: AwareDatetime | None = None
+    self_reported_duration_seconds: int | None = Field(default=None, ge=0, le=86_400)
+    idempotency_key: str = Field(min_length=1, max_length=100)
 
 
 class CompleteOut(BaseModel):
@@ -36,12 +37,12 @@ class CompleteOut(BaseModel):
 
 
 class SkipRequest(BaseModel):
-    lease_id: str
-    reason: str
+    lease_id: uuid.UUID
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class RenewRequest(BaseModel):
-    lease_id: str
+    lease_id: uuid.UUID
 
 
 class RenewOut(BaseModel):

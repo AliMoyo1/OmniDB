@@ -12,7 +12,12 @@ from app.audit.service import record_audit
 from app.auth import csrf, ratelimit, service
 from app.auth import sessions as sess
 from app.auth import totp as totp_mod
-from app.auth.dependencies import get_current_session, get_current_user, require_csrf
+from app.auth.dependencies import (
+    get_current_session,
+    get_current_user,
+    require_csrf,
+    require_recent_reauthentication,
+)
 from app.auth.schemas import (
     ActivateRequest,
     LoginRequest,
@@ -85,7 +90,7 @@ def login(
     ip = _client_ip(request)
     rate_key = service.normalize_email(payload.email)
 
-    if not ratelimit.check_and_increment(rate_key):
+    if not ratelimit.check_and_increment(rate_key, ip):
         record_audit(
             db, action="auth.login", result="denied", reason_code="rate_limited",
             source_ip=ip, user_agent_summary=source,
@@ -108,7 +113,7 @@ def login(
             ) from None
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials") from None
 
-    ratelimit.reset(rate_key)
+    ratelimit.reset_account(rate_key)
     row, token = sess.create_session(db, user.id, source_summary=source, mfa_state="satisfied")
     user.last_login_at = utcnow()
     record_audit(
@@ -155,6 +160,7 @@ def reauthenticate(
         db.commit()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials") from None
     session.mfa_state = "satisfied"
+    session.reauthenticated_at = utcnow()
     record_audit(db, action="auth.reauthenticate", result="success", actor_user_id=user.id)
     db.commit()
     return {"status": "ok"}
@@ -199,7 +205,11 @@ def revoke_session(
     return {"status": "ok"}
 
 
-@router.post("/totp/enroll", response_model=TotpEnrollOut, dependencies=[Depends(require_csrf)])
+@router.post(
+    "/totp/enroll",
+    response_model=TotpEnrollOut,
+    dependencies=[Depends(require_csrf), Depends(require_recent_reauthentication)],
+)
 def totp_enroll(
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
@@ -214,7 +224,10 @@ def totp_enroll(
     )
 
 
-@router.post("/totp/verify", dependencies=[Depends(require_csrf)])
+@router.post(
+    "/totp/verify",
+    dependencies=[Depends(require_csrf), Depends(require_recent_reauthentication)],
+)
 def totp_verify(
     payload: TotpVerifyRequest,
     db: Session = Depends(get_session),
@@ -238,17 +251,17 @@ def activate(
     payload: ActivateRequest,
     db: Session = Depends(get_session),
 ) -> dict[str, str]:
-    user_id = service.verify_activation_token(payload.token)
-    if user_id is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
-    user = db.get(User, user_id)
-    if user is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
     if len(payload.new_password) < _MIN_PASSWORD_LENGTH:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"password must be at least {_MIN_PASSWORD_LENGTH} characters",
         )
+    user_id = service.consume_activation_token(db, payload.token)
+    if user_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
     user.password_hash = hash_password(payload.new_password)
     sess.revoke_all_for_user(db, user.id)
     record_audit(db, action="auth.activate", result="success", actor_user_id=user.id)

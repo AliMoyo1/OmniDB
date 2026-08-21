@@ -2,22 +2,30 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class CampaignCreateRequest(BaseModel):
     name: str
     description: str | None = None
-    owning_scope_type: str = "organization"
-    owning_scope_id: str | None = None
+    owning_scope_type: Literal["organization", "team"] = "organization"
+    owning_scope_id: uuid.UUID | None = None
     default_region: str = "ZW"
     timezone: str = "Africa/Harare"
     purpose: str | None = None
     data_source: str | None = None
     data_obtained_at: date | None = None
     lawful_basis_or_consent_reference: str | None = None
+
+    @model_validator(mode="after")
+    def require_team_scope_id(self) -> CampaignCreateRequest:
+        if self.owning_scope_type == "team" and self.owning_scope_id is None:
+            raise ValueError("owning_scope_id is required for a team-owned campaign")
+        return self
 
 
 class CampaignUpdateRequest(BaseModel):
@@ -50,7 +58,7 @@ class CampaignOut(BaseModel):
 class DispositionCreateRequest(BaseModel):
     label: str
     stable_semantic_code: str
-    next_action: str | None = None
+    next_action: Literal["complete", "review", "requeue"] | None = None
     requires_notes: bool = False
     requires_callback_time: bool = False
     counts_as_connected: bool = False

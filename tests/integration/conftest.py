@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
@@ -38,7 +39,11 @@ def make_user(email: str, password: str = TEST_PASSWORD) -> uuid.UUID:
 
 
 def make_user_with_role(
-    email: str, role_code: str, password: str = TEST_PASSWORD, scope_type: str = "organization"
+    email: str,
+    role_code: str,
+    password: str = TEST_PASSWORD,
+    scope_type: str = "organization",
+    scope_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     with SessionLocal() as db:
         user = User(
@@ -54,6 +59,7 @@ def make_user_with_role(
                 user_id=user.id,
                 role_code=role_code,
                 scope_type=scope_type,
+                scope_id=scope_id,
                 effective_from=datetime.now(UTC),
             )
         )
@@ -73,23 +79,27 @@ def csrf_headers(client: TestClient) -> dict[str, str]:
 
 
 @pytest.fixture
-def manager_client(client: TestClient) -> TestClient:
+def manager_client() -> Iterator[TestClient]:
     from app.authz.capabilities import ROLE_MANAGER
+    from app.main import app
 
     email = f"manager-{uuid.uuid4().hex[:8]}@example.com"
     make_user_with_role(email, ROLE_MANAGER)
-    login(client, email)
-    return client
+    with TestClient(app) as role_client:
+        login(role_client, email)
+        yield role_client
 
 
 @pytest.fixture
-def agent_client(client: TestClient) -> TestClient:
+def agent_client() -> Iterator[TestClient]:
     from app.authz.capabilities import ROLE_AGENT
+    from app.main import app
 
     email = f"agent-{uuid.uuid4().hex[:8]}@example.com"
     make_user_with_role(email, ROLE_AGENT)
-    login(client, email)
-    return client
+    with TestClient(app) as role_client:
+        login(role_client, email)
+        yield role_client
 
 
 def zw_numbers(count: int) -> list[str]:

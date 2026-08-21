@@ -11,12 +11,13 @@ from app.authz.capabilities import (
     ROLE_AGENT,
     ROLE_MANAGER,
     ROLE_SUPER_ADMIN,
+    WORK_QUEUE,
 )
 
 
 def test_capabilities_are_default_deny():
     assert authz.capabilities_for(set()) == set()
-    assert authz.capabilities_for({ROLE_AGENT}) == set()
+    assert authz.capabilities_for({ROLE_AGENT}) == {WORK_QUEUE}
 
 
 def test_super_admin_can_reset_auth():
