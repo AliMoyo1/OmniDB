@@ -72,9 +72,15 @@ the rest of this build (it's a static parser, unaffected by the local Python
 - [x] docker compose config
 - [x] Manual trace of the leasing/completion service logic, including race-window
       reasoning for the DNC-sweep-vs-concurrent-lease scenario
-- [ ] CI green on GitHub, docker compose up + alembic upgrade on the host, and actual
-      pytest execution (blocked locally by the Python 3.14/SQLAlchemy 2.0 mismatch and
-      a restricted local package index - neither reflects the real target)
+- [x] docker compose up + alembic upgrade - done 2026-08-21 via Docker Desktop. Beat's
+      reclaim_expired_leases_task confirmed executing live on its 2-minute schedule
+      (Beat dispatched it, worker ran it, succeeded, returned 0 - correct for an empty
+      database). Leasing/completion endpoints not yet exercised with real work items
+      (would need a live campaign import first); auth/session/CSRF/admin flows were.
+- [ ] CI green on GitHub Actions specifically, and actual `pytest` execution (still
+      blocked locally by the Python 3.14/SQLAlchemy 2.0 mismatch and a restricted local
+      package index - neither reflects the real target; live curl-based verification
+      through the running stack substituted for this - see BUILD-LOG.md)
 
 ## Known simplifications (documented, not bugs)
 - Campaign-user-assignment issuance has no API yet (tests insert directly); that's

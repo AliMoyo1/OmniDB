@@ -198,3 +198,106 @@ Hardening added:
 Migrations 0005 (activation_tokens, sessions.reauthenticated_at), 0006 (suppression
 NULLS NOT DISTINCT + data cleanup), 0007 (call_attempts.resulting_work_item_state) -
 all additive/safe, reviewed for correct FK/constraint ordering.
+
+## 2026-08-21: First live bring-up of the full stack (Docker Desktop, local host)
+
+Brought the entire stack up for real for the first time: docker compose build, all
+migrations against genuine Postgres 16, all six services, and a full live HTTP/HTTPS
+verification pass through Caddy. This is the point where every "verified by reading,
+not execution" caveat from Phases 1-3 finally got resolved one way or the other.
+Found and fixed four real, previously-unverifiable bugs; everything else checked out.
+
+### Environment problem (not a code bug)
+
+The first build attempt hung indefinitely - a single isolated `docker pull` ran 47
+minutes with zero output before being killed. Root cause: Docker Desktop's WSL2
+network bridge was in a bad state (the daemon couldn't reach the internet even though
+Windows itself could - confirmed via prior successful pip/git operations). An earlier
+`TaskStop` on the stuck build had also only killed the harness-tracked wrapper, not
+the detached docker-buildx process tree, leaving three concurrent build attempts
+silently competing for the same builder. Fixed by killing all stray docker.exe/
+docker-compose.exe/docker-buildx.exe processes and restarting Docker Desktop, which
+reset the network bridge - confirmed via a 10.7s `hello-world` pull immediately after.
+
+### Bug 1: migrations/env.py + configparser interpolation
+
+`config.set_main_option("sqlalchemy.url", ...)` stores the URL through Python's
+configparser, which treats a bare `%` as its own interpolation syntax. The
+security-hardening commit's database_url fix (percent-encoding the password via
+URL.create()) is correct, but a percent-encoded password routinely contains `%2F`/
+`%3D`-style sequences, which configparser then rejected as "invalid interpolation
+syntax" before a single migration could run. Fixed by escaping `%` to `%%` before
+storing it; configparser un-escapes it back to a single `%` on every read, so both
+online and offline migration modes see the correct URL. Commit 7eb6c7c.
+
+### Bug 2: migration revision ids longer than Alembic's own VARCHAR(32)
+
+Migrations 0001-0004 applied cleanly, but 0005 failed with StringDataRightTruncation
+- after successfully running its own DDL, while trying to record itself as the
+current revision in Alembic's own alembic_version.version_num column (default
+VARCHAR(32)). The security-hardening commit's migrations 0005-0007 used descriptive
+revision ids 34-36 characters long; 0001-0004 happened to fit under 32 by chance.
+Shortened all three ids and their down_revision chain (0005_activation_step_up,
+0006_suppress_nulls_distinct, 0007_completion_idempotent) - safe to rename since no
+real deployment had ever run them. Commit 7eb6c7c. Verified with a full round trip:
+upgrade to head, downgrade to base, upgrade back to head, all clean, 24 tables
+present throughout.
+
+### Bug 3: Celery Beat could not write its schedule file
+
+beat crashed on startup: `[Errno 13] Permission denied: 'celerybeat-schedule'`. The
+Dockerfile's COPY instructions run as root, so /app is root-owned when USER app takes
+effect; web and worker only ever read from /app so this was invisible, but beat
+writes its persistent schedule state there. Fixed with an explicit
+`chown -R app:app /app` alongside the existing quarantine-directory chown. Also set
+broker_connection_retry_on_startup=True to silence a Celery deprecation warning seen
+in the live worker logs. Commit 66190a4.
+
+### Full live verification (all passed after the fixes above)
+
+- All six containers (postgres, redis, web, worker, beat, caddy) healthy/running
+  simultaneously; no host ports published for postgres/redis, confirmed via
+  `docker compose ps`.
+- HTTPS via Caddy with its internal CA (ADR-003): valid cert issued for "localhost",
+  HTTP-to-HTTPS 301 redirect works, full security header set present (CSP, HSTS,
+  X-Frame-Options, X-Content-Type-Options, Permissions-Policy, Referrer-Policy).
+- Cache-Control: no-store confirmed present on /api/ responses and absent on
+  /healthz - the Phase 3A fix, load-bearing since Phase 3's lease endpoint is the
+  first place a raw phone number leaves the server.
+- /readyz correctly returns 404 without the health_token header (hiding its
+  existence) and 200 with real database+redis status with it.
+- Full login flow through real HTTPS: Argon2id password verification, session and
+  CSRF cookies issued, session-authenticated GET /auth/me works.
+- CSRF genuinely enforced: a state-changing POST without the CSRF header is rejected
+  with 403 before any real logout logic runs.
+- Role-to-capability resolution verified live: a super_admin session's /whoami
+  returns exactly the capability set defined in app/authz/capabilities.py.
+- Wrong password rejected with a generic 401 (no user enumeration).
+- Self-approval guard verified live: a Super Admin cannot reset their own password
+  via the admin endpoint (403), but can reset a different user's (200, with a real
+  activation token) - the security-hardening commit's fix, confirmed working exactly
+  as designed.
+- Activation-token single-use enforcement verified live: first activation with a
+  token succeeds, replaying the same token is rejected (400), and the new password
+  genuinely works for a subsequent login - the other major security-hardening fix
+  (replacing the old stateless signed tokens, which had no replay protection),
+  confirmed working exactly as designed.
+- Celery end-to-end: Beat scheduled reclaim-expired-leases on its 2-minute cadence,
+  the worker received and executed it successfully (0.065s, returned 0 - correct,
+  no leases existed yet in this fresh database).
+
+### What's still not covered by this pass
+
+No live test yet of the campaign/import/lease/complete workflow (would need a real
+CSV upload through the API) or of backup/restore. CI (GitHub Actions) has still not
+been observed running green - only local Docker verification. Local test users
+created for this verification (admin@ciphercontact.local as super_admin,
+target@ciphercontact.local as a plain user with a reset password) were left in the
+running local database rather than deleted, since the stack is still up locally for
+further exploration - not real/production data, this is the first-ever bring-up on a
+throwaway local Postgres volume.
+
+Every code fix in this entry is pushed to main. The stack itself (containers,
+volumes, local .env and deploy/secrets/* with real generated values) is NOT
+committed - .env and deploy/secrets/* stay gitignored as designed, and only exist on
+this machine's Docker Desktop right now.

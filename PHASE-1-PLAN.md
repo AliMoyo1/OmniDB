@@ -38,8 +38,8 @@ secret scan, docker build. Tests under tests/. scripts/release-manifest.sh.
 - [x] docker compose config
 - [x] shell syntax (bash -n) on all scripts
 - [x] CI YAML parses
-- [ ] CI green on GitHub (the first run may surface lint/type/test fixes; CI could not be executed locally)
-- [ ] docker compose up + alembic upgrade head on the Linux host
+- [ ] CI green on GitHub Actions specifically (still not observed; local verification below is a strong proxy but not the same thing)
+- [x] docker compose up + alembic upgrade head - done 2026-08-21 via Docker Desktop (Linux containers; the physical Linux production host itself is a separate later step). Found and fixed 3 real bugs only visible under live execution: configparser %-escaping of the DB URL, migration revision ids exceeding Alembic's VARCHAR(32) version column, and Celery Beat unable to write its schedule file because /app wasn't chowned to the app user. All fixed and pushed; see BUILD-LOG.md.
 
 ## Notes and follow-ups
 - Generate the hash-pinned lockfile in the build env (scripts/lock.sh) and switch the

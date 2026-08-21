@@ -61,10 +61,12 @@ campaign.
 - [x] py_compile across app/migrations/tests after every increment
 - [x] docker compose config (including worker/beat + shared quarantine volume)
 - [x] Manual line-by-line trace of migration 0002/0003 DDL: FK creation order and
-      reverse-order downgrade drops both verified correct by hand (could not execute
-      against a live Postgres in this environment)
-- [ ] CI green on GitHub (first real run against Postgres/Redis, not yet observed)
-- [ ] docker compose up on the Linux host, real upload through the API
+      reverse-order downgrade drops both verified correct by hand, THEN confirmed for
+      real 2026-08-21 - migrations 0002/0003 applied and round-tripped cleanly against
+      genuine Postgres 16, no issues found (the hand trace was accurate)
+- [ ] CI green on GitHub Actions specifically (still not observed)
+- [x] docker compose up on the host - done 2026-08-21 (see BUILD-LOG.md). Real upload
+      through the API not yet exercised (login/session/CSRF/admin flows were, via curl)
 
 ## Known simplifications (documented, not bugs)
 - Campaign/import authorization checks organization-or-broader role scope; true
