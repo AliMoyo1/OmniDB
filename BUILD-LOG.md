@@ -584,3 +584,79 @@ Remaining in Phase 4A: the Manager/Team Leader/Team Captain dashboards (4A-4, th
 first server-rendered UI in this build - `app/templates` and `app/static` are
 still empty scaffold directories, and Jinja2Templates/StaticFiles aren't wired
 into `app/main.py` yet).
+
+## 2026-08-21: Phase 4A-4 - Manager/Team Leader/Team Captain dashboards (Phase 4A complete)
+
+The first server-rendered UI in this build: one parameterized `GET /dashboard`
+whose sections are gated by the viewer's own capabilities rather than three
+hardcoded pages - the page shape is identical for every role, only what's visible
+differs, which is how plan 6.1's "separate dashboards" actually gets delivered.
+Plain HTML forms, no JavaScript, no HTMX vendored (the plan names HTMX as the
+stack, but a first pass didn't need it and D-04's LAN-only/no-CDN constraint makes
+a third-party JS dependency something to justify, not default to). CSRF via a
+hidden form field validated against the same signed-token mechanism the JSON API
+already uses; session-cookie page auth that redirects to `/login` (a new
+`RedirectToLogin` exception with a handler in `app/main.py`) instead of a JSON 401.
+Every action calls the exact same service-layer functions the JSON API already
+uses - new presentation over already-tested logic. Deduplicated two scoped-
+visibility queries that would otherwise have been written twice for the JSON route
+and the dashboard route (`workforce_service.list_visible_users`,
+`admin.list_visible_audit_events`).
+
+Verification couldn't use the Browser pane tool as planned: Caddy's internal-CA
+certificate isn't trusted, and the tool hard-fails on the TLS error before any
+interstitial appears - nothing to click through. Fell back to curl through the
+real HTTPS/Caddy/Postgres/Redis stack, the same method already proven during the
+original business-flow verification pass, and it was thorough: full login,
+dashboard render, create campaign, create user (confirmed the one-time activation
+token renders directly rather than living in a URL), assign role, create team, add
+team member, assign agent to campaign, stats reconciling exactly (0 then 1 after
+assignment), a bad CSRF token confirmed to genuinely block the action rather than
+just redirect past it, unauthenticated access confirmed to redirect, logout
+confirmed to genuinely revoke the session even across a container restart, and a
+plain Agent's dashboard confirmed to degrade to a clean, empty, non-broken page.
+
+That live pass found four real, independent bugs pytest alone would not have
+caught:
+
+1. A `docker cp` gotcha, not an app bug, but worth remembering: copying a source
+   directory into an already-existing destination directory nests it rather than
+   replacing its contents (both `app/templates` and `app/static` already existed
+   as empty scaffolds with `.gitkeep`), producing `/app/app/templates/templates/
+   *.html` and an immediate `TemplateNotFound` 500 on the very first request.
+   Fixed by copying individual files to their exact destination path.
+2. The "add team member" and "assign agent" forms originally embedded a full
+   dropdown of every visible user inside every team/campaign table row - an
+   O(teams x users) blowup that produced an 850KB page against this session's
+   heavily-reused dev database (dozens of full-suite runs' worth of accumulated
+   teams and users). Fixed by replacing both dropdowns with a plain user-ID text
+   input, matching the pattern already used for scope selection - a real scaling
+   fix, not a number bumped up, since the cross-product problem would recur at any
+   moderately larger team/user count. Also added a missing `.limit()` on the teams
+   query, which had none at all.
+3. `can_view_campaigns` was computed but never made it into the template context
+   dict - Jinja2's default `Undefined` is falsy in an `{% if %}`, so the entire
+   Campaigns section silently vanished for every user regardless of their real
+   capability, no error, no crash. Now guarded by a real pytest assertion
+   (`test_dashboard_shows_manager_sections`), not just a manual look.
+4. The login rate limiter's source-signal threshold (100 attempts per 15 minutes)
+   turned out to be tighter than the test suite's own login volume: `TestClient`
+   never sets a real client IP, so every integration test's login shares one
+   bucket, and a full run now performs 101 of them. Confirmed this reproduces even
+   against a freshly-flushed Redis, meaning CI would hit it too - not a bug in the
+   limiter (it did exactly its job), just a threshold picked before this session's
+   test suite grew this large. The account limit - real per-credential brute-force
+   protection - was never at risk and stayed untouched; source and global raised
+   5x for headroom.
+
+Also fixed proactively, before it ever ran: the original "create user" action
+would have redirected to `/dashboard?flash_success=...` with the one-time
+activation token embedded in the query string - a real instance of this session's
+own "never put sensitive data in a URL" rule, caught in review rather than in
+testing. The confirmation now renders directly instead of redirecting.
+
+11 new integration tests, full suite green (104 passed), ruff clean repository-
+wide, no new migration. This closes out Phase 4A entirely (4A-1 workforce
+foundation, 4A-2 campaign assignment and transfer, 4A-3 reports/Viewer/audit
+search, 4A-4 dashboards) - see PHASE-4-PLAN.md for the full breakdown and known
+simplifications (no bulk-action forms yet, no team-name picker, no HTMX/JS).

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.api.admin import router as admin_router
@@ -14,6 +18,9 @@ from app.config import get_settings
 from app.db import engine
 from app.logging_setup import configure_logging
 from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from app.web.auth_pages import router as web_auth_router
+from app.web.dashboard import router as web_dashboard_router
+from app.web.dependencies import InvalidFormCsrf, RedirectToLogin
 
 configure_logging(get_settings().log_level)
 
@@ -27,6 +34,24 @@ app = FastAPI(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestContextMiddleware)
 
+app.mount(
+    "/static", StaticFiles(directory=str(Path(__file__).resolve().parent / "static")), name="static"
+)
+
+
+@app.exception_handler(RedirectToLogin)
+async def _redirect_to_login(request: Request, exc: RedirectToLogin) -> RedirectResponse:
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.exception_handler(InvalidFormCsrf)
+async def _invalid_form_csrf(request: Request, exc: InvalidFormCsrf) -> RedirectResponse:
+    return RedirectResponse(
+        "/dashboard?flash_error=Your+session+expired+or+the+form+was+stale.+Please+retry.",
+        status_code=303,
+    )
+
+
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(campaigns_router)
@@ -34,6 +59,8 @@ app.include_router(imports_router)
 app.include_router(work_router)
 app.include_router(agent_router)
 app.include_router(workforce_router)
+app.include_router(web_auth_router)
+app.include_router(web_dashboard_router)
 
 
 @app.get("/healthz")

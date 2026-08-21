@@ -135,26 +135,7 @@ def list_users(
     db: Session = Depends(get_session),
     actor: User = Depends(_require_any_appointment_capability),
 ) -> list[UserOut]:
-    sees_everyone, team_ids = workforce_service.visible_team_ids(db, actor.id)
-    users: list[User]
-    if sees_everyone:
-        users = list(db.scalars(select(User).order_by(User.created_at.desc()).limit(limit)))
-    elif team_ids:
-        users = list(
-            db.scalars(
-                select(User)
-                .join(TeamMembership, TeamMembership.user_id == User.id)
-                .where(
-                    TeamMembership.team_id.in_(team_ids),
-                    TeamMembership.membership_status == "active",
-                )
-                .distinct()
-                .order_by(User.created_at.desc())
-                .limit(limit)
-            )
-        )
-    else:
-        users = []
+    users = workforce_service.list_visible_users(db, actor.id, limit=limit)
     return [_user_out(u) for u in users]
 
 

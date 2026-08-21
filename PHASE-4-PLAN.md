@@ -1,6 +1,6 @@
 # Phase 4 plan: management hierarchy, workforce, viewer, and administration
 
-Status: 4A-1 built and verified (2026-08-21).
+Status: Phase 4A complete - 4A-1 through 4A-4 all built and verified (2026-08-21).
 
 ## Scope reconciliation against the decision log
 
@@ -162,14 +162,96 @@ real, non-leaking, genuinely useful slice of the trail ("what did my people do")
 rather than a fully general target-type-aware resolver - documented here as the
 known simplification it is, not a hidden gap.
 
-## 4A-4: Manager / Team Leader / Team Captain dashboards [not started]
+## 4A-4: Manager / Team Leader / Team Captain dashboards [done]
 
-The first server-rendered UI in this build. `app/templates/` and `app/static/` exist
-as empty scaffold directories only - Jinja2Templates/StaticFiles aren't wired into
-`app/main.py` yet, there's no HTML-page session auth pattern (only JSON API auth
-exists today), and no base layout. Treated as its own increment rather than folded
-into the API work above, since it's a materially different kind of work (needs
-browser-based verification per the UI workflow, not just pytest).
+The first server-rendered UI in this build. One parameterized dashboard (`GET
+/dashboard`) whose sections are gated by the viewer's own capabilities, rather than
+three hardcoded pages - the shape is identical for Manager/Team Leader/Team Captain,
+only the visible sections and data differ, and plan 6.1's "separate dashboards" is
+delivered by what each role actually sees. Real HTML forms (no JavaScript, no
+HTMX vendoring - simpler and avoids a third-party JS dependency for a first pass),
+CSRF via a hidden form field validated against the same signed-token mechanism the
+JSON API already uses, session-cookie page auth that redirects to `/login` instead
+of a JSON 401 (`app/web/dependencies.py`'s `RedirectToLogin`, handled by an
+exception handler in `app/main.py`). Every action calls the exact same service-layer
+functions the JSON API already uses (`campaign_service`, `workforce_service`) - new
+presentation over already-tested business logic, not a reimplementation.
+
+Deduplicated two scoped-visibility queries that would otherwise have been written
+twice (JSON endpoint and dashboard): `app/workforce/service.py::list_visible_users`
+and `app/api/admin.py::list_visible_audit_events`, both now shared by their
+original JSON route and the new dashboard route.
+
+### Real findings from live verification (not simulated - curl through the actual HTTPS/Caddy/Postgres stack)
+
+The Browser pane tool couldn't get past Caddy's internal-CA certificate (hard
+network-level failure, not even an interstitial to click through), so verification
+used curl through the real stack instead - the same method already proven for this
+environment during the original business-flow verification pass. This found four
+real, independent bugs that pytest alone would not have caught, in roughly
+ascending order of how much they mattered:
+
+1. **`docker cp` directory-nesting**: copying a source directory into an
+   already-existing destination directory (both existed as empty scaffolds with
+   `.gitkeep`) nests it - `docker cp app/templates ...:/app/app/templates` produced
+   `/app/app/templates/templates/*.html`, not `/app/app/templates/*.html`. Caused an
+   immediate `TemplateNotFound` 500 on the very first request. Fixed by copying
+   individual files to their exact destination path instead of copying directories.
+2. **O(teams x users) dropdown blowup**: the "add team member" and "assign agent"
+   forms originally embedded a full `<select>` of every visible user inside every
+   team/campaign table row. Against this session's heavily-reused dev database
+   (accumulated teams and users from dozens of full-suite runs), that produced an
+   850KB page. Fixed by replacing both dropdowns with a plain user-ID text input
+   (matching the pattern already used for `scope_id`) - a real scaling fix, not just
+   a number bumped up, since the cross-product problem would recur at any
+   moderately larger team/user count regardless of individual query limits. Also
+   added a missing `.limit()` to the teams query, which had none.
+3. **A capability computed but never reaching the template**: `can_view_campaigns`
+   was computed in `dashboard()` but never added to the `page_context(...)` call
+   that builds the template context. Jinja2's default `Undefined` is falsy in an
+   `{% if %}`, so this failed silently - no error, no crash, just the entire
+   Campaigns section missing for every user regardless of their real capability.
+   Caught by the new pytest coverage (`test_dashboard_shows_manager_sections`),
+   which is exactly the kind of regression a live-only check could have let back in
+   on the next change - now guarded by a real assertion, not a manual look.
+4. **Login rate-limit source signal too tight for the test suite's own volume**:
+   `pytest`'s `TestClient` never sets a real client IP, so every integration test's
+   login shares one "unknown" source bucket. A full run now performs 101 logins
+   (14 test files deep into Phase 4A), just over the existing `_SOURCE_LIMIT = 100`
+   - confirmed to reproduce even against a freshly-flushed Redis, meaning CI would
+   have hit it too. Not a bug in the limiter (it did exactly its job); the account
+   limit (real per-credential brute-force protection, `_ACCOUNT_LIMIT = 10`) was
+   never at risk and is untouched. Source and global raised 5x
+   (`app/auth/ratelimit.py`) for headroom as the suite keeps growing, keeping the
+   same relative ordering between tiers.
+
+Also fixed proactively, before it ever ran: the "create user" action originally
+would have redirected back to `/dashboard?flash_success=...token...`, putting a
+one-time activation secret in a URL query string (browser history, proxy logs) -
+directly against this session's own "never put sensitive data in query strings"
+rule. Caught in code review before the first test run; the confirmation now renders
+directly instead of redirecting.
+
+### Known simplifications (documented, not gaps)
+
+- Scope selection in the "assign role" form is a raw team-UUID text input, not a
+  team-name dropdown - a direct consequence of fix #2 above (a full dropdown of
+  every team doesn't scale either, for the same reason the user dropdown didn't).
+  A searchable picker is a natural follow-up, not attempted here.
+- No JavaScript and no HTMX: every action is a full page POST-redirect-GET. Simpler
+  and more robust for a first pass (works with the browser's own back/forward, no
+  third-party JS to vendor or audit under D-04's LAN-only/no-CDN constraint), at
+  the cost of full-page reloads for each action. HTMX progressive enhancement
+  (named in the plan's stated stack) is a reasonable later addition, not required
+  for the dashboard to be genuinely functional.
+- Bulk actions (uploading a CSV, launching/pausing/archiving a campaign, ending an
+  assignment or a role, agent transfer) don't have dashboard forms yet - only
+  create/assign paths do. The JSON API already covers all of these; extending the
+  dashboard to them is incremental, not a redesign.
+- Agent and Viewer get no dashboard content beyond the empty shell and (for Viewer)
+  a read-only Campaigns/reports view via the same capability gates - a dedicated
+  Agent workspace is out of scope for 4A (Phase 3 built the API only; its own UI is
+  separate future work).
 
 ## 4A-5: tests and the authorization-negative matrix [ongoing alongside each increment]
 
@@ -240,8 +322,44 @@ authorization gate. Not a bug - just worth knowing before extending this area.
       fix learned from 4A-2's CI failure proactively in campaign_stats.py's two
       count queries, but this is unverified until the actual push.
 
+## 4A-4 verification status
+- [x] No new migration - all forms call existing, already-tested service functions
+      against the existing schema.
+- [x] ruff clean across every new and modified file, repository-wide sweep clean.
+- [x] 11 new integration tests in `tests/integration/test_web_dashboard_flow.py`
+      (unauthenticated redirect, login page renders, login success sets cookies,
+      wrong password shows an error and preserves the entered email, Manager sees
+      every section, Agent sees none, create campaign via form, bad CSRF token is
+      rejected, create-user renders the activation token directly rather than
+      redirecting, assign-role verified against the database directly rather than
+      by scraping rendered HTML, logout revokes the session), plus the full
+      existing suite - 104 passed total, no regressions. Two tests needed
+      correcting during the pass, not the application code: a negative
+      (absence) assertion that could pass for the wrong reason against a shared,
+      non-rolled-back database (same lesson as the session's earlier zw_numbers
+      fix), and a presence check against a string that appears unconditionally in
+      the page regardless of whether the action actually succeeded.
+- [x] Live verification through the actual HTTPS/Caddy/Postgres/Redis stack via
+      curl (the Browser pane tool could not get past Caddy's internal-CA
+      certificate - a hard failure before any interstitial, not something this
+      environment could click through). Full flow exercised end to end: login,
+      dashboard render with real data, create campaign, create user (confirmed the
+      activation token renders directly, not via a URL-embedded redirect), assign
+      role, create team, add team member, assign agent to campaign, stats
+      reconciling correctly (0 before assignment, 1 after), bad-CSRF rejection
+      confirmed to genuinely not perform the action, unauthenticated redirect,
+      logout confirmed to genuinely revoke the session even across a container
+      restart, and a plain Agent's dashboard confirmed to degrade cleanly to an
+      empty-but-valid page. Found and fixed 4 real bugs in the process (see above).
+- [x] mypy - not runnable locally, same as every increment this session; scanned
+      new code by hand against the lesson from 4A-2's failure (an untyped `{}`
+      dict literal in `_redirect()` given an explicit `dict[str, str]` annotation
+      proactively; no other `X | None`-in-arithmetic patterns found) before
+      pushing.
+
 ## Log
 - 2026-08-21: reconciled Phase 4 scope against D-19/D-20/D-21, wrote this plan,
   built and verified 4A-1 (workforce foundation), 4A-2 (campaign assignment API and
-  transfer), and 4A-3 (aggregate campaign reports, Viewer's first real capability,
-  scoped audit search).
+  transfer), 4A-3 (aggregate campaign reports, Viewer's first real capability,
+  scoped audit search), and 4A-4 (Manager/Team Leader/Team Captain dashboards -
+  the first server-rendered UI in this build). Phase 4A is now complete.

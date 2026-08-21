@@ -50,9 +50,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Content-Security-Policy",
             "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         )
-        # Every /api/ response can carry personal or session data (plan 7.8). Static
-        # assets, once self-hosted, live outside this prefix and may cache normally.
-        if request.url.path.startswith("/api/"):
+        # Every response can carry personal or session data (plan 7.8) - dashboards
+        # are as sensitive as the API responses they render, and D-11's unmanaged,
+        # possibly-shared laptops make back/forward-cache exposure after logout a
+        # real risk, not a theoretical one. Only self-hosted static assets (css/js,
+        # no per-user content) are safe to cache normally.
+        if not request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-store"
             response.headers["Pragma"] = "no-cache"
         return response

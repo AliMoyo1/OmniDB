@@ -84,6 +84,29 @@ def visible_team_ids(db: Session, actor_id: uuid.UUID) -> tuple[bool, set[uuid.U
     return sees_everyone, team_ids
 
 
+def list_visible_users(db: Session, actor_id: uuid.UUID, *, limit: int = 50) -> list[User]:
+    """Shared by the JSON endpoint and the dashboard page - one scoping
+    implementation, not two that could quietly drift apart."""
+    sees_everyone, team_ids = visible_team_ids(db, actor_id)
+    if sees_everyone:
+        return list(db.scalars(select(User).order_by(User.created_at.desc()).limit(limit)))
+    if not team_ids:
+        return []
+    return list(
+        db.scalars(
+            select(User)
+            .join(TeamMembership, TeamMembership.user_id == User.id)
+            .where(
+                TeamMembership.team_id.in_(team_ids),
+                TeamMembership.membership_status == "active",
+            )
+            .distinct()
+            .order_by(User.created_at.desc())
+            .limit(limit)
+        )
+    )
+
+
 def can_manage_user(db: Session, actor_id: uuid.UUID, target_id: uuid.UUID) -> bool:
     """Whether the actor could have appointed the target into at least one of their
     current active roles, at that role's own scope - the same authority used to

@@ -50,7 +50,7 @@ def _source_summary(request: Request) -> str:
     return request.headers.get("user-agent", "")[:255]
 
 
-def _set_auth_cookies(response: Response, token: str, session_id: uuid.UUID) -> None:
+def set_auth_cookies(response: Response, token: str, session_id: uuid.UUID) -> None:
     secure = get_settings().cookie_secure
     response.set_cookie(
         sess.COOKIE_NAME, token, httponly=True, secure=secure, samesite="lax", path="/"
@@ -65,7 +65,7 @@ def _set_auth_cookies(response: Response, token: str, session_id: uuid.UUID) -> 
     )
 
 
-def _clear_auth_cookies(response: Response) -> None:
+def clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(sess.COOKIE_NAME, path="/")
     response.delete_cookie(csrf.CSRF_COOKIE, path="/")
 
@@ -121,7 +121,7 @@ def login(
         target_type="session", target_id=row.id, source_ip=ip, user_agent_summary=source,
     )
     db.commit()
-    _set_auth_cookies(response, token, row.id)
+    set_auth_cookies(response, token, row.id)
     return _user_out(user)
 
 
@@ -137,7 +137,7 @@ def logout(
         target_type="session", target_id=session.id,
     )
     db.commit()
-    _clear_auth_cookies(response)
+    clear_auth_cookies(response)
     return {"status": "ok"}
 
 

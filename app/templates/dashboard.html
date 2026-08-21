@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - CipherContact{% endblock %}
+{% block content %}
+
+{% if can_view_campaigns %}
+<section class="card">
+  <h2>Campaigns</h2>
+  {% if campaigns %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>Status</th><th>Contacts</th><th>Agents</th>
+        <th>Attempts</th><th>Connected</th><th>Conversions</th><th>DNC</th>
+        <th>Assign agent</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in campaigns %}
+      <tr>
+        <td>{{ row.campaign.name }}</td>
+        <td><span class="badge">{{ row.campaign.status }}</span></td>
+        {% if row.stats %}
+        <td>{{ row.stats.total_contacts }}</td>
+        <td>{{ row.stats.assigned_agents }}</td>
+        <td>{{ row.stats.total_attempts }}</td>
+        <td>{{ row.stats.connected }}</td>
+        <td>{{ row.stats.conversions }}</td>
+        <td>{{ row.stats.dnc_requests }}</td>
+        {% else %}
+        <td colspan="6" class="empty">no report access</td>
+        {% endif %}
+        <td>
+          {% if can_manage_workforce %}
+          <form method="post" action="/dashboard/campaigns/{{ row.campaign.id }}/assignments" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="text" name="agent_id" placeholder="agent user ID" size="12" required>
+            <button type="submit">Assign</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No campaigns in view.</p>
+  {% endif %}
+
+  {% if can_create_campaign %}
+  <form method="post" action="/dashboard/campaigns" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Name<input type="text" name="name" required></label>
+    <label>Purpose<input type="text" name="purpose" required></label>
+    <label>Data source<input type="text" name="data_source" required></label>
+    <label>Data obtained<input type="date" name="data_obtained_at" required></label>
+    <label>Lawful basis / consent ref<input type="text" name="lawful_basis_or_consent_reference" required></label>
+    <button type="submit">Create campaign</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if can_manage_workforce %}
+<section class="card">
+  <h2>Workforce</h2>
+  {% if workforce_users %}
+  <table>
+    <thead><tr><th>Name</th><th>Email</th><th>Workforce ID</th><th>Status</th><th>Roles</th><th>Assign role</th></tr></thead>
+    <tbody>
+      {% for u in workforce_users %}
+      <tr>
+        <td>{{ u.display_name }}</td>
+        <td>{{ u.email }}</td>
+        <td>{{ u.workforce_id }}</td>
+        <td>{% if u.active %}<span class="badge">active</span>{% else %}<span class="badge muted">inactive</span>{% endif %}</td>
+        <td>{{ user_roles.get(u.id, [])|join(", ") or "-" }}</td>
+        <td>
+          <form method="post" action="/dashboard/users/{{ u.id }}/roles" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <select name="role_code" required>
+              {% for r in appointable_roles %}
+              <option value="{{ r }}">{{ r }}</option>
+              {% endfor %}
+            </select>
+            <select name="scope_type" required>
+              <option value="organization">org-wide</option>
+              <option value="team">team</option>
+            </select>
+            <input type="text" name="scope_id" placeholder="team UUID (blank = org-wide)" size="12">
+            <button type="submit">Assign</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No workforce users in view.</p>
+  {% endif %}
+
+  <form method="post" action="/dashboard/users" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Email<input type="email" name="email" required></label>
+    <label>Display name<input type="text" name="display_name" required></label>
+    <button type="submit">Create user</button>
+  </form>
+</section>
+{% endif %}
+
+{% if can_manage_teams or can_manage_workforce %}
+<section class="card">
+  <h2>Teams</h2>
+  {% if teams %}
+  <table>
+    <thead><tr><th>Name</th><th>Code</th><th>Team ID</th><th>Add member</th></tr></thead>
+    <tbody>
+      {% for t in teams %}
+      <tr>
+        <td>{{ t.name }}</td>
+        <td>{{ t.external_code }}</td>
+        <td><code>{{ t.id }}</code></td>
+        <td>
+          <form method="post" action="/dashboard/teams/{{ t.id }}/members" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="text" name="member_user_id" placeholder="user ID" size="12" required>
+            <button type="submit">Add</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No teams yet.</p>
+  {% endif %}
+
+  {% if can_manage_teams %}
+  <form method="post" action="/dashboard/teams" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Name<input type="text" name="name" required></label>
+    <label>Code<input type="text" name="external_code" required></label>
+    <button type="submit">Create team</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if can_view_audit %}
+<section class="card">
+  <h2>Recent audit activity</h2>
+  {% if audit_events %}
+  <table>
+    <thead><tr><th>When</th><th>Action</th><th>Result</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for e in audit_events %}
+      <tr>
+        <td>{{ e.occurred_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td>{{ e.action }}</td>
+        <td><span class="badge {% if e.result != 'success' %}muted{% endif %}">{{ e.result }}</span></td>
+        <td>{{ e.reason_code or "-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No visible audit activity yet.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% endblock %}

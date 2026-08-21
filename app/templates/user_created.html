@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}User created - CipherContact{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>User created</h2>
+  <p><strong>{{ new_user.display_name }}</strong> ({{ new_user.email }}, workforce ID
+    <code>{{ new_user.workforce_id }}</code>) has no password yet and holds no role.</p>
+  <p>Hand this one-time activation token to them through an approved offline channel
+    (D-23) - it will not be shown again:</p>
+  <p><code>{{ activation_token }}</code></p>
+  <p><a href="/dashboard">Back to dashboard</a> to assign a role.</p>
+</section>
+{% endblock %}

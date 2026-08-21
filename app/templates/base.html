@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}CipherContact{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/base.css">
+</head>
+<body>
+{% if user %}
+<header class="topbar">
+  <div class="brand">CipherContact</div>
+  <div class="who">
+    <span>{{ user.display_name }} &middot; {{ roles|join(", ") }}</span>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="secondary">Log out</button>
+    </form>
+  </div>
+</header>
+{% endif %}
+<main>
+  {% if flash_error %}
+  <p class="flash error">{{ flash_error }}</p>
+  {% endif %}
+  {% if flash_success %}
+  <p class="flash success">{{ flash_success }}</p>
+  {% endif %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>
