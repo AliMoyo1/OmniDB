@@ -126,3 +126,75 @@ Phase 3 is code-complete. Next: either Phase 4 pieces (management dashboards, wo
 assignment, campaign transfer) or, preferably, bring the stack up on the Linux host to
 finally validate Phases 1-3 end to end - this is now the highest-value next step given
 how much has been built without a live runtime check.
+
+## 2026-08-21: Security hardening pass (external, commit 7c2ae0f), reviewed
+
+A single commit, "security: harden campaign workflow controls" (7c2ae0f, 44 files,
+~2000 lines), landed directly on main outside a Claude session and was reviewed line
+by line at the user's request. Verdict: exceptional, professional-grade work. No
+regressions found. Verified by careful reading and tracing only, not execution - same
+local environment limits as the rest of this build (see the Phase 3 entry above).
+
+Serious bugs fixed (all pre-existing in Phases 1-3):
+- list_campaigns had no scope filter on the query itself - any user with VIEW_CAMPAIGN
+  anywhere could list every campaign in the org. Fixed with a real campaign_scope_filter.
+- _scope_covers treated any organization-scoped role as universally covering without
+  comparing scope_id - harmless only because this deployment is single-org (D-07);
+  would have leaked across orgs the moment multi-org existed.
+- Login rate limiter failed open unconditionally on any Redis error, in every
+  environment including production. Now fails closed specifically in production.
+- Activation/reset tokens had no replay protection (stateless signed tokens, no
+  server-side single-use tracking) - the same link could be used more than once.
+  Replaced with a DB-backed ActivationToken model, single-use under row locking.
+- Sliding session idle-expiry was computed in memory but never persisted on read-only
+  (GET) requests, since those routes never call db.commit() - active read-only users
+  could get silently logged out. Fixed by committing in the shared session dependency.
+- commit_job deleted the quarantine file before the caller's db.commit() confirmed the
+  transaction durable - a failed commit after that point would strand the import with
+  no recoverable source file. Cleanup reordered to after confirmed commit.
+- database_url was built with a raw f-string - a strong password from openssl rand
+  (recommended in this repo's own runbook) can contain '/' or '+', corrupting an
+  unescaped connection string. Rebuilt via SQLAlchemy's URL.create().
+- The Phase 2 suppression unique index didn't actually prevent duplicate active DNC
+  entries in this single-org deployment, because Postgres doesn't treat NULLs as equal
+  in a unique index by default and organization_scope is NULL here. Fixed with
+  NULLS NOT DISTINCT (Postgres 15+, already on postgres:16), plus a migration that
+  de-duplicates existing rows (marked corrected, not deleted) before adding it.
+- Idempotent completion replay re-read the work item's current (possibly since-changed)
+  state instead of the state the original completion actually produced. Fixed by
+  persisting resulting_work_item_state on the immutable call_attempts row.
+
+Hardening added:
+- Step-up reauthentication is now enforced (the /reauthenticate endpoint existed but
+  gated nothing): admin credential resets and TOTP enroll/verify require a recent
+  session.reauthenticated_at.
+- Self-approval guard added to admin reset-2fa/reset-password (previously unguarded).
+- Phone-scoped PostgreSQL advisory locks (new app/db_locks.py) serialize leasing, DNC
+  completion, and import commit for the same number across campaigns and code paths -
+  stronger than row-level locking alone, which can't protect across different rows for
+  the same underlying contact. Lock acquisition is consistently ordered to avoid
+  deadlocks (including between activation-token issue and consume).
+- Settings.validate_production_safety: refuses to boot with app_env=production if any
+  secret is too short, low-entropy, duplicated across fields, or still contains
+  placeholder text (literally catches this repo's own deploy/secrets/*.example
+  content if someone forgets to replace it).
+- Redis given AOF persistence (--appendonly yes --appendfsync everysec) - it's the
+  Celery broker, so a crash before a worker picks up a queued task previously lost it
+  silently. compose.yaml now also sets APP_ENV=production/COOKIE_SECURE=true on
+  web/worker/beat (activating the safety check above) and wires a real health_token
+  secret (the /readyz gate existed but had no secret behind it, so it was inert).
+- Multi-signal login rate limiting (account/IP/global), atomic via a Redis Lua script
+  (the prior two-step INCR+EXPIRE had its own race), keys hashed rather than storing
+  raw emails/IPs in Redis.
+- Log redaction now recurses into dict/list/tuple args and covers exception
+  tracebacks, not just the top-level message.
+- CI: mypy and pip-audit flipped from advisory to blocking.
+- New tests/concurrency/test_suppression_concurrency.py is notably rigorous - it
+  queries Postgres's own pg_stat_activity to confirm a competing transaction is
+  actually blocked on the advisory lock before proceeding, not just asserting on
+  final outcome. New tests/integration/test_campaign_scope.py and additions to
+  test_auth_flow.py directly regression-test the fixes above.
+
+Migrations 0005 (activation_tokens, sessions.reauthenticated_at), 0006 (suppression
+NULLS NOT DISTINCT + data cleanup), 0007 (call_attempts.resulting_work_item_state) -
+all additive/safe, reviewed for correct FK/constraint ordering.
