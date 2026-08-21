@@ -432,16 +432,17 @@ code.
 - [x] Unit + authorization suite: 27 passed locally (`pytest -m "not
       integration"`, `APP_ENV=development` override only - matches what CI's
       `quality` job runs, no database needed).
-- [ ] Integration suite (includes `test_web_dashboard_flow.py`, the most
+- [x] Integration suite (includes `test_web_dashboard_flow.py`, the most
       relevant file for this change): not runnable locally this time for a new
       reason - `compose.yaml` deliberately publishes no database/app ports to
       the host, and this session's sandbox blocks publishing new ports even via
       a throwaway forwarding container, so there is no path from the host into
       the running Postgres/Redis. Live Browser-pane verification against the
       real stack (above) covers the same rendered-output surface these tests
-      check, but the tests themselves still need a real CI run before this is
-      called fully verified.
-- [ ] Push and watch CI for the authoritative integration-suite result.
+      check; real CI (below) confirms the tests themselves still pass.
+- [x] Pushed (commit `ea113fb`) and watched CI run 32516090093 to completion:
+      build, security, integration, and quality all green. No regressions from
+      the template restructuring.
 
 ## Log
 - 2026-08-21: reconciled Phase 4 scope against D-19/D-20/D-21, wrote this plan,

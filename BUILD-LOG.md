@@ -706,6 +706,7 @@ session's sandbox blocks publishing new ports even via a throwaway forwarding
 container. Live Browser-pane verification against the real running stack
 covers the same rendered output (all four dashboard sections render with real
 data, dock and sidebar show correct conditional items, particle background
-animates, login page renders correctly), but the integration suite itself
-still needs a real CI run before this is fully verified - see
-PHASE-4-PLAN.md's "4A-4 UI redesign" section for the full breakdown.
+animates, login page renders correctly). Pushed (commit `ea113fb`) and
+watched CI run 32516090093 to completion: build, security, integration, and
+quality all green, no regressions - see PHASE-4-PLAN.md's "4A-4 UI redesign"
+section for the full breakdown.
