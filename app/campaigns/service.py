@@ -64,13 +64,16 @@ def _check_staffing_capacity(
     )
     if team_assignment is None or team_assignment.staffing_capacity is None:
         return
-    current_count = db.scalar(
-        select(func.count(CampaignUserAssignment.id)).where(
-            CampaignUserAssignment.campaign_id == campaign_id,
-            CampaignUserAssignment.team_id == team_id,
-            CampaignUserAssignment.status == "active",
-            CampaignUserAssignment.effective_to.is_(None),
+    current_count = (
+        db.scalar(
+            select(func.count(CampaignUserAssignment.id)).where(
+                CampaignUserAssignment.campaign_id == campaign_id,
+                CampaignUserAssignment.team_id == team_id,
+                CampaignUserAssignment.status == "active",
+                CampaignUserAssignment.effective_to.is_(None),
+            )
         )
+        or 0
     )
     if current_count >= team_assignment.staffing_capacity:
         raise CampaignAssignmentError(
