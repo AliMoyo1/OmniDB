@@ -1,8 +1,10 @@
 """Persist the original completion state for stable idempotent responses.
 
-Revision ID: 0007_completion_idempotency_result
-Revises: 0006_suppression_nulls_not_distinct
+Revision ID: 0007_completion_idempotent
+Revises: 0006_suppress_nulls_distinct
 Create Date: 2026-08-21
+
+Note: kept short (<=32 chars); see 0005 for why (VARCHAR(32) alembic_version).
 """
 
 from __future__ import annotations
@@ -12,8 +14,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0007_completion_idempotency_result"
-down_revision: str | None = "0006_suppression_nulls_not_distinct"
+revision: str = "0007_completion_idempotent"
+down_revision: str | None = "0006_suppress_nulls_distinct"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

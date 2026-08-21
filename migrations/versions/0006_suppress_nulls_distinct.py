@@ -1,8 +1,10 @@
 """Enforce one active suppression when organization scope is null.
 
-Revision ID: 0006_suppression_nulls_not_distinct
-Revises: 0005_one_time_activation_and_step_up
+Revision ID: 0006_suppress_nulls_distinct
+Revises: 0005_activation_step_up
 Create Date: 2026-08-21
+
+Note: kept short (<=32 chars); see 0005 for why (VARCHAR(32) alembic_version).
 """
 
 from __future__ import annotations
@@ -12,8 +14,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0006_suppression_nulls_not_distinct"
-down_revision: str | None = "0005_one_time_activation_and_step_up"
+revision: str = "0006_suppress_nulls_distinct"
+down_revision: str | None = "0005_activation_step_up"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
