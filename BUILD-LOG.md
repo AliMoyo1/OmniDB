@@ -410,3 +410,8 @@ resolved by switching to `secrets.randbelow`, not a suppression).
 
 Files changed: `tests/integration/conftest.py`, `tests/integration/test_imports_flow.py`,
 `tests/integration/test_work_flow.py`, `tests/concurrency/test_leasing_concurrency.py`.
+
+Pushed and watched the real run on GitHub Actions (run 32488321998): quality,
+security, integration (including the "Integration tests" step, the exact step that
+had failed every single prior run this session), and build all passed. This is the
+first genuinely green CI run this project has had.

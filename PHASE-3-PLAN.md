@@ -84,11 +84,11 @@ the rest of this build (it's a static parser, unaffected by the local Python
       once due, and skip with reason validation). GET /api/v1/agent/stats reconciled
       exactly against a direct database query with zero discrepancy. No new bugs found
       in this pass.
-- [ ] CI green on GitHub Actions specifically - 2026-08-21: root-caused and fixed the
-      standing failure (a test-isolation bug in the shared `zw_numbers()` fixture, not
-      an application defect - see BUILD-LOG.md), verified clean locally (full 62-test
-      suite, cold and warm reset, ruff clean); pushing now to confirm on the real
-      runner
+- [x] CI green on GitHub Actions - confirmed 2026-08-21, run 32488321998: quality,
+      security, integration (incl. the "Integration tests" step that had failed every
+      prior run this session), and build all passed. Root cause was a test-isolation
+      bug in the shared `zw_numbers()` fixture, not an application defect - see
+      BUILD-LOG.md.
 
 ## Known simplifications (documented, not bugs)
 - Campaign-user-assignment issuance has no API yet (tests insert directly); that's
