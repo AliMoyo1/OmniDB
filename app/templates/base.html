@@ -5,28 +5,114 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}CipherContact{% endblock %}</title>
   <link rel="stylesheet" href="/static/css/base.css">
+  <script src="/static/js/theme.js"></script>
 </head>
 <body>
-{% if user %}
-<header class="topbar">
-  <div class="brand">CipherContact</div>
-  <div class="who">
-    <span>{{ user.display_name }} &middot; {{ roles|join(", ") }}</span>
-    <form method="post" action="/logout">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="secondary">Log out</button>
-    </form>
+<canvas id="cc-particles" aria-hidden="true"></canvas>
+
+<div class="app-shell">
+  {% if user %}
+  <nav class="icon-dock" aria-label="Primary">
+    <div class="dock-brand">C</div>
+    <a class="dock-item {% if active_section == 'dashboard' %}active{% endif %}" href="/dashboard" title="Dashboard">
+      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+      <span class="dock-item-label">Dashboard</span>
+    </a>
+    {% if can_view_campaigns %}
+    <a class="dock-item {% if active_section == 'campaigns' %}active{% endif %}" href="/dashboard#campaigns" title="Campaigns">
+      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a2 2 0 0 0 2 2h1l3 5V6l-3 5H5a2 2 0 0 0-2 2Z"/><path d="M14 8a4 4 0 0 1 0 8"/><path d="M17 5a8 8 0 0 1 0 14"/></svg>
+      <span class="dock-item-label">Campaigns</span>
+    </a>
+    {% endif %}
+    {% if can_manage_workforce %}
+    <a class="dock-item {% if active_section == 'workforce' %}active{% endif %}" href="/dashboard#workforce" title="Workforce">
+      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span class="dock-item-label">Workforce</span>
+    </a>
+    {% endif %}
+    {% if can_view_teams_nav %}
+    <a class="dock-item {% if active_section == 'teams' %}active{% endif %}" href="/dashboard#teams" title="Teams">
+      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M9 4v16"/></svg>
+      <span class="dock-item-label">Teams</span>
+    </a>
+    {% endif %}
+    {% if can_view_audit %}
+    <a class="dock-item {% if active_section == 'audit' %}active{% endif %}" href="/dashboard#audit" title="Audit">
+      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span class="dock-item-label">Audit</span>
+    </a>
+    {% endif %}
+  </nav>
+
+  <aside class="side-nav" aria-label="Secondary">
+    <div class="side-nav-label">CipherContact</div>
+    <a href="/dashboard">
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+      Overview
+    </a>
+    {% if can_view_campaigns %}
+    <a href="/dashboard#campaigns">
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a2 2 0 0 0 2 2h1l3 5V6l-3 5H5a2 2 0 0 0-2 2Z"/><path d="M14 8a4 4 0 0 1 0 8"/></svg>
+      Campaigns
+      {% if campaigns is defined %}<span class="count">{{ campaigns|length }}</span>{% endif %}
+    </a>
+    {% endif %}
+    {% if can_manage_workforce %}
+    <a href="/dashboard#workforce">
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/></svg>
+      Workforce
+      {% if workforce_users is defined %}<span class="count">{{ workforce_users|length }}</span>{% endif %}
+    </a>
+    {% endif %}
+    {% if can_view_teams_nav %}
+    <a href="/dashboard#teams">
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg>
+      Teams
+      {% if teams is defined %}<span class="count">{{ teams|length }}</span>{% endif %}
+    </a>
+    {% endif %}
+    {% if can_view_audit %}
+    <a href="/dashboard#audit">
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z"/></svg>
+      Audit trail
+    </a>
+    {% endif %}
+    <div class="side-nav-label">Account</div>
+    <a href="/dashboard">{{ user.display_name }}</a>
+  </aside>
+  {% endif %}
+
+  <div class="main-col">
+    {% if user %}
+    <header class="topbar">
+      <div class="brand">Cipher<span class="brand-accent">Contact</span></div>
+      <div class="who">
+        <span>{{ user.display_name }} &middot; {{ roles|join(", ") }}</span>
+        <button type="button" class="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
+          <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <form method="post" action="/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="secondary">Log out</button>
+        </form>
+      </div>
+    </header>
+    {% endif %}
+    <main class="{% if not user %}login-wrap{% endif %}">
+      {% if user %}
+      {% if flash_error %}
+      <p class="flash error">{{ flash_error }}</p>
+      {% endif %}
+      {% if flash_success %}
+      <p class="flash success">{{ flash_success }}</p>
+      {% endif %}
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
   </div>
-</header>
-{% endif %}
-<main>
-  {% if flash_error %}
-  <p class="flash error">{{ flash_error }}</p>
-  {% endif %}
-  {% if flash_success %}
-  <p class="flash success">{{ flash_success }}</p>
-  {% endif %}
-  {% block content %}{% endblock %}
-</main>
+</div>
+
+<script src="/static/js/particles.js"></script>
+<script src="/static/js/card-tilt.js"></script>
 </body>
 </html>

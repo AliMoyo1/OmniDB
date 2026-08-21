@@ -357,9 +357,101 @@ authorization gate. Not a bug - just worth knowing before extending this area.
       proactively; no other `X | None`-in-arithmetic patterns found) before
       pushing.
 
+## 4A-4 UI redesign: ThemisIQ design-system port [done]
+
+The 4A-4 dashboard was functionally complete but visually plain. Ported the
+visual design system (not any code or data) from the separate "One For All"
+platform: CSS custom-property theme tokens (light/dark, self-hosted Space
+Grotesk + JetBrains Mono via `@font-face`), glass-morphism cards
+(`backdrop-filter: blur()`), a 3D mouse-tilt hover effect on stat cards, and a
+canvas-based particle-network background. Added the two pieces of navigation
+chrome the user asked for on top of that: a persistent left icon dock
+(`.icon-dock`, expands on hover, shows only the sections the viewer's own
+capabilities grant) and a secondary text sidebar (`.side-nav`, mirrors the dock
+with item counts, hides below 1200px). Both read the same `nav_flags()` used to
+gate the dashboard's own sections, computed once in `app/web/templates.py` and
+attached to every authenticated page's context (`page_context()`) rather than
+left for each route to pass individually - a route that forgot a flag would
+silently show an incomplete nav with no error, the same class of bug already
+hit once this session in the dashboard's own Campaigns section.
+
+This intentionally reverses 4A-4's original "no JavaScript" decision: the
+particle background and tilt effect need it. Kept it to three small,
+externally-loaded vanilla-JS files (`particles.js`, `card-tilt.js`,
+`theme.js`) - no framework, no build step, no third-party dependency - so the
+spirit of that original call (nothing to compile, nothing to vendor) still
+holds even though the letter of it no longer does.
+
+### Real findings from live verification
+
+Two independent bugs, neither of which pytest would have caught since neither
+is expressible as a request/response assertion:
+
+1. **`{% block content %}` defined twice in `base.html`**: the initial version
+   defined the block once inside the authenticated (`{% if user %}`) branch and
+   again inside the unauthenticated (`{% else %}`) branch, reasoning that only
+   one branch would ever render. Jinja2 parses block definitions statically and
+   forbids the same name twice in one template regardless of runtime branching
+   - every page render raised `TemplateAssertionError`. Fixed by restructuring
+   so the block appears exactly once, unconditionally, inside a `<main>` that
+   always renders; the chrome around it (dock, sidebar, topbar) is each wrapped
+   in its own independent `{% if user %}...{% endif %}` around a complete
+   element, and `<main>` picks up a `login-wrap` class only when there's no
+   user, rather than the shell being duplicated per branch.
+2. **CSP silently blocked the theme toggle**: `app/middleware.py`'s
+   `Content-Security-Policy` header (`default-src 'self'`, no `unsafe-inline`,
+   no nonce - deliberately strict, and correctly so for an app whose whole
+   purpose is PII/DLP handling) blocks inline `<script>` blocks and inline
+   event-handler attributes. The first draft had both: an inline
+   theme-restore script in `<head>` and an inline `onclick` on the toggle
+   button. Both were silently no-ops in the browser (console showed the CSP
+   violation; nothing else did). Fixed by extracting both into
+   `app/static/js/theme.js` (loaded via `<script src>` in `<head>`, same
+   execute-before-paint timing as the inline version it replaced) and
+   replacing the `onclick` attribute with a delegated `document`-level click
+   listener - matching the CSP-compliant pattern `particles.js` and
+   `card-tilt.js` already used. Did not weaken the CSP; the app's own security
+   posture is the reason to fix the script instead.
+
+Confirmed via the Browser pane against the real running stack (hot-patched
+into both the preview and main containers): dashboard renders with real data
+in all four sections (Campaigns/Workforce/Teams/Audit), dock and sidebar show
+the correct conditional items, particle background animates, login page
+renders centered with the glass card. The toggle's underlying logic
+(`ccToggleTheme()`, the delegated listener, localStorage persistence) was
+verified correct by direct DOM dispatch after the Browser pane's simulated
+mouse clicks turned out to be unreliable in this session's environment for
+reasons unrelated to the app (a coordinate-scaling bug that put real clicks
+outside the viewport after a manual `resize_window` call, and separately, the
+known stale-tab flakiness already documented in 4A-4's own verification
+above) - not chased further once isolated to tooling rather than application
+code.
+
+### 4A-4 UI redesign verification status
+- [x] ruff clean, mypy clean (`Success: no issues found in 71 source files`).
+- [x] Unit + authorization suite: 27 passed locally (`pytest -m "not
+      integration"`, `APP_ENV=development` override only - matches what CI's
+      `quality` job runs, no database needed).
+- [ ] Integration suite (includes `test_web_dashboard_flow.py`, the most
+      relevant file for this change): not runnable locally this time for a new
+      reason - `compose.yaml` deliberately publishes no database/app ports to
+      the host, and this session's sandbox blocks publishing new ports even via
+      a throwaway forwarding container, so there is no path from the host into
+      the running Postgres/Redis. Live Browser-pane verification against the
+      real stack (above) covers the same rendered-output surface these tests
+      check, but the tests themselves still need a real CI run before this is
+      called fully verified.
+- [ ] Push and watch CI for the authoritative integration-suite result.
+
 ## Log
 - 2026-08-21: reconciled Phase 4 scope against D-19/D-20/D-21, wrote this plan,
   built and verified 4A-1 (workforce foundation), 4A-2 (campaign assignment API and
   transfer), 4A-3 (aggregate campaign reports, Viewer's first real capability,
   scoped audit search), and 4A-4 (Manager/Team Leader/Team Captain dashboards -
   the first server-rendered UI in this build). Phase 4A is now complete.
+- 2026-08-21: redesigned the 4A-4 dashboard with the One For All platform's
+  visual design system (theme tokens, glass cards, particle background, tilt
+  hover) plus a new icon dock and text sidebar for navigation. Found and fixed
+  a Jinja2 duplicate-block bug and a CSP violation that silently broke the
+  theme toggle. ruff/mypy/unit/authorization all clean locally; integration
+  suite deferred to CI (no local DB access in this sandbox).

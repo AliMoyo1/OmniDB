@@ -28,7 +28,6 @@ from app.authz.capabilities import (
     ASSIGN_CAMPAIGN_AGENT,
     CREATE_CAMPAIGN,
     MANAGE_ROLES,
-    VIEW_AUDIT,
     VIEW_CAMPAIGN,
     VIEW_CAMPAIGN_REPORTS,
 )
@@ -39,7 +38,7 @@ from app.models.campaign import Campaign
 from app.models.identity import Team, User
 from app.reporting import campaign_stats as campaign_stats_service
 from app.web.dependencies import require_page_user, verify_form_csrf
-from app.web.templates import page_context, templates
+from app.web.templates import nav_flags, page_context, templates
 from app.workforce import service as workforce_service
 from app.workforce.service import (
     ROLE_APPOINTMENT_CAPABILITY,
@@ -76,17 +75,15 @@ def dashboard(
     db: Session = Depends(get_session),
     user: User = Depends(require_page_user),
 ):
-    can_view_campaigns = authz.has_assigned_capability(db, user.id, VIEW_CAMPAIGN)
+    flags = nav_flags(db, user)
+    can_view_campaigns = flags["can_view_campaigns"]
+    can_manage_workforce = flags["can_manage_workforce"]
+    can_manage_teams = flags["can_manage_teams"]
+    can_view_audit = flags["can_view_audit"]
     can_view_reports = authz.has_assigned_capability(db, user.id, VIEW_CAMPAIGN_REPORTS)
     can_create_campaign = authz.has_scope_capability(
         db, user.id, CREATE_CAMPAIGN, scope_type="organization", scope_id=None
     )
-    can_manage_workforce = any(
-        authz.has_assigned_capability(db, user.id, capability)
-        for capability in ROLE_APPOINTMENT_CAPABILITY.values()
-    )
-    can_manage_teams = authz.has_assigned_capability(db, user.id, MANAGE_ROLES)
-    can_view_audit = authz.has_assigned_capability(db, user.id, VIEW_AUDIT)
 
     campaigns = []
     if can_view_campaigns:
@@ -120,20 +117,21 @@ def dashboard(
 
     audit_events = list_visible_audit_events(db, user.id, limit=20) if can_view_audit else []
 
+    # can_view_campaigns/can_manage_workforce/can_manage_teams/can_view_audit are
+    # not passed explicitly here - page_context() computes the same nav_flags()
+    # for every authenticated page, so the dock/sidebar stay correct even on pages
+    # that don't otherwise need them (see app/web/templates.py's docstring).
     context = page_context(
         request, db, user,
+        active_section="dashboard",
         campaigns=campaigns,
-        can_view_campaigns=can_view_campaigns,
         can_create_campaign=can_create_campaign,
         default_provenance=_DEFAULT_PROVENANCE_HINT,
         workforce_users=workforce_users,
         user_roles=user_roles,
-        can_manage_workforce=can_manage_workforce,
         appointable_roles=sorted(ROLE_APPOINTMENT_CAPABILITY.keys()),
         teams=teams,
-        can_manage_teams=can_manage_teams,
         audit_events=audit_events,
-        can_view_audit=can_view_audit,
         flash_error=request.query_params.get("flash_error"),
         flash_success=request.query_params.get("flash_success"),
     )

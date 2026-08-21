@@ -2,10 +2,38 @@
 {% block title %}Dashboard - CipherContact{% endblock %}
 {% block content %}
 
+{% if can_view_campaigns or can_manage_workforce or can_view_teams_nav %}
+<div class="stat-row">
+  {% if can_view_campaigns %}
+  <div class="stat-card">
+    <div class="stat-label">Campaigns in view</div>
+    <div class="stat-value">{{ campaigns|length }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Active campaigns</div>
+    <div class="stat-value">{{ campaigns|selectattr("campaign.status", "equalto", "active")|list|length }}</div>
+  </div>
+  {% endif %}
+  {% if can_manage_workforce %}
+  <div class="stat-card">
+    <div class="stat-label">Workforce</div>
+    <div class="stat-value">{{ workforce_users|length }}</div>
+  </div>
+  {% endif %}
+  {% if can_view_teams_nav %}
+  <div class="stat-card">
+    <div class="stat-label">Teams</div>
+    <div class="stat-value">{{ teams|length }}</div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if can_view_campaigns %}
-<section class="card">
+<section class="card" id="campaigns">
   <h2>Campaigns</h2>
   {% if campaigns %}
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -42,6 +70,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="empty">No campaigns in view.</p>
   {% endif %}
@@ -61,9 +90,10 @@
 {% endif %}
 
 {% if can_manage_workforce %}
-<section class="card">
+<section class="card" id="workforce">
   <h2>Workforce</h2>
   {% if workforce_users %}
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Name</th><th>Email</th><th>Workforce ID</th><th>Status</th><th>Roles</th><th>Assign role</th></tr></thead>
     <tbody>
@@ -94,6 +124,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="empty">No workforce users in view.</p>
   {% endif %}
@@ -107,10 +138,11 @@
 </section>
 {% endif %}
 
-{% if can_manage_teams or can_manage_workforce %}
-<section class="card">
+{% if can_view_teams_nav %}
+<section class="card" id="teams">
   <h2>Teams</h2>
   {% if teams %}
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Name</th><th>Code</th><th>Team ID</th><th>Add member</th></tr></thead>
     <tbody>
@@ -130,6 +162,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="empty">No teams yet.</p>
   {% endif %}
@@ -146,9 +179,10 @@
 {% endif %}
 
 {% if can_view_audit %}
-<section class="card">
+<section class="card" id="audit">
   <h2>Recent audit activity</h2>
   {% if audit_events %}
+  <div class="table-wrap">
   <table>
     <thead><tr><th>When</th><th>Action</th><th>Result</th><th>Reason</th></tr></thead>
     <tbody>
@@ -162,6 +196,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="empty">No visible audit activity yet.</p>
   {% endif %}
