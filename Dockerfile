@@ -22,6 +22,12 @@ COPY migrations ./migrations
 COPY alembic.ini ./
 RUN pip install --no-cache-dir .
 
+# COPY runs as root, so /app is root-owned at this point. Celery Beat writes its
+# schedule state file (celerybeat-schedule) into its working directory (/app) - web
+# and worker never write here, only read, so this gap stayed invisible until beat
+# actually started.
+RUN chown -R app:app /app
+
 USER app
 
 EXPOSE 8000

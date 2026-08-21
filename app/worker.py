@@ -27,6 +27,10 @@ celery_app.conf.update(
     task_soft_time_limit=540,
     task_always_eager=_settings.celery_task_always_eager,
     task_eager_propagates=_settings.celery_task_always_eager,
+    # Explicit rather than relying on the current (soon to change) default: retry
+    # connecting to the broker on startup instead of failing immediately if Redis
+    # isn't up yet when a worker/beat container starts.
+    broker_connection_retry_on_startup=True,
 )
 
 celery_app.conf.beat_schedule = {
