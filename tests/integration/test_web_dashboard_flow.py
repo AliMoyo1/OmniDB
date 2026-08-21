@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models.authz import RoleAssignment
 from tests.integration.conftest import TEST_PASSWORD, login, make_user_with_role
+
+pytestmark = pytest.mark.integration
 
 _PROVENANCE_FORM = {
     "name": "Web Test Campaign",
