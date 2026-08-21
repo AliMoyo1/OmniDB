@@ -20,12 +20,14 @@ from app.authz.capabilities import (
     MANAGE_CAMPAIGN,
     PAUSE_CAMPAIGN,
     VIEW_CAMPAIGN,
+    VIEW_CAMPAIGN_REPORTS,
 )
 from app.campaigns import service as campaign_service
 from app.campaigns.schemas import (
     AgentTransferRequest,
     CampaignCreateRequest,
     CampaignOut,
+    CampaignStatsOut,
     CampaignUpdateRequest,
     DispositionCreateRequest,
     DispositionOut,
@@ -60,6 +62,7 @@ from app.imports.tasks import parse_import_job_task
 from app.models.campaign import Campaign, CampaignTeamAssignment, CampaignUserAssignment
 from app.models.identity import Organization, Team, User
 from app.models.imports import ImportJob
+from app.reporting import campaign_stats
 
 campaigns_router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 imports_router = APIRouter(prefix="/api/v1/imports", tags=["imports"])
@@ -164,6 +167,17 @@ def get_campaign(
     campaign = _load_campaign_or_404(db, campaign_id)
     _require_campaign_capability(db, user, VIEW_CAMPAIGN, campaign)
     return _campaign_out(campaign)
+
+
+@campaigns_router.get("/{campaign_id}/stats", response_model=CampaignStatsOut)
+def get_campaign_stats(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> CampaignStatsOut:
+    campaign = _load_campaign_or_404(db, campaign_id)
+    _require_campaign_capability(db, user, VIEW_CAMPAIGN_REPORTS, campaign)
+    return CampaignStatsOut(**campaign_stats.get_campaign_stats(db, campaign.id))
 
 
 @campaigns_router.patch(

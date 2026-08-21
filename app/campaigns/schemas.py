@@ -115,3 +115,12 @@ class AgentTransferRequest(BaseModel):
     to_campaign_id: uuid.UUID
     team_id: uuid.UUID | None = None
     reason_code: str | None = None
+
+
+class CampaignStatsOut(BaseModel):
+    total_contacts: int
+    assigned_agents: int
+    total_attempts: int
+    connected: int
+    conversions: int
+    dnc_requests: int

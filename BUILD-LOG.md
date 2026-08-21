@@ -539,3 +539,48 @@ already-correct schema.
 Remaining in Phase 4A: protected/scoped audit search and a first real Viewer
 capability (4A-3), and the Manager/Team Leader/Team Captain dashboards (4A-4, the
 first server-rendered UI in this build).
+
+## 2026-08-21: Phase 4A-3 - aggregate campaign reports, Viewer's first capability, scoped audit search
+
+`ROLE_VIEWER` had been `set()` since Phase 1 - this increment gives it something
+real: `VIEW_CAMPAIGN` (metadata only, never contacts) plus a new
+`VIEW_CAMPAIGN_REPORTS`, both already scope-checked through the existing
+`has_campaign_capability` machinery, so a Viewer's "explicit assigned report scope"
+(plan 6.1) is just their ordinary `RoleAssignment` scope - no separate concept
+needed. `app/reporting/campaign_stats.py` extends Phase 3's `agent_stats.py`
+pattern (live counts over immutable `call_attempts`) to a whole campaign: total
+contacts, active assigned agents, total attempts, connected, conversions, DNC
+requests. New `GET /api/v1/campaigns/{campaign_id}/stats`, granted to Manager, Team
+Leader, Team Captain, and Viewer - the actual reporting surface Viewer exists for.
+
+Scoped audit search hit a real design problem immediately. `GET /api/v1/admin/
+audit-events` was Super-Admin-only and fully unscoped, and the obvious fix -
+extend `VIEW_AUDIT` to Manager/Team Leader/Team Captain and filter by
+`AuditEvent.team_id`/`organization_id` - doesn't work, because almost no
+`record_audit(...)` call site anywhere in this build actually sets those columns.
+Retrofitting every existing call site across four phases of work was out of
+proportion for this increment, so scoped visibility is resolved differently
+instead: installation- or organization-wide `VIEW_AUDIT` sees every event (Super
+Admin, Manager); a team-scoped grant (Team Leader, Team Captain) sees only events
+whose actor was themselves or an active member of their own team, reusing
+`team_memberships` the same way 4A-1's user-listing scope filter already does. A
+real, non-leaking slice of the trail, not a fully general resolver - and
+documented as the known simplification it is rather than a silent gap.
+
+Learned from 4A-2's CI failure and applied it proactively this time:
+`campaign_stats.py`'s two count queries use `db.scalar(...) or 0` from the start,
+the same fix 4A-2 needed as a follow-up push after mypy caught `int | None` used
+in a comparison.
+
+7 new integration tests, including one that reconciles campaign stats exactly
+against a real multi-disposition attempt sequence (mirroring the rigor of the
+earlier agent_stats live-verification pass), one proving Viewer can read a
+campaign and its stats but is denied everything else including audit search, and
+one proving the team-scoped audit filter specifically (a team member's action is
+visible, an outsider's is not). Full suite - 93 passed, no regressions. ruff clean
+repository-wide. No new migration needed.
+
+Remaining in Phase 4A: the Manager/Team Leader/Team Captain dashboards (4A-4, the
+first server-rendered UI in this build - `app/templates` and `app/static` are
+still empty scaffold directories, and Jinja2Templates/StaticFiles aren't wired
+into `app/main.py` yet).

@@ -125,14 +125,42 @@ alongside the real workforce API) - it isn't removed, just no longer the only wa
   campaign - an actor authorized to move agents out of campaign A cannot use that
   same authority to place them into a campaign B they have no standing over.
 
-## 4A-3: protected audit search and Viewer role [not started]
+## 4A-3: protected audit search and Viewer role [done]
 
-Today `GET /api/v1/admin/audit-events` is an unscoped global list gated only by
-Super Admin's `VIEW_AUDIT`. Plan 6.3 gives Manager/Team Leader/Team Captain their
-own bounded analytics visibility ("Authorized portfolio" / "Assigned teams" /
-"Direct team"), and Viewer's whole purpose is a read-only aggregate scope with
-explicit non-access to raw contacts, notes, imports, and DNC entries. Needs a scoped
-audit query and a first real capability for Viewer.
+Two related pieces, both scoped narrowly on purpose rather than building the full
+plan 6.3 "View analytics" surface in one pass.
+
+**Aggregate campaign reports.** New `app/reporting/campaign_stats.py`, extending
+the exact pattern Phase 3's `agent_stats.py` already established (live counts over
+immutable `call_attempts`, not a precomputed rollup): total contacts, active
+assigned agents, total attempts, connected, conversions, DNC requests for one
+campaign. New `GET /api/v1/campaigns/{campaign_id}/stats`, gated by a new capability
+`VIEW_CAMPAIGN_REPORTS` (deliberately separate from `VIEW_CAMPAIGN` - reports are
+totals only, plan 6.1's line for Viewer: "no raw contact, note, import-row, or DNC
+access"). Granted to Manager, Team Leader, Team Captain, and Viewer.
+
+**Viewer's first real capability.** `ROLE_VIEWER` was `set()` since Phase 1 - gave
+it `VIEW_CAMPAIGN` (campaign metadata: name, status, provenance - never contacts)
+and the new `VIEW_CAMPAIGN_REPORTS`, both already scope-checked through the existing
+`has_campaign_capability`/`campaign_scope_filter` machinery, so a Viewer's assigned
+report scope is exactly their `RoleAssignment.scope_type`/`scope_id` - no separate
+"report scope" concept needed.
+
+**Scoped audit search.** `GET /api/v1/admin/audit-events` was Super-Admin-only and
+fully unscoped. Extended `VIEW_AUDIT` to Manager/Team Leader/Team Captain, but a
+real design problem surfaced immediately: `AuditEvent.team_id`/`organization_id`
+exist on the model but almost no `record_audit(...)` call site across this entire
+build actually sets them, so a scope filter keyed on those columns would see
+everything as "unscoped" and leak globally. Rather than retroactively touching
+every existing call site (large, invasive, out of proportion for this increment),
+scoped visibility is resolved a different way: installation- or organization-wide
+`VIEW_AUDIT` sees every event (Super Admin, Manager in this single-org pilot); a
+team-scoped grant (Team Leader, Team Captain) sees only events whose
+`actor_user_id` is themselves or an active member of their own team(s), reusing
+`TeamMembership` the same way 4A-1's user-listing scope filter does. This is a
+real, non-leaking, genuinely useful slice of the trail ("what did my people do")
+rather than a fully general target-type-aware resolver - documented here as the
+known simplification it is, not a hidden gap.
 
 ## 4A-4: Manager / Team Leader / Team Captain dashboards [not started]
 
@@ -197,7 +225,23 @@ authorization gate. Not a bug - just worth knowing before extending this area.
       for this increment either, same reasoning as 4A-1 (the integration tests
       already exercise the real stack end to end).
 
+## 4A-3 verification status
+- [x] No migration needed - reports are computed live over existing tables, and
+      audit scoping reuses the existing team_memberships table.
+- [x] ruff clean across every new and modified file, repository-wide sweep clean.
+- [x] 7 new integration tests in `tests/integration/test_reporting_and_audit_flow.py`
+      (campaign stats reconciled exactly against a real multi-disposition attempt
+      sequence, Viewer can read a campaign and its stats but nothing else including
+      audit search, Viewer's visibility is scope-bounded to their assigned team,
+      Agent is denied both stats and audit search, Manager's org-wide audit search
+      works, and the team-scoped audit visibility test specifically), plus the full
+      existing suite - 93 passed total, no regressions.
+- [ ] mypy / real CI - not runnable locally; applied the `db.scalar(count) or 0`
+      fix learned from 4A-2's CI failure proactively in campaign_stats.py's two
+      count queries, but this is unverified until the actual push.
+
 ## Log
 - 2026-08-21: reconciled Phase 4 scope against D-19/D-20/D-21, wrote this plan,
-  built and verified 4A-1 (workforce foundation) and 4A-2 (campaign assignment API
-  and transfer).
+  built and verified 4A-1 (workforce foundation), 4A-2 (campaign assignment API and
+  transfer), and 4A-3 (aggregate campaign reports, Viewer's first real capability,
+  scoped audit search).

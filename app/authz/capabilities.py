@@ -34,6 +34,12 @@ WORK_QUEUE = "work_queue"
 # 6.3 "Assign Agent to campaign" / "Move Agent between campaigns" - Phase 4A)
 ASSIGN_CAMPAIGN_AGENT = "assign_campaign_agent"
 
+# Aggregate reporting (plan 6.3 "View analytics" row; Phase 4A). Deliberately
+# separate from VIEW_CAMPAIGN: reports are totals derived from immutable call
+# attempts, never a raw contact, note, import row, or DNC entry (plan 6.1) - the
+# one capability Viewer is meant to hold at all.
+VIEW_CAMPAIGN_REPORTS = "view_campaign_reports"
+
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MANAGER = "manager"
 ROLE_TEAM_LEADER = "team_leader"
@@ -55,6 +61,8 @@ ROLE_CAPABILITIES: dict[str, set[str]] = {
         LAUNCH_CAMPAIGN,
         ARCHIVE_CAMPAIGN,
         ASSIGN_CAMPAIGN_AGENT,
+        VIEW_CAMPAIGN_REPORTS,
+        VIEW_AUDIT,
     },
     ROLE_TEAM_LEADER: {
         APPOINT_TEAM_CAPTAIN,
@@ -64,8 +72,16 @@ ROLE_CAPABILITIES: dict[str, set[str]] = {
         MANAGE_CAMPAIGN,
         PAUSE_CAMPAIGN,
         ASSIGN_CAMPAIGN_AGENT,
+        VIEW_CAMPAIGN_REPORTS,
+        VIEW_AUDIT,
     },
-    ROLE_TEAM_CAPTAIN: {CREATE_AGENT, VIEW_CAMPAIGN, ASSIGN_CAMPAIGN_AGENT},
+    ROLE_TEAM_CAPTAIN: {
+        CREATE_AGENT,
+        VIEW_CAMPAIGN,
+        ASSIGN_CAMPAIGN_AGENT,
+        VIEW_CAMPAIGN_REPORTS,
+        VIEW_AUDIT,
+    },
     ROLE_AGENT: {WORK_QUEUE},
-    ROLE_VIEWER: set(),
+    ROLE_VIEWER: {VIEW_CAMPAIGN, VIEW_CAMPAIGN_REPORTS},
 }
