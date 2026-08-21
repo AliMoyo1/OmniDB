@@ -66,7 +66,10 @@ campaign.
       genuine Postgres 16, no issues found (the hand trace was accurate)
 - [ ] CI green on GitHub Actions specifically (still not observed)
 - [x] docker compose up on the host - done 2026-08-21 (see BUILD-LOG.md). Real upload
-      through the API not yet exercised (login/session/CSRF/admin flows were, via curl)
+      through the API - done 2026-08-21: full campaign create -> import upload -> real
+      async Celery parse -> preview -> approve -> commit -> idempotent-replay flow
+      exercised live via curl, 5/5 rows parsed and committed correctly, replay
+      returned the identical result with no double-insert.
 
 ## Known simplifications (documented, not bugs)
 - Campaign/import authorization checks organization-or-broader role scope; true

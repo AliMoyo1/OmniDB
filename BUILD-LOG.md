@@ -301,3 +301,49 @@ Every code fix in this entry is pushed to main. The stack itself (containers,
 volumes, local .env and deploy/secrets/* with real generated values) is NOT
 committed - .env and deploy/secrets/* stay gitignored as designed, and only exist on
 this machine's Docker Desktop right now.
+
+## 2026-08-21: Live campaign -> import -> work-item -> completion flow, end to end
+
+Closed the remaining gap from the bring-up above: exercised the actual business
+workflow live through real HTTPS, not just auth/admin. A Manager and an Agent user
+were created via the app's own code (no bootstrap script exists yet - noted as a
+Phase 4 gap). Campaign-user-assignment issuance also has no API yet, so the agent
+was assigned via a direct DB insert, consistent with how Phase 2/3 tests already do
+this.
+
+Flow exercised: Manager creates a campaign with full provenance -> creates four real
+disposition definitions (a "complete" one with counts_as_connected/conversion, a
+"requeue" one, a "callback" one requiring a future time, and the protected
+"explicit_dnc" one) -> uploads a 5-row CSV -> the parse task genuinely round-tripped
+through the real Celery/Redis broker to the real worker process (this deployment
+runs with CELERY_TASK_ALWAYS_EAGER=false, so this is true async dispatch, not the
+eager mode the pytest suite uses) and parsed all 5 rows valid -> preview reviewed ->
+decision approved -> committed (5 inserted, 0 suppressed), and a replay with the same
+idempotency key returned the identical result without double-inserting -> campaign
+launched -> agent leased and completed items covering every disposition branch:
+a normal completion, a requeue (returned to queued), an explicit DNC (contact
+suppressed, verified for real in suppression_entries: source
+explicit_contact_request, status active, real fingerprint and ciphertext present), a
+callback (correctly excluded from the masked callback-list response's fields -
+reference showed the imported name, never the number - then correctly reappeared
+with is_callback:true once due, taking priority over the shared pool), and a skip
+(rejected with no reason, succeeded with one, returned to queued). Also incidentally
+re-confirmed the callback_at-must-be-in-the-future validation, triggered by an actual
+test-authoring mistake (subtracted instead of added an offset) rather than a
+deliberate negative test - it did exactly what it was supposed to.
+
+Final reconciliation: GET /api/v1/agent/stats (5 total attempts, 4 connected, 2
+conversions, 1 dnc_request) matched a direct query of campaign_contacts exactly -
+Alice completed/connected_interested, Carol completed/connected_interested (via the
+callback path), Dave suppressed/explicit_dnc, Bob and Eve still queued (Eve was
+skipped and returned to the pool). Every number reconciled with no discrepancy.
+
+No new bugs found in this pass - the three fixes from the bring-up above were
+sufficient. This is the strongest evidence yet that Phases 1-3 plus the
+security-hardening commit are functioning correctly as an integrated system, not
+just as individually-reviewed pieces.
+
+Test data (1 campaign, 2 users, 5 contacts, 5 call attempts, 1 suppression entry)
+remains in the local database for further exploration, alongside the admin/target
+users from the bring-up pass above - none of this is real production data, this is
+still the same first-ever local Docker Desktop environment.

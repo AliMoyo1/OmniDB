@@ -75,8 +75,15 @@ the rest of this build (it's a static parser, unaffected by the local Python
 - [x] docker compose up + alembic upgrade - done 2026-08-21 via Docker Desktop. Beat's
       reclaim_expired_leases_task confirmed executing live on its 2-minute schedule
       (Beat dispatched it, worker ran it, succeeded, returned 0 - correct for an empty
-      database). Leasing/completion endpoints not yet exercised with real work items
-      (would need a live campaign import first); auth/session/CSRF/admin flows were.
+      database).
+- [x] Leasing/completion exercised live with real work items - done 2026-08-21 (see
+      BUILD-LOG.md): a full campaign->import->launch flow fed 5 real contacts through
+      an agent leasing loop covering every disposition branch (complete, requeue back
+      to queued, explicit DNC with a verified suppression_entries row, callback with
+      the masked callback-list response then correct is_callback:true priority re-lease
+      once due, and skip with reason validation). GET /api/v1/agent/stats reconciled
+      exactly against a direct database query with zero discrepancy. No new bugs found
+      in this pass.
 - [ ] CI green on GitHub Actions specifically, and actual `pytest` execution (still
       blocked locally by the Python 3.14/SQLAlchemy 2.0 mismatch and a restricted local
       package index - neither reflects the real target; live curl-based verification
