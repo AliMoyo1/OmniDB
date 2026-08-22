@@ -735,3 +735,14 @@ wide; the new files passed Ruff formatting; mypy passed all 72 source files;
 and the full suite passed with 111 tests. Coverage includes same-Agent
 concurrent leasing, refresh-resume, form CSRF, authorization, completion,
 required skip reasons, and preventing a second raw number from appearing.
+
+Pushed to `main` as commit `4f67d17`. GitHub Actions run `32570647307`
+completed green across build, security, quality, migration reversibility, and
+integration. Before live deployment, created and restore-list checked encrypted
+backup `backups/ciphercontact-20260822T113729Z.dump.gpg` (111682 bytes, SHA-256
+`3d84b953905c88338cb12529f33f22498344c559133c7dce34bc61bf7de9108f`).
+The live database migrated to `0009_single_active_agent_lease (head)` and web,
+worker, beat, and Caddy were recreated from the verified image. PostgreSQL,
+Redis, web, and worker reported healthy; HTTPS `/healthz` returned 200; `/login`
+returned 200 with CSP, HSTS, `Cache-Control: no-store`, frame denial, and MIME
+sniffing protection. Recent application logs contained no errors.
