@@ -1,22 +1,42 @@
 {% extends "base.html" %}
 {% block title %}Sign in - CipherContact{% endblock %}
+{% block body_class %}login-page{% endblock %}
 {% block content %}
-<section class="card login-card">
-  <h2>Cipher<span class="brand-accent">Contact</span></h2>
-  {% if flash_error %}
-  <p class="flash error">{{ flash_error }}</p>
-  {% endif %}
-  <form method="post" action="/login">
-    <label>Email
-      <input type="email" name="email" value="{{ email or '' }}" required autofocus>
-    </label>
-    <label>Password
-      <input type="password" name="password" required>
-    </label>
-    <label>Authenticator code (if enrolled)
-      <input type="text" name="totp_code" inputmode="numeric" autocomplete="one-time-code">
-    </label>
-    <button type="submit">Sign in</button>
-  </form>
+<section class="login-scene" aria-label="CipherContact sign-in">
+  <video class="login-video" autoplay loop muted playsinline preload="metadata" aria-hidden="true">
+    <source src="/static/media/ciphercontact-login-ambient.mp4" type="video/mp4">
+  </video>
+  <div class="login-story">
+    <div class="login-brand"><span class="login-brand-mark">C</span><span>CipherContact</span></div>
+    <div class="login-copy">
+      <p class="login-kicker">Campaign data, held to account</p>
+      <h1>Every contact moves with purpose.</h1>
+      <p>A controlled workspace for approved campaign data, governed from intake through retention.</p>
+    </div>
+    <div class="login-assurances" aria-label="Security assurances">
+      <span>Two-factor sign-in</span><span>Role-aware work</span><span>Zimbabwe DPA baseline</span>
+    </div>
+  </div>
+  <div class="login-panel">
+    <form class="login-card" method="post" action="/login">
+      <p class="login-kicker">Secure sign-in</p>
+      <h2>Welcome back.</h2>
+      <p class="login-intro">Use your workforce email and authenticator code to continue.</p>
+      {% if flash_error %}
+      <p class="flash error" role="alert">{{ flash_error }}</p>
+      {% endif %}
+      <label>Email
+        <input type="email" name="email" value="{{ email or '' }}" autocomplete="email" required autofocus>
+      </label>
+      <label>Password
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <label>Authenticator code <span class="field-hint">if enrolled</span>
+        <input type="text" name="totp_code" inputmode="numeric" autocomplete="one-time-code">
+      </label>
+      <button type="submit">Sign in securely</button>
+      <p class="login-notice">Access is logged and limited to your assigned organizational role.</p>
+    </form>
+  </div>
 </section>
 {% endblock %}

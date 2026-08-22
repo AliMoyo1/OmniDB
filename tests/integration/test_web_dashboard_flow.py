@@ -58,6 +58,12 @@ def test_login_page_renders_and_has_a_form():
     resp = client.get("/login")
     assert resp.status_code == 200
     assert '<form method="post" action="/login">' in resp.text
+    assert 'class="login-scene"' in resp.text
+    assert '/static/media/ciphercontact-login-ambient.mp4' in resp.text
+
+    media = client.get("/static/media/ciphercontact-login-ambient.mp4")
+    assert media.status_code == 200
+    assert media.headers["content-type"].startswith("video/mp4")
 
 
 def test_login_success_sets_cookies_and_redirects_to_dashboard():
