@@ -1,19 +1,21 @@
 {% extends "base.html" %}
 {% block title %}Campaigns | CipherContact{% endblock %}
 {% block content %}
-<div class="ops-heading">
-  <div>
-    <p class="eyebrow">Campaign control room</p>
-    <h1>Build the queue with intent.</h1>
-    <p>Review provenance, validate incoming files, and release only approved campaign data.</p>
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">Campaign control room</p>
+      <h1>Build the queue with intent.</h1>
+      <p>Review provenance, validate incoming files, and release only approved campaign data.</p>
+    </div>
+    {% if can_create_campaign %}<a class="button-link" href="#create-campaign">New campaign</a>{% endif %}
   </div>
-  {% if can_create_campaign %}<a class="button-link" href="#create-campaign">New campaign</a>{% endif %}
 </div>
 
 <section class="campaign-shelf" aria-label="Campaigns">
   {% if campaign_cards %}
     {% for row in campaign_cards %}
-    <a class="campaign-tile status-{{ row.campaign.status }}" href="/campaigns/{{ row.campaign.id }}">
+    <a class="campaign-tile status-{{ row.campaign.status }}" data-glass-tilt href="/campaigns/{{ row.campaign.id }}">
       <div class="campaign-tile-top"><span class="status-chip">{{ row.campaign.status }}</span><span class="campaign-arrow">↗</span></div>
       <h2>{{ row.campaign.name }}</h2>
       <p>{{ row.campaign.purpose or "Purpose still required" }}</p>

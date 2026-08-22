@@ -65,6 +65,8 @@ def test_campaign_list_renders_control_room_and_creation_form(manager_client):
     response = manager_client.get("/campaigns")
     assert response.status_code == 200
     assert "Campaign control room" in response.text
+    assert 'class="campaign-control-hero"' in response.text
+    assert "data-glass-tilt" in response.text
     assert 'action="/campaigns"' in response.text
     assert "Raw contact data never appears here." not in response.text
 
