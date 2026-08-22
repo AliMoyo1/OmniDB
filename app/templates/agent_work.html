@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Agent Workbench | CipherContact{% endblock %}
+{% block content %}
+<div class="workbench-heading">
+  <div>
+    <p class="eyebrow">Agent workspace</p>
+    <h1>One contact. One clear outcome.</h1>
+    <p class="workbench-subtitle">Contact details remain visible only while your secure hold is active.</p>
+  </div>
+  <div class="shortcut-strip" aria-label="Keyboard shortcuts">
+    <span><kbd>Alt</kbd> + <kbd>N</kbd> next</span>
+    <span><kbd>Alt</kbd> + <kbd>S</kbd> outcome</span>
+    <span><kbd>Alt</kbd> + <kbd>Enter</kbd> save</span>
+  </div>
+</div>
+
+<div class="stat-row agent-stats" aria-label="Today's activity">
+  <div class="stat-card"><div class="stat-label">Attempts today</div><div class="stat-value">{{ stats.total_attempts }}</div></div>
+  <div class="stat-card"><div class="stat-label">Connected</div><div class="stat-value">{{ stats.connected }}</div></div>
+  <div class="stat-card"><div class="stat-label">Conversions</div><div class="stat-value">{{ stats.conversions }}</div></div>
+  <div class="stat-card"><div class="stat-label">DNC requests</div><div class="stat-value">{{ stats.dnc_requests }}</div></div>
+</div>
+
+{% if lease %}
+<section class="work-card" data-lease-expires="{{ lease.lease_expires_at.isoformat() }}">
+  <div class="contact-rail">
+    <div>
+      <span class="campaign-chip">{{ lease.campaign_name }}</span>
+      {% if lease.is_callback %}<span class="badge callback-badge">Due callback</span>{% endif %}
+    </div>
+    <div class="lease-clock" role="status" aria-live="polite">
+      <span class="pulse-dot"></span>
+      Secure hold <strong id="lease-countdown">--:--</strong>
+    </div>
+  </div>
+
+  <div class="contact-stage">
+    <p class="contact-kicker">Current contact</p>
+    <h2>{{ lease.contact_name or "Unnamed contact" }}</h2>
+    <a class="phone-number" href="tel:{{ lease.phone_e164 }}">{{ lease.phone_e164 }}</a>
+    {% if lease.approved_metadata %}
+    <dl class="contact-metadata">
+      {% for key, value in lease.approved_metadata.items() %}
+      <div><dt>{{ key|replace("_", " ")|title }}</dt><dd>{{ value }}</dd></div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+  </div>
+
+  <form id="disposition-form" class="disposition-panel" method="post" action="/agent/work/{{ lease.work_item_id }}/complete">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="lease_id" value="{{ lease.lease_id }}">
+    <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+    <input id="duration-seconds" type="hidden" name="duration_seconds" value="0">
+
+    <label for="disposition-id">Call outcome</label>
+    <select id="disposition-id" name="disposition_id" required>
+      <option value="">Select an outcome</option>
+      {% for disposition in dispositions %}
+      <option value="{{ disposition.id }}" data-notes="{{ 'true' if disposition.requires_notes else 'false' }}" data-callback="{{ 'true' if disposition.requires_callback_time else 'false' }}" data-dnc="{{ 'true' if disposition.causes_dnc else 'false' }}">{{ disposition.label }}</option>
+      {% endfor %}
+    </select>
+
+    <div id="dnc-warning" class="dnc-warning" hidden>
+      This records an explicit do-not-call request and suppresses this number across active campaigns.
+    </div>
+
+    <div id="callback-field" hidden>
+      <label for="callback-at">Callback date and time <span>({{ campaign.timezone }})</span></label>
+      <input id="callback-at" type="datetime-local" name="callback_at">
+    </div>
+
+    <div>
+      <label for="notes">Notes <span id="notes-hint">Optional unless required by the selected outcome</span></label>
+      <textarea id="notes" name="notes" rows="4" maxlength="2000" placeholder="Record only information needed for this campaign."></textarea>
+    </div>
+
+    <div class="work-actions">
+      <button id="complete-contact" type="submit">Save outcome <span>Alt + Enter</span></button>
+    </div>
+  </form>
+
+  <div class="release-panel">
+    <form id="renew-form" method="post" action="/agent/work/{{ lease.work_item_id }}/renew">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="lease_id" value="{{ lease.lease_id }}">
+      <button type="submit" class="secondary">Extend secure hold</button>
+    </form>
+    <form id="skip-form" method="post" action="/agent/work/{{ lease.work_item_id }}/skip">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="lease_id" value="{{ lease.lease_id }}">
+      <label for="skip-reason">Cannot complete this contact?</label>
+      <div><input id="skip-reason" name="reason" required maxlength="200" placeholder="Reason required"><button type="submit" class="secondary">Release</button></div>
+    </form>
+  </div>
+</section>
+{% else %}
+<section class="ready-card">
+  <div class="ready-orbit" aria-hidden="true"><span></span></div>
+  <p class="eyebrow">Queue ready</p>
+  <h2>Ready for your next contact?</h2>
+  <p>CipherContact will reveal one eligible contact from your active assignment.</p>
+  <form id="next-contact-form" method="post" action="/agent/work/next">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Secure next contact <span>Alt + N</span></button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card callbacks-card">
+  <div class="section-title-row"><div><p class="eyebrow">Scheduled</p><h2>My callbacks</h2></div><span class="badge muted">{{ callbacks|length }} pending</span></div>
+  {% if callbacks %}
+  <div class="table-wrap"><table><thead><tr><th>Contact</th><th>Campaign</th><th>Due</th></tr></thead><tbody>
+  {% for callback in callbacks %}<tr><td>{{ callback.reference }}</td><td>{{ callback.campaign_name }}</td><td>{{ callback.due_at.strftime("%d %b %Y, %H:%M") if callback.due_at else "Not scheduled" }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  <p class="privacy-note">Phone numbers stay masked until a callback is securely leased to you.</p>
+  {% else %}<p class="empty">No callbacks are waiting.</p>{% endif %}
+</section>
+<script src="/static/js/agent-work.js"></script>
+{% endblock %}

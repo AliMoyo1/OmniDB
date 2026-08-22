@@ -5,7 +5,17 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDMixin, utcnow
@@ -27,6 +37,14 @@ class Batch(UUIDMixin, TimestampMixin, Base):
 
 class WorkItem(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "work_items"
+    __table_args__ = (
+        Index(
+            "uq_work_items_one_active_lease",
+            "lease_owner_id",
+            unique=True,
+            postgresql_where=text("state = 'leased' AND lease_owner_id IS NOT NULL"),
+        ),
+    )
 
     campaign_contact_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaign_contacts.id"))
     batch_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("batches.id"), nullable=True)

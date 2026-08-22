@@ -76,6 +76,16 @@ def dashboard(
     user: User = Depends(require_page_user),
 ):
     flags = nav_flags(db, user)
+    if flags["can_work_queue"] and not any(
+        flags[key]
+        for key in (
+            "can_view_campaigns",
+            "can_manage_workforce",
+            "can_manage_teams",
+            "can_view_audit",
+        )
+    ):
+        return RedirectResponse("/agent/work", status_code=303)
     can_view_campaigns = flags["can_view_campaigns"]
     can_manage_workforce = flags["can_manage_workforce"]
     can_manage_teams = flags["can_manage_teams"]

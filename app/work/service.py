@@ -66,6 +66,27 @@ class LeaseResult:
     is_callback: bool
 
 
+def _lease_result(
+    work_item: WorkItem,
+    campaign_contact: CampaignContact,
+    contact: Contact,
+    campaign: Campaign,
+) -> LeaseResult:
+    if work_item.lease_id is None or work_item.lease_expires_at is None:
+        raise WorkItemError("leased work item is missing lease identity or expiry")
+    return LeaseResult(
+        work_item_id=work_item.id,
+        lease_id=work_item.lease_id,
+        lease_expires_at=work_item.lease_expires_at,
+        campaign_id=campaign.id,
+        campaign_name=campaign.name,
+        phone_e164=decrypt(contact.phone_ciphertext),
+        contact_name=campaign_contact.campaign_name_value,
+        approved_metadata=campaign_contact.approved_metadata,
+        is_callback=work_item.assigned_agent_id is not None,
+    )
+
+
 def _active_primary_assignment(
     db: Session, agent_id: uuid.UUID
 ) -> CampaignUserAssignment | None:
@@ -257,13 +278,79 @@ def _lock_lease_candidate(
     return work_item, campaign_contact, contact
 
 
+def _active_lease_candidate(
+    db: Session, agent_id: uuid.UUID, now: datetime
+) -> _LeaseCandidate | None:
+    row = db.execute(
+        select(WorkItem.id, Contact.phone_fingerprint, CampaignContact.campaign_id)
+        .join(CampaignContact, WorkItem.campaign_contact_id == CampaignContact.id)
+        .join(Contact, CampaignContact.contact_id == Contact.id)
+        .where(
+            WorkItem.state == "leased",
+            WorkItem.lease_owner_id == agent_id,
+            WorkItem.lease_expires_at > now,
+        )
+        .limit(1)
+    ).one_or_none()
+    return _LeaseCandidate(*row) if row is not None else None
+
+
+def _get_active_lease_locked(
+    db: Session, agent_id: uuid.UUID, now: datetime
+) -> LeaseResult | None:
+    candidate = _active_lease_candidate(db, agent_id, now)
+    if candidate is None:
+        return None
+
+    # Keep the same phone-before-work-row lock order used by every other path that
+    # can expose, suppress, or complete this contact.
+    lock_phone_fingerprint(db, candidate.phone_fingerprint)
+    work_item = db.scalar(
+        select(WorkItem)
+        .where(
+            WorkItem.id == candidate.work_item_id,
+            WorkItem.state == "leased",
+            WorkItem.lease_owner_id == agent_id,
+            WorkItem.lease_expires_at > now,
+        )
+        .with_for_update()
+    )
+    if work_item is None:
+        return None
+    campaign_contact = db.get(CampaignContact, work_item.campaign_contact_id)
+    if campaign_contact is None:
+        raise WorkItemError("work item references a missing campaign contact")
+    contact = db.get(Contact, campaign_contact.contact_id)
+    if contact is None:
+        raise WorkItemError("campaign contact references a missing contact")
+    campaign = db.get(Campaign, campaign_contact.campaign_id)
+    if campaign is None or campaign.status != "active":
+        return None
+    if _active_suppression_exists(db, contact.phone_fingerprint):
+        raise WorkItemError("active lease references a suppressed contact")
+    return _lease_result(work_item, campaign_contact, contact, campaign)
+
+
+def get_active_lease(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
+    """Resume the agent's one active lease without allocating another contact."""
+    lock_idempotency_key(db, "work.lease.agent", agent_id, "single-active")
+    return _get_active_lease_locked(db, agent_id, utcnow())
+
+
 def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
     now = utcnow()
+    # Serialize repeated tabs/double-clicks for one agent, then resume an existing
+    # lease before considering any queue candidate. Migration 0009 backs this with
+    # a partial unique index as the final database-level invariant.
+    lock_idempotency_key(db, "work.lease.agent", agent_id, "single-active")
+    active_lease = _get_active_lease_locked(db, agent_id, now)
+    if active_lease is not None:
+        return active_lease
+
     work_item: WorkItem | None = None
     campaign_contact: CampaignContact | None = None
     contact: Contact | None = None
     assignment: CampaignUserAssignment | None = None
-    is_callback = False
     skipped_callback_ids: set[uuid.UUID] = set()
 
     # Due callbacks take priority, but raw contact data is returned only while an
@@ -285,7 +372,6 @@ def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
             skipped_callback_ids.add(candidate.work_item_id)
             continue
         work_item, campaign_contact, contact = locked
-        is_callback = True
         break
 
     if work_item is None:
@@ -333,17 +419,7 @@ def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
         target_type="work_item", target_id=work_item.id,
     )
 
-    return LeaseResult(
-        work_item_id=work_item.id,
-        lease_id=lease_id,
-        lease_expires_at=work_item.lease_expires_at,
-        campaign_id=campaign.id,
-        campaign_name=campaign.name,
-        phone_e164=decrypt(contact.phone_ciphertext),
-        contact_name=campaign_contact.campaign_name_value,
-        approved_metadata=campaign_contact.approved_metadata,
-        is_callback=is_callback,
-    )
+    return _lease_result(work_item, campaign_contact, contact, campaign)
 
 
 def renew_lease(

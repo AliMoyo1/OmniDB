@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import csrf
 from app.authz import service as authz
-from app.authz.capabilities import MANAGE_ROLES, VIEW_AUDIT, VIEW_CAMPAIGN
+from app.authz.capabilities import MANAGE_ROLES, VIEW_AUDIT, VIEW_CAMPAIGN, WORK_QUEUE
 from app.models.identity import User
 from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY
 
@@ -34,6 +34,7 @@ def nav_flags(db: Session, user: User) -> dict:
     )
     can_manage_teams = authz.has_assigned_capability(db, user.id, MANAGE_ROLES)
     return {
+        "can_work_queue": authz.has_assigned_capability(db, user.id, WORK_QUEUE),
         "can_view_campaigns": authz.has_assigned_capability(db, user.id, VIEW_CAMPAIGN),
         "can_manage_workforce": can_manage_workforce,
         "can_manage_teams": can_manage_teams,

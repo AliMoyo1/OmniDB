@@ -98,7 +98,7 @@ def test_dashboard_shows_manager_sections():
     assert 'action="/dashboard/campaigns"' in resp.text
 
 
-def test_agent_sees_no_dashboard_sections():
+def test_agent_dashboard_redirects_to_workbench():
     from app.main import app
 
     email = f"webagent-{uuid.uuid4().hex[:8]}@example.com"
@@ -106,10 +106,8 @@ def test_agent_sees_no_dashboard_sections():
     client = TestClient(app, follow_redirects=False)
     login(client, email)
     resp = client.get("/dashboard")
-    assert resp.status_code == 200
-    assert "Campaigns" not in resp.text
-    assert "Workforce" not in resp.text
-    assert "Recent audit activity" not in resp.text
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/agent/work"
 
 
 def test_create_campaign_via_form():

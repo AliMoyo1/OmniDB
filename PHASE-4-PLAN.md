@@ -456,3 +456,6 @@ code.
   a Jinja2 duplicate-block bug and a CSP violation that silently broke the
   theme toggle. ruff/mypy/unit/authorization all clean locally; integration
   suite deferred to CI (no local DB access in this sandbox).
+- 2026-08-22: added the Agent Workbench browser workflow and database-backed
+  one-active-contact-per-Agent invariant. Clean migration through revision
+  0009, Ruff and mypy clean, full isolated PostgreSQL suite green at 111 tests.

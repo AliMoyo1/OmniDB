@@ -120,3 +120,26 @@ def test_concurrent_leasing_yields_no_duplicate_active_leases():
         assert all(item.state == "leased" for item in items)
         owners = [item.lease_owner_id for item in items]
         assert len(set(owners)) == _ITEM_COUNT, "each leased item has a distinct owner"
+
+
+def test_same_agent_concurrent_requests_resume_one_lease():
+    numbers = zw_numbers(2)
+    campaign_id, agent_ids = _setup(numbers)
+    agent_id = agent_ids[0]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(_lease_in_own_session, [agent_id, agent_id]))
+
+    assert results[0] is not None
+    assert results[0] == results[1]
+    with SessionLocal() as db:
+        leased = db.scalars(
+            select(WorkItem)
+            .join(CampaignContact, WorkItem.campaign_contact_id == CampaignContact.id)
+            .where(
+                CampaignContact.campaign_id == campaign_id,
+                WorkItem.state == "leased",
+                WorkItem.lease_owner_id == agent_id,
+            )
+        ).all()
+        assert len(leased) == 1

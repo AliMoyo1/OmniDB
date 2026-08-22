@@ -698,8 +698,8 @@ Two real bugs found in live verification, neither one pytest would catch:
    `particles.js`/`card-tilt.js` already used - not by weakening the policy.
 
 ruff and mypy clean, 27/27 unit + authorization tests passing locally
-(`APP_ENV=development` override, no database needed - matches CI's `quality`
-job exactly). The integration suite - the most relevant one here, since it
+ (`APP_ENV=development` override, no database needed - matches CI's `quality`
+ job exactly). The integration suite - the most relevant one here, since it
 includes `test_web_dashboard_flow.py` - could not run locally this time:
 `compose.yaml` deliberately exposes no database ports to the host, and this
 session's sandbox blocks publishing new ports even via a throwaway forwarding
@@ -710,3 +710,28 @@ animates, login page renders correctly). Pushed (commit `ea113fb`) and
 watched CI run 32516090093 to completion: build, security, integration, and
 quality all green, no regressions - see PHASE-4-PLAN.md's "4A-4 UI redesign"
 section for the full breakdown.
+
+## 2026-08-22: Agent Workbench and one-active-contact invariant
+
+Built the first complete browser workflow for Agents at `/agent/work`. The
+keyboard-first workbench reveals one leased contact, displays the approved
+campaign metadata and hold countdown, records dispositions and encrypted
+notes, schedules callbacks in the campaign timezone, supports justified skip
+and lease renewal, and keeps callback phone numbers masked until leased. Agent
+logins now land on this workbench through the existing dashboard redirect;
+management navigation remains capability-gated.
+
+Closed a backend race discovered while designing the page: repeated Next calls
+from multiple tabs could give one Agent more than one active contact. Leasing is
+now serialized per Agent, returns the existing lease on refresh or double-click,
+and is backed by migration `0009_single_active_agent_lease`, which safely
+normalizes any historical duplicates before creating a PostgreSQL partial
+unique index on active lease ownership.
+
+Verification used disposable PostgreSQL 16 and Redis containers, separate from
+the live deployment. A clean database migrated through all nine revisions.
+The application image built and imported successfully; Ruff passed repository-
+wide; the new files passed Ruff formatting; mypy passed all 72 source files;
+and the full suite passed with 111 tests. Coverage includes same-Agent
+concurrent leasing, refresh-resume, form CSRF, authorization, completion,
+required skip reasons, and preventing a second raw number from appearing.
