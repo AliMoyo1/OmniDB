@@ -772,3 +772,15 @@ logged in, opened `/campaigns`, and saw the seeded draft. The final pass complet
 with zero browser-console errors and zero failing network responses. The login
 heading's blocked inline style was moved to the stylesheet, and a same-origin SVG
 favicon was added, so the strict CSP remains intact without browser noise.
+
+The Campaign Control Room was pushed as `9aed835`; GitHub Actions run
+`32574111227` completed green across build, security, quality, migration
+reversibility, and integration. Before deployment, created and restore-list
+checked encrypted backup `backups/ciphercontact-20260822T125305Z.dump.gpg`
+(111703 bytes, SHA-256
+`295fc2ac4c73ea8dc7df137b6d14834d7f2f457aedb5a4ad3f6e5b0901df5ae7`).
+Rebuilt and recreated web, worker, beat, and Caddy only. PostgreSQL and Redis
+remained healthy, the live schema stayed at `0009_single_active_agent_lease
+(head)`, and HTTPS `/healthz` and `/login` returned 200. The protected
+`/campaigns` route redirected unauthenticated requests to `/login` with CSP and
+HSTS headers present; recent application logs contained no errors.
