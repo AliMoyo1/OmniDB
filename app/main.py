@@ -20,6 +20,7 @@ from app.logging_setup import configure_logging
 from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from app.web.agent_work import router as web_agent_work_router
 from app.web.auth_pages import router as web_auth_router
+from app.web.campaigns import router as web_campaigns_router
 from app.web.dashboard import router as web_dashboard_router
 from app.web.dependencies import InvalidFormCsrf, RedirectToLogin
 
@@ -47,7 +48,12 @@ async def _redirect_to_login(request: Request, exc: RedirectToLogin) -> Redirect
 
 @app.exception_handler(InvalidFormCsrf)
 async def _invalid_form_csrf(request: Request, exc: InvalidFormCsrf) -> RedirectResponse:
-    target = "/agent/work" if request.url.path.startswith("/agent/work") else "/dashboard"
+    if request.url.path.startswith("/agent/work"):
+        target = "/agent/work"
+    elif request.url.path.startswith("/campaigns"):
+        target = "/campaigns"
+    else:
+        target = "/dashboard"
     return RedirectResponse(
         target + "?flash_error=Your+session+expired+or+the+form+was+stale.+Please+retry.",
         status_code=303,
@@ -63,6 +69,7 @@ app.include_router(agent_router)
 app.include_router(workforce_router)
 app.include_router(web_auth_router)
 app.include_router(web_agent_work_router)
+app.include_router(web_campaigns_router)
 app.include_router(web_dashboard_router)
 
 

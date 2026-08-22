@@ -746,3 +746,29 @@ worker, beat, and Caddy were recreated from the verified image. PostgreSQL,
 Redis, web, and worker reported healthy; HTTPS `/healthz` returned 200; `/login`
 returned 200 with CSP, HSTS, `Cache-Control: no-store`, frame denial, and MIME
 sniffing protection. Recent application logs contained no errors.
+
+## 2026-08-22: Campaign Control Room
+
+Added a dedicated, server-rendered Campaign Control Room at `/campaigns` and
+capability-gated it from the shared navigation. Managers can create a provenance
+complete draft, stage an import, review aggregate validation results, approve and
+commit it, manage dispositions, assign Agents, and launch, pause, or archive a
+campaign. Viewers keep read-only campaign visibility without management forms.
+
+The pages deliberately expose only aggregate import and campaign information.
+Raw phone numbers, names, and contact metadata remain in the existing protected
+data path and never render in this management interface. All state-changing forms
+use the established CSRF and authorization controls, and import commit preserves
+the existing decision-version and idempotency safeguards. No migration was needed.
+
+Added five integration tests covering authentication, form CSRF, read-only Viewer
+access, and the manager create -> stage -> review -> commit -> disposition ->
+assignment -> launch workflow. The full 116-test suite passed before the final
+visual-only CSP and favicon cleanup. The current source then passed Ruff and mypy
+(73 source files) and built successfully into the disposable application image.
+
+Real-browser validation used a separate PostgreSQL and Redis network: a Manager
+logged in, opened `/campaigns`, and saw the seeded draft. The final pass completed
+with zero browser-console errors and zero failing network responses. The login
+heading's blocked inline style was moved to the stylesheet, and a same-origin SVG
+favicon was added, so the strict CSP remains intact without browser noise.

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ campaign.name }} | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-detail-head">
+  <div><a class="back-link" href="/campaigns">← All campaigns</a><p class="eyebrow">Campaign control room</p><h1>{{ campaign.name }}</h1><p>{{ campaign.description or campaign.purpose }}</p></div>
+  <div class="lifecycle-stack"><span class="status-chip status-{{ campaign.status }}">{{ campaign.status }}</span>
+    {% if can_launch_campaign and campaign.status == "draft" %}<form method="post" action="/campaigns/{{ campaign.id }}/lifecycle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="launch"><button type="submit">Launch campaign</button></form>{% endif %}
+    {% if can_pause_campaign and campaign.status == "active" %}<form method="post" action="/campaigns/{{ campaign.id }}/lifecycle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="pause"><button type="submit" class="secondary">Pause</button></form>{% endif %}
+    {% if can_archive_campaign and campaign.status in ("draft", "paused", "active") %}<form method="post" action="/campaigns/{{ campaign.id }}/lifecycle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="archive"><button type="submit" class="quiet-danger">Archive</button></form>{% endif %}
+  </div>
+</div>
+
+<section class="readiness-strip" aria-label="Campaign readiness">
+  <div><span>Provenance</span><strong>{% if campaign.data_source and campaign.purpose and campaign.data_obtained_at and campaign.lawful_basis_or_consent_reference %}Ready{% else %}Incomplete{% endif %}</strong></div>
+  <div><span>Valid timezone</span><strong>{{ campaign.timezone }}</strong></div>
+  <div><span>Launch rule</span><strong>Approved contacts required</strong></div>
+  {% if stats %}<div><span>Contacts</span><strong>{{ stats.total_contacts }}</strong></div>{% endif %}
+</section>
+
+<div class="ops-grid">
+  <section class="ops-panel import-panel">
+    <div class="panel-heading"><div><p class="eyebrow">01 · Intake</p><h2>Import and validate</h2></div><span class="panel-note">Raw contact data never appears here.</span></div>
+    {% if can_manage_campaign %}
+    <form method="post" enctype="multipart/form-data" action="/campaigns/{{ campaign.id }}/imports" class="import-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="file-field"><span>Source file</span><input type="file" name="file" accept=".csv,.xlsx" required></label>
+      <div class="mapping-grid"><label>Phone column<input name="phone_column" placeholder="phone" required></label><label>Name column <span>optional</span><input name="name_column" placeholder="name"></label></div>
+      <label>Approved metadata columns <span>comma-separated, optional</span><input name="metadata_columns" placeholder="region, customer_type"></label>
+      <button type="submit">Stage for validation</button>
+    </form>
+    {% else %}<p class="permission-note">You can view campaign status, but cannot upload or review imports.</p>{% endif %}
+
+    {% if import_jobs %}
+    <div class="import-list"><h3>Recent imports</h3>{% for job in import_jobs %}<a class="import-row {% if selected_job and job.id == selected_job.id %}selected{% endif %}" href="/campaigns/{{ campaign.id }}?import={{ job.id }}"><span>{{ job.source_filename_display }}</span><span class="badge {% if job.state in ('failed', 'expired') %}muted{% endif %}">{{ job.state }}</span><small>{{ job.valid_rows }} valid · {{ job.invalid_rows }} invalid · {{ job.duplicate_rows }} duplicate · {{ job.suppression_hits }} suppressed</small></a>{% endfor %}</div>
+    {% endif %}
+
+    {% if selected_job %}
+    <div class="review-drawer"><div class="review-drawer-head"><div><p class="eyebrow">Review selected import</p><h3>{{ selected_job.source_filename_display }}</h3></div><span class="badge muted">v{{ selected_job.decision_version }}</span></div>
+      {% if selected_job.error_summary %}<p class="import-error">{{ selected_job.error_summary }}</p>{% endif %}
+      {% if selected_preview %}<p class="invalid-summary">{{ selected_job.invalid_rows }} invalid row{{ '' if selected_job.invalid_rows == 1 else 's' }}. First {{ selected_preview|length }} reasons:</p><ul class="invalid-list">{% for item in selected_preview %}<li><span>Row {{ item.row_number }}</span>{{ item.validation_detail }}</li>{% endfor %}</ul>{% elif selected_job.state == 'parsed' %}<p class="valid-summary">No invalid examples. Review the aggregate totals before approval.</p>{% endif %}
+      {% set decision = latest_decisions.get(selected_job.id) %}
+      {% if decision %}<p class="decision-note">Latest decision: <strong>{{ decision.decision }}</strong>{% if decision.note %} · {{ decision.note }}{% endif %}</p>{% endif %}
+      {% if can_manage_campaign and selected_job.state == 'parsed' %}
+      <form method="post" action="/campaigns/{{ campaign.id }}/imports/{{ selected_job.id }}/decision" class="decision-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Review decision<select name="decision"><option value="approve">Approve for commit</option><option value="reject">Reject import</option><option value="cancel">Cancel import</option></select></label><label>Review note <span>optional</span><input name="note" maxlength="500"></label><button type="submit" class="secondary">Record decision</button></form>
+      {% if decision and decision.decision == 'approve' %}<form method="post" action="/campaigns/{{ campaign.id }}/imports/{{ selected_job.id }}/commit" class="commit-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="decision_version" value="{{ selected_job.decision_version }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><p>Commit creates queue items only after current suppression checks run again.</p><button type="submit">Commit approved import</button></form>{% endif %}
+      {% elif selected_job.state == 'uploaded' %}<p class="pending-note">Validation is queued. Refresh this page in a moment.</p>{% endif %}
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="ops-panel configuration-panel">
+    <div class="panel-heading"><div><p class="eyebrow">02 · Outcomes</p><h2>Disposition set</h2></div><span class="panel-note">Stable codes protect reports and DNC rules.</span></div>
+    {% if dispositions %}<div class="disposition-list">{% for disposition in dispositions %}<div><strong>{{ disposition.label }}</strong><code>{{ disposition.stable_semantic_code }}</code><span>{% if disposition.causes_dnc %}Global DNC{% elif disposition.requires_callback_time %}Callback required{% elif disposition.requires_notes %}Notes required{% else %}{{ disposition.next_action or 'complete' }}{% endif %}</span></div>{% endfor %}</div>{% else %}<p class="empty">No outcomes have been configured.</p>{% endif %}
+    {% if can_manage_campaign %}
+    <form method="post" action="/campaigns/{{ campaign.id }}/dispositions" class="disposition-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><div class="mapping-grid"><label>Label<input name="label" maxlength="100" required></label><label>Stable code<input name="stable_semantic_code" maxlength="50" required></label></div><label>After outcome<select name="next_action"><option value="complete">Complete contact</option><option value="requeue">Return to queue</option><option value="review">Send to review</option></select></label><div class="checks"><label><input type="checkbox" name="requires_notes"> Require notes</label><label><input type="checkbox" name="requires_callback_time"> Require callback time</label><label><input type="checkbox" name="counts_as_connected"> Counts as connected</label><label><input type="checkbox" name="counts_as_conversion"> Counts as conversion</label><label><input type="checkbox" name="causes_dnc" value="true"> Explicit DNC <small>requires code `explicit_dnc`</small></label></div><button type="submit" class="secondary">Add disposition</button></form>
+    {% endif %}
+  </section>
+
+  <section class="ops-panel staffing-panel">
+    <div class="panel-heading"><div><p class="eyebrow">03 · Release</p><h2>Assigned agents</h2></div><span class="panel-note">A primary agent holds one campaign assignment at a time.</span></div>
+    {% if assignments %}<div class="assignment-list">{% for assignment, agent in assignments %}<div><div><strong>{{ agent.display_name }}</strong><span>{{ agent.workforce_id }}</span></div><span class="badge {% if assignment.status != 'active' %}muted{% endif %}">{{ assignment.assignment_type }} · {{ assignment.status }}</span></div>{% endfor %}</div>{% else %}<p class="empty">No agents assigned yet.</p>{% endif %}
+    {% if can_assign_campaign %}
+    <form method="post" action="/campaigns/{{ campaign.id }}/assignments" class="assignment-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Agent<select name="agent_id" required><option value="">Select an authorized agent</option>{% for agent in available_agents %}<option value="{{ agent.id }}">{{ agent.display_name }} · {{ agent.workforce_id }}</option>{% endfor %}</select></label><label>Assignment type<select name="assignment_type"><option value="primary">Primary</option><option value="secondary">Secondary</option><option value="callback_only">Callback only</option></select></label><button type="submit" class="secondary">Assign agent</button></form>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

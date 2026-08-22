@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Campaigns | CipherContact{% endblock %}
+{% block content %}
+<div class="ops-heading">
+  <div>
+    <p class="eyebrow">Campaign control room</p>
+    <h1>Build the queue with intent.</h1>
+    <p>Review provenance, validate incoming files, and release only approved campaign data.</p>
+  </div>
+  {% if can_create_campaign %}<a class="button-link" href="#create-campaign">New campaign</a>{% endif %}
+</div>
+
+<section class="campaign-shelf" aria-label="Campaigns">
+  {% if campaign_cards %}
+    {% for row in campaign_cards %}
+    <a class="campaign-tile status-{{ row.campaign.status }}" href="/campaigns/{{ row.campaign.id }}">
+      <div class="campaign-tile-top"><span class="status-chip">{{ row.campaign.status }}</span><span class="campaign-arrow">↗</span></div>
+      <h2>{{ row.campaign.name }}</h2>
+      <p>{{ row.campaign.purpose or "Purpose still required" }}</p>
+      {% if row.stats %}
+      <div class="campaign-tile-stats"><span><strong>{{ row.stats.total_contacts }}</strong> contacts</span><span><strong>{{ row.stats.assigned_agents }}</strong> agents</span></div>
+      {% else %}<span class="private-metric">Details restricted by report scope</span>{% endif %}
+    </a>
+    {% endfor %}
+  {% else %}
+  <div class="ops-empty"><div class="empty-mark">+</div><h2>No campaigns in your scope</h2><p>Create a draft when you are ready to start the controlled import process.</p></div>
+  {% endif %}
+</section>
+
+{% if can_create_campaign %}
+<section id="create-campaign" class="ops-form-card">
+  <div class="form-intro"><p class="eyebrow">Start in draft</p><h2>Create a campaign</h2><p>Required provenance is captured before any data can be committed or released to agents.</p></div>
+  <form method="post" action="/campaigns" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Campaign name<input name="name" maxlength="200" required></label>
+    <label>Purpose<input name="purpose" maxlength="500" required></label>
+    <label>Data source<input name="data_source" maxlength="300" required></label>
+    <label>Data obtained<input type="date" name="data_obtained_at" required></label>
+    <label class="wide">Lawful basis or consent reference<input name="lawful_basis_or_consent_reference" maxlength="500" required></label>
+    <label class="wide">Operational description <span>optional</span><textarea name="description" maxlength="2000" rows="3" placeholder="What should this campaign achieve?"></textarea></label>
+    <div class="wide create-submit"><p>Default jurisdiction: Zimbabwe · timezone: Africa/Harare</p><button type="submit">Create controlled draft</button></div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
