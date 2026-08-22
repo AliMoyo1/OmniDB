@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CipherContact | Clickable UI tour</title>
+  <style>
+    :root {
+      --ink: #16213a;
+      --muted: #69758b;
+      --canvas: #edf1f8;
+      --paper: #ffffff;
+      --paper-soft: #f7f9fd;
+      --line: #dce3ef;
+      --blue: #245eff;
+      --blue-dark: #183a9e;
+      --blue-pale: #eaf0ff;
+      --mint: #0a8b64;
+      --mint-pale: #e7f8f1;
+      --amber: #b26700;
+      --amber-pale: #fff5de;
+      --red: #bd374e;
+      --red-pale: #fff0f3;
+      --shadow: 0 18px 45px rgba(24, 46, 94, .10);
+      --shadow-soft: 0 8px 22px rgba(24, 46, 94, .07);
+      --sans: Aptos, "Trebuchet MS", sans-serif;
+      --mono: "Cascadia Code", Consolas, monospace;
+    }
+
+    :root[data-theme="dark"] {
+      --ink: #edf3ff;
+      --muted: #a7b3ca;
+      --canvas: #0e172a;
+      --paper: #18233a;
+      --paper-soft: #202d46;
+      --line: #30415f;
+      --blue-pale: #1d3470;
+      --mint-pale: #143f38;
+      --amber-pale: #4a361a;
+      --red-pale: #4a2433;
+      --shadow: 0 18px 45px rgba(0, 0, 0, .28);
+      --shadow-soft: 0 8px 22px rgba(0, 0, 0, .20);
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 1080px; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 2%, rgba(36, 94, 255, .14), transparent 23rem),
+        radial-gradient(circle at 96% 96%, rgba(18, 180, 134, .10), transparent 26rem),
+        var(--canvas);
+      font: 15px/1.45 var(--sans);
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 3px solid rgba(36, 94, 255, .33);
+      outline-offset: 2px;
+    }
+    .tour-screen { display: none; min-height: 100vh; }
+    .tour-screen.is-active { display: flex; }
+
+    /* Login */
+    #login-screen {
+      align-items: stretch;
+      background: #0c1d51;
+      color: #f6f8ff;
+      overflow: hidden;
+    }
+    .login-hero {
+      position: relative;
+      display: flex;
+      flex: 1.25;
+      min-width: 520px;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 52px 58px;
+      overflow: hidden;
+      background:
+        linear-gradient(125deg, rgba(18, 49, 145, .92), rgba(15, 26, 75, .97)),
+        #0c1d51;
+    }
+    .login-hero::before, .login-hero::after {
+      position: absolute;
+      content: "";
+      pointer-events: none;
+      border: 1px solid rgba(170, 197, 255, .28);
+      transform: rotate(-25deg);
+    }
+    .login-hero::before { width: 670px; height: 670px; top: -310px; right: -230px; border-radius: 44% 56% 50% 50%; }
+    .login-hero::after { width: 510px; height: 510px; bottom: -330px; left: -210px; border-radius: 40% 60% 62% 38%; }
+    .brand-mark { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 11px; letter-spacing: .06em; font-size: 14px; font-weight: 800; text-transform: uppercase; }
+    .brand-mark .mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; color: #163a9b; background: #fff; font-family: var(--mono); font-size: 18px; }
+    .hero-copy { position: relative; z-index: 1; max-width: 570px; }
+    .eyebrow { margin: 0 0 12px; color: var(--blue); font-family: var(--mono); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+    .login-hero .eyebrow { color: #9db6ff; }
+    .hero-copy h1 { max-width: 510px; margin: 0; font-size: clamp(40px, 4vw, 66px); line-height: .98; letter-spacing: -.055em; }
+    .hero-copy p { max-width: 510px; margin: 22px 0 0; color: #c8d6ff; font-size: 18px; }
+    .security-strip { position: relative; z-index: 1; display: flex; gap: 24px; color: #c8d6ff; font-size: 13px; }
+    .security-strip span::before { margin-right: 7px; color: #87e0bf; content: "●"; }
+    .login-panel { display: flex; width: 480px; align-items: center; justify-content: center; padding: 48px; color: var(--ink); background: var(--paper); }
+    .login-card { width: 100%; max-width: 340px; }
+    .login-card h2 { margin: 0; font-size: 32px; letter-spacing: -.035em; }
+    .login-card > p { margin: 9px 0 29px; color: var(--muted); }
+
+    /* Shared workspace shell */
+    #workspace-screen { background: transparent; }
+    .rail {
+      position: fixed;
+      z-index: 4;
+      top: 0;
+      bottom: 0;
+      display: flex;
+      width: 76px;
+      align-items: center;
+      flex-direction: column;
+      padding: 17px 11px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, .76);
+      backdrop-filter: blur(18px);
+    }
+    :root[data-theme="dark"] .rail { background: rgba(24, 35, 58, .82); }
+    .rail-brand { display: grid; width: 42px; height: 42px; place-items: center; margin-bottom: 28px; border-radius: 13px; color: #fff; background: var(--blue); box-shadow: 0 8px 18px rgba(36, 94, 255, .35); font-family: var(--mono); font-size: 19px; font-weight: 800; }
+    .rail-button {
+      display: grid;
+      width: 44px;
+      height: 44px;
+      place-items: center;
+      margin: 5px 0;
+      border: 0;
+      border-radius: 13px;
+      color: var(--muted);
+      background: transparent;
+      transition: .18s ease;
+    }
+    .rail-button:hover { color: var(--blue); background: var(--blue-pale); }
+    .rail-button.is-active { color: #fff; background: var(--blue); box-shadow: 0 8px 16px rgba(36, 94, 255, .28); }
+    .rail-button svg, .side-link svg, .icon-button svg { width: 19px; height: 19px; stroke: currentColor; fill: none; stroke-width: 1.85; stroke-linecap: round; stroke-linejoin: round; }
+    .rail .rail-spacer { flex: 1; }
+    .sidebar {
+      position: fixed;
+      z-index: 3;
+      top: 0;
+      bottom: 0;
+      left: 76px;
+      width: 210px;
+      padding: 23px 16px;
+      border-right: 1px solid var(--line);
+      background: rgba(250, 252, 255, .82);
+      backdrop-filter: blur(18px);
+    }
+    :root[data-theme="dark"] .sidebar { background: rgba(18, 29, 49, .84); }
+    .side-heading { margin: 2px 0 29px 9px; color: var(--muted); font-family: var(--mono); font-size: 10px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+    .side-link { display: flex; width: 100%; align-items: center; gap: 10px; padding: 10px 9px; border: 0; border-radius: 9px; color: var(--ink); background: transparent; font-weight: 650; text-align: left; }
+    .side-link:hover { color: var(--blue); background: var(--blue-pale); }
+    .side-link.is-active { color: var(--blue); background: var(--blue-pale); }
+    .side-link .side-count { min-width: 19px; margin-left: auto; padding: 1px 6px; border-radius: 10px; color: var(--blue); background: rgba(36, 94, 255, .13); font-family: var(--mono); font-size: 10px; text-align: center; }
+    .account-card { position: absolute; right: 16px; bottom: 20px; left: 16px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); box-shadow: var(--shadow-soft); }
+    .account-card strong, .account-card small { display: block; }
+    .account-card small { margin-top: 2px; color: var(--muted); }
+    .avatar { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 50%; color: #fff; background: linear-gradient(135deg, #4d7aff, #173c9d); font-size: 12px; font-weight: 800; }
+    .account-card .account-row { display: flex; align-items: center; gap: 9px; }
+    .tour-note { margin-top: 10px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+    .workspace { width: calc(100% - 286px); min-height: 100vh; margin-left: 286px; }
+    .topbar { position: sticky; z-index: 2; top: 0; display: flex; height: 68px; align-items: center; justify-content: space-between; padding: 0 34px; border-bottom: 1px solid var(--line); background: rgba(247, 249, 253, .78); backdrop-filter: blur(18px); }
+    :root[data-theme="dark"] .topbar { background: rgba(14, 23, 42, .80); }
+    .topbar-title { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
+    .topbar-actions { display: flex; align-items: center; gap: 10px; }
+    .icon-button { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); background: var(--paper); }
+    .icon-button:hover { color: var(--blue); border-color: var(--blue); }
+    .account-name { color: var(--muted); font-size: 13px; }
+    .view { display: none; padding: 34px; animation: show .24s ease-out; }
+    .view.is-active { display: block; }
+    @keyframes show { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    /* Reusable pieces */
+    .page-head { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 27px; }
+    .page-head h1 { margin: 0; font-size: 35px; letter-spacing: -.05em; line-height: 1.04; }
+    .page-head .subhead { max-width: 660px; margin: 9px 0 0; color: var(--muted); }
+    .button { display: inline-flex; min-height: 39px; align-items: center; justify-content: center; gap: 8px; padding: 8px 14px; border: 1px solid transparent; border-radius: 9px; color: var(--ink); background: var(--paper); font-weight: 750; text-decoration: none; transition: .16s ease; }
+    .button:hover { transform: translateY(-1px); box-shadow: var(--shadow-soft); }
+    .button.primary { color: #fff; background: var(--blue); box-shadow: 0 8px 17px rgba(36, 94, 255, .24); }
+    .button.secondary { border-color: var(--line); }
+    .button.danger { color: var(--red); border-color: rgba(189, 55, 78, .25); background: var(--red-pale); }
+    .button.small { min-height: 31px; padding: 5px 10px; border-radius: 7px; font-size: 12px; }
+    .button[disabled] { cursor: not-allowed; opacity: .55; transform: none; box-shadow: none; }
+    .chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 20px; font-family: var(--mono); font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+    .chip::before { content: "●"; font-size: 8px; }
+    .chip.draft { color: #3f5b9d; background: #e8eeff; }
+    .chip.active { color: var(--mint); background: var(--mint-pale); }
+    .chip.paused { color: var(--amber); background: var(--amber-pale); }
+    .chip.attention { color: var(--amber); background: var(--amber-pale); }
+    .chip.archived { color: var(--muted); background: var(--paper-soft); }
+    .card { border: 1px solid var(--line); border-radius: 15px; background: var(--paper); box-shadow: var(--shadow-soft); }
+    .card-pad { padding: 20px; }
+    .card-title { margin: 0; font-size: 16px; letter-spacing: -.02em; }
+    .card-title-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .muted { color: var(--muted); }
+    .mono { font-family: var(--mono); }
+    .divider { height: 1px; margin: 17px 0; background: var(--line); }
+    label { display: grid; gap: 6px; color: var(--ink); font-size: 12px; font-weight: 750; }
+    input, select, textarea { width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; outline: none; color: var(--ink); background: var(--paper-soft); }
+    input:focus, select:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(36, 94, 255, .12); }
+    textarea { min-height: 84px; resize: vertical; }
+    .form-grid { display: grid; gap: 15px; grid-template-columns: repeat(2, 1fr); }
+    .form-grid .full { grid-column: 1 / -1; }
+    .table-wrap { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th { padding: 11px 13px; color: var(--muted); background: var(--paper-soft); font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+    td { padding: 13px; border-top: 1px solid var(--line); vertical-align: middle; }
+    td.actions { text-align: right; }
+    .empty-state { padding: 32px; color: var(--muted); text-align: center; }
+    .privacy-line { display: flex; align-items: start; gap: 9px; padding: 11px 13px; border: 1px solid #bdd0ff; border-radius: 10px; color: #34538f; background: #f2f6ff; font-size: 12px; }
+    :root[data-theme="dark"] .privacy-line { color: #d2deff; border-color: #38518e; background: #162952; }
+    .privacy-line b { color: var(--blue); }
+    .grid-2 { display: grid; gap: 20px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { display: grid; gap: 20px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    /* Dashboard */
+    .stat-row { display: grid; gap: 16px; grid-template-columns: repeat(4, 1fr); margin-bottom: 22px; }
+    .stat-card { position: relative; min-height: 124px; overflow: hidden; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: var(--shadow-soft); }
+    .stat-card::after { position: absolute; right: -23px; bottom: -30px; width: 92px; height: 92px; border: 15px solid var(--blue-pale); border-radius: 50%; content: ""; }
+    .stat-card:nth-child(2)::after { border-color: var(--mint-pale); }
+    .stat-card:nth-child(3)::after { border-color: var(--amber-pale); }
+    .stat-label { position: relative; z-index: 1; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .stat-value { position: relative; z-index: 1; margin: 13px 0 0; font-family: var(--mono); font-size: 33px; font-weight: 800; letter-spacing: -.06em; }
+    .stat-foot { position: relative; z-index: 1; margin-top: 6px; color: var(--mint); font-size: 11px; font-weight: 700; }
+    .dash-main { display: grid; gap: 20px; grid-template-columns: 1.25fr .75fr; }
+    .campaign-row { display: grid; grid-template-columns: 1.25fr .5fr .5fr .75fr auto; align-items: center; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+    .campaign-row:first-of-type { margin-top: 15px; }
+    .campaign-name { display: block; font-weight: 800; }
+    .campaign-meta { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .queue-graphic { display: grid; gap: 10px; margin-top: 18px; }
+    .queue-bar { display: grid; grid-template-columns: 42% 26% 18% 14%; height: 13px; overflow: hidden; border-radius: 10px; background: var(--paper-soft); }
+    .queue-bar span:nth-child(1) { background: var(--blue); }
+    .queue-bar span:nth-child(2) { background: #6c93ff; }
+    .queue-bar span:nth-child(3) { background: #f3bd60; }
+    .queue-bar span:nth-child(4) { background: #d6ddea; }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 11px; }
+    .legend i { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%; background: var(--blue); }
+    .legend span:nth-child(2) i { background: #6c93ff; }
+    .legend span:nth-child(3) i { background: #f3bd60; }
+    .legend span:nth-child(4) i { background: #d6ddea; }
+    .activity-item { display: flex; gap: 11px; padding: 13px 0; border-top: 1px solid var(--line); }
+    .activity-item:first-of-type { margin-top: 7px; }
+    .activity-dot { width: 8px; height: 8px; flex: 0 0 auto; margin-top: 6px; border-radius: 50%; background: var(--blue); }
+    .activity-item p { margin: 0; font-size: 13px; }
+    .activity-item small { color: var(--muted); }
+
+    /* Campaign list and detail */
+    .campaign-hero { display: flex; align-items: end; justify-content: space-between; min-height: 185px; margin: -34px -34px 28px; padding: 40px 34px 28px; color: #fff; background: linear-gradient(110deg, #173a99, #245eff 62%, #4a80ff); }
+    .campaign-hero .eyebrow { color: #a9c2ff; }
+    .campaign-hero h1 { max-width: 600px; margin: 0; font-size: 40px; letter-spacing: -.05em; }
+    .campaign-hero p { max-width: 600px; margin: 10px 0 0; color: #d6e2ff; }
+    .campaign-list { display: grid; gap: 13px; }
+    .campaign-item { display: grid; grid-template-columns: auto 1.45fr repeat(3, .52fr) auto; align-items: center; gap: 17px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: var(--shadow-soft); transition: .17s ease; }
+    .campaign-item:hover { border-color: rgba(36, 94, 255, .4); transform: translateX(3px); }
+    .campaign-item .item-number { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: var(--blue); background: var(--blue-pale); font-family: var(--mono); font-weight: 800; }
+    .campaign-item strong { display: block; }
+    .campaign-item small { color: var(--muted); }
+    .campaign-metric { font-family: var(--mono); font-size: 19px; font-weight: 800; }
+    .campaign-metric small { display: block; margin-top: 1px; font-family: var(--sans); font-size: 10px; font-weight: 600; }
+    .crumb { display: flex; gap: 8px; margin-bottom: 15px; color: var(--muted); font-size: 12px; }
+    .crumb button { padding: 0; border: 0; color: var(--blue); background: transparent; font: inherit; }
+    .campaign-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 22px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+    .campaign-detail-head h1 { margin: 7px 0 0; font-size: 31px; letter-spacing: -.045em; }
+    .detail-actions { display: flex; align-items: center; gap: 8px; }
+    .tabs { display: flex; gap: 5px; margin: 22px 0; border-bottom: 1px solid var(--line); }
+    .tab { margin-bottom: -1px; padding: 11px 13px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-weight: 750; }
+    .tab.is-active { border-bottom-color: var(--blue); color: var(--blue); }
+    .tab-panel { display: none; }
+    .tab-panel.is-active { display: block; }
+    .intake-grid { display: grid; gap: 20px; grid-template-columns: 1.1fr .9fr; }
+    .intake-stage { display: grid; gap: 13px; margin-top: 18px; }
+    .stage-step { display: flex; align-items: center; gap: 11px; }
+    .stage-step .step { display: grid; width: 25px; height: 25px; place-items: center; flex: 0 0 auto; border-radius: 50%; color: var(--muted); background: var(--paper-soft); font-family: var(--mono); font-size: 11px; font-weight: 800; }
+    .stage-step.complete .step { color: #fff; background: var(--mint); }
+    .stage-step .stage-copy strong, .stage-step .stage-copy span { display: block; }
+    .stage-step .stage-copy span { color: var(--muted); font-size: 11px; }
+    .upload-zone { display: grid; min-height: 112px; place-items: center; margin: 16px 0; border: 1px dashed #9fb8f9; border-radius: 11px; color: var(--muted); background: #f5f8ff; text-align: center; }
+    :root[data-theme="dark"] .upload-zone { background: #1a2b52; }
+    .upload-zone strong { display: block; color: var(--blue); }
+    .review-numbers { display: grid; gap: 9px; grid-template-columns: repeat(3, 1fr); margin-top: 14px; }
+    .review-numbers div { padding: 12px; border-radius: 10px; background: var(--paper-soft); }
+    .review-numbers strong, .review-numbers small { display: block; }
+    .review-numbers strong { font-family: var(--mono); font-size: 20px; }
+    .review-numbers small { color: var(--muted); font-size: 10px; }
+    .data-note { margin-top: 14px; padding: 11px; border-left: 3px solid var(--mint); border-radius: 0 8px 8px 0; background: var(--mint-pale); color: #15745a; font-size: 12px; }
+    :root[data-theme="dark"] .data-note { color: #b8e6d4; }
+    .staff-grid { display: grid; gap: 20px; grid-template-columns: .9fr 1.1fr; }
+    .person-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid var(--line); }
+    .person-row:first-of-type { margin-top: 9px; }
+    .person-row .avatar { flex: 0 0 auto; }
+    .person-row strong, .person-row small { display: block; }
+    .person-row small { color: var(--muted); }
+    .person-row .person-action { margin-left: auto; }
+    .governance-box { display: grid; gap: 12px; padding: 16px; border-left: 4px solid var(--amber); border-radius: 0 12px 12px 0; background: var(--amber-pale); }
+    .governance-box strong { color: var(--amber); }
+
+    /* Agent workbench */
+    .work-layout { display: grid; gap: 20px; grid-template-columns: .9fr 1.1fr; }
+    .work-contact { min-height: 503px; padding: 25px; background: linear-gradient(145deg, var(--paper), var(--blue-pale)); }
+    .contact-label { color: var(--muted); font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+    .contact-number { margin: 11px 0 5px; font-family: var(--mono); font-size: 39px; font-weight: 800; letter-spacing: -.065em; }
+    .contact-mask { color: var(--muted); }
+    .contact-time { display: inline-flex; align-items: center; gap: 6px; margin-top: 20px; padding: 6px 8px; border-radius: 8px; color: var(--amber); background: var(--amber-pale); font-family: var(--mono); font-size: 11px; font-weight: 800; }
+    .contact-prompt { margin-top: 30px; padding: 17px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255, 255, 255, .62); }
+    :root[data-theme="dark"] .contact-prompt { background: rgba(24, 35, 58, .62); }
+    .contact-prompt p { margin: 0; color: var(--muted); font-size: 13px; }
+    .work-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; margin-top: 25px; }
+    .work-meta div { padding: 10px; border-radius: 9px; background: rgba(255, 255, 255, .58); }
+    :root[data-theme="dark"] .work-meta div { background: rgba(24, 35, 58, .62); }
+    .work-meta strong, .work-meta small { display: block; }
+    .work-meta small { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .work-actions { display: flex; gap: 8px; margin-top: 25px; }
+    .disposition-list { display: grid; gap: 9px; margin-top: 17px; }
+    .disposition { position: relative; display: flex; align-items: center; gap: 11px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); transition: .15s ease; }
+    .disposition:hover { border-color: var(--blue); }
+    .disposition input { width: auto; accent-color: var(--blue); }
+    .disposition strong, .disposition small { display: block; }
+    .disposition small { color: var(--muted); }
+    .work-form-actions { display: flex; justify-content: space-between; gap: 12px; margin-top: 17px; }
+
+    /* Workforce, teams and audit */
+    .filter-bar { display: flex; align-items: center; gap: 9px; margin-bottom: 18px; }
+    .filter-bar input { max-width: 280px; }
+    .filter-bar select { width: 160px; }
+    .filter-bar .filter-spacer { flex: 1; }
+    .role-pill { display: inline-block; margin-right: 4px; padding: 3px 7px; border-radius: 5px; color: var(--blue); background: var(--blue-pale); font-family: var(--mono); font-size: 10px; font-weight: 800; }
+    .team-grid { display: grid; gap: 16px; grid-template-columns: repeat(3, 1fr); }
+    .team-card { min-height: 204px; padding: 20px; }
+    .team-card h3 { margin: 12px 0 4px; font-size: 19px; letter-spacing: -.03em; }
+    .team-card p { margin: 0; color: var(--muted); font-size: 12px; }
+    .team-card .team-stats { display: flex; gap: 24px; margin-top: 25px; }
+    .team-card .team-stats strong, .team-card .team-stats small { display: block; }
+    .team-card .team-stats strong { font-family: var(--mono); font-size: 19px; }
+    .team-card .team-stats small { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .team-card .button { margin-top: 17px; }
+    .audit-layout { display: grid; gap: 20px; grid-template-columns: .72fr 1.28fr; }
+    .audit-filter h3 { margin: 0; font-size: 16px; }
+    .audit-filter .filter-stack { display: grid; gap: 13px; margin-top: 17px; }
+    .audit-event { display: grid; grid-template-columns: 80px 1fr; gap: 14px; padding: 15px 0; border-top: 1px solid var(--line); }
+    .audit-event:first-of-type { margin-top: 8px; }
+    .audit-time { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    .audit-event strong, .audit-event p, .audit-event small { display: block; }
+    .audit-event p { margin: 3px 0; color: var(--muted); font-size: 12px; }
+    .audit-event small { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+
+    /* Modal and toast */
+    .modal-layer { position: fixed; z-index: 20; inset: 0; display: none; align-items: center; justify-content: center; padding: 25px; background: rgba(9, 18, 42, .48); backdrop-filter: blur(4px); }
+    .modal-layer.is-open { display: flex; }
+    .modal { width: min(650px, 100%); max-height: calc(100vh - 50px); overflow: auto; padding: 24px; border: 1px solid var(--line); border-radius: 17px; background: var(--paper); box-shadow: 0 22px 60px rgba(5, 15, 42, .28); animation: modal-show .18s ease-out; }
+    @keyframes modal-show { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+    .modal-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 19px; }
+    .modal h2 { margin: 0; font-size: 23px; letter-spacing: -.04em; }
+    .modal .modal-note { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .modal-actions { display: flex; justify-content: end; gap: 8px; margin-top: 20px; }
+    .toast { position: fixed; z-index: 30; right: 26px; bottom: 24px; display: flex; max-width: 420px; align-items: center; gap: 10px; padding: 13px 15px; border: 1px solid #9edcc5; border-radius: 11px; color: #126449; background: #effbf5; box-shadow: var(--shadow); transform: translateY(125%); transition: transform .25s ease; }
+    .toast.is-visible { transform: none; }
+    .toast .toast-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mint); }
+    .toast span { font-size: 13px; font-weight: 700; }
+    .hidden { display: none !important; }
+    @media (max-width: 1160px) {
+      .stat-row { grid-template-columns: repeat(2, 1fr); }
+      .team-grid { grid-template-columns: repeat(2, 1fr); }
+      .campaign-item { grid-template-columns: auto 1fr repeat(2, .55fr) auto; }
+      .campaign-item .hide-at-narrow { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <section class="tour-screen is-active" id="login-screen" aria-label="CipherContact sign-in screen">
+    <div class="login-hero">
+      <div class="brand-mark"><span class="mark">C</span> CipherContact</div>
+      <div class="hero-copy">
+        <p class="eyebrow">Campaign data, held to account</p>
+        <h1>Every contact moves with purpose.</h1>
+        <p>A controlled workspace for the campaign data your teams are trusted to use. Designed for on-site work laptops, governed from intake to retention.</p>
+      </div>
+      <div class="security-strip"><span>Authenticated access</span><span>Role-aware work</span><span>Zimbabwe baseline</span></div>
+    </div>
+    <div class="login-panel">
+      <form class="login-card" id="tour-login">
+        <p class="eyebrow">Secure sign-in</p>
+        <h2>Welcome back.</h2>
+        <p>Use your workforce email and authenticator code.</p>
+        <label>Email<input type="email" value="manager@ciphercontact.example" autocomplete="email"></label>
+        <div style="height:14px"></div>
+        <label>Password<input type="password" value="CipherContact" autocomplete="current-password"></label>
+        <div style="height:14px"></div>
+        <label>Authenticator code<input inputmode="numeric" placeholder="6-digit code" autocomplete="one-time-code"></label>
+        <button class="button primary" style="width:100%; margin-top:22px" type="submit">Sign in to the tour</button>
+        <p class="tour-note">This is an interactive visual tour with synthetic, non-production content. No sign-in is sent anywhere.</p>
+      </form>
+    </div>
+  </section>
+
+  <section class="tour-screen" id="workspace-screen" aria-label="CipherContact application tour">
+    <nav class="rail" aria-label="Application modules">
+      <button class="rail-brand" data-view="dashboard" aria-label="Open overview">C</button>
+      <button class="rail-button is-active" data-view="dashboard" title="Overview" aria-label="Overview">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="8" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="15" width="7" height="6" rx="1"/></svg>
+      </button>
+      <button class="rail-button" data-view="campaigns" title="Campaigns" aria-label="Campaigns">
+        <svg viewBox="0 0 24 24"><path d="M4 11h3l4-5v12l-4-5H4z"/><path d="M15 9a4 4 0 0 1 0 6"/><path d="M18 6a8 8 0 0 1 0 12"/></svg>
+      </button>
+      <button class="rail-button" data-view="workbench" title="Agent workbench" aria-label="Agent workbench">
+        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2h-4"/><path d="m13 11 8-8"/><path d="M16 3h5v5"/><path d="M3 5v14a2 2 0 0 0 2 2h8"/><path d="M7 9h4M7 13h4"/></svg>
+      </button>
+      <button class="rail-button" data-view="workforce" title="Workforce" aria-label="Workforce">
+        <svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/><path d="M17 11a4 4 0 0 0 0-8M22 21v-2a5 5 0 0 0-3-4.6"/></svg>
+      </button>
+      <button class="rail-button" data-view="teams" title="Teams" aria-label="Teams">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>
+      </button>
+      <button class="rail-button" data-view="audit" title="Audit trail" aria-label="Audit trail">
+        <svg viewBox="0 0 24 24"><path d="m12 2 8 3v6c0 5-3.3 8.7-8 11-4.7-2.3-8-6-8-11V5z"/><path d="m8 12 2.5 2.5L16 9"/></svg>
+      </button>
+      <div class="rail-spacer"></div>
+      <button class="rail-button" id="back-to-login" title="Return to sign-in" aria-label="Return to sign-in">
+        <svg viewBox="0 0 24 24"><path d="M10 17l-5-5 5-5"/><path d="M5 12h14"/><path d="M19 19V5"/></svg>
+      </button>
+    </nav>
+
+    <aside class="sidebar" aria-label="Section navigation">
+      <p class="side-heading">CipherContact</p>
+      <button class="side-link is-active" data-view="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="8" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="15" width="7" height="6" rx="1"/></svg>Overview</button>
+      <button class="side-link" data-view="campaigns"><svg viewBox="0 0 24 24"><path d="M4 11h3l4-5v12l-4-5H4z"/><path d="M15 9a4 4 0 0 1 0 6"/></svg>Campaigns <span class="side-count">4</span></button>
+      <button class="side-link" data-view="workbench"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2h-4"/><path d="m13 11 8-8"/><path d="M16 3h5v5"/></svg>Agent workbench</button>
+      <button class="side-link" data-view="workforce"><svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/></svg>Workforce</button>
+      <button class="side-link" data-view="teams"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg>Teams</button>
+      <button class="side-link" data-view="audit"><svg viewBox="0 0 24 24"><path d="m12 2 8 3v6c0 5-3.3 8.7-8 11-4.7-2.3-8-6-8-11V5z"/><path d="m8 12 2.5 2.5L16 9"/></svg>Audit trail</button>
+      <div class="account-card">
+        <div class="account-row"><span class="avatar">AM</span><div><strong>Ali Moyo</strong><small>Manager</small></div></div>
+        <p class="tour-note">UI tour only. All sample records are synthetic and masked.</p>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="topbar-title" id="topbar-title">Overview</div>
+        <div class="topbar-actions"><span class="account-name">Ali Moyo · manager</span><button class="icon-button" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="button secondary small" id="tour-logout">Log out</button></div>
+      </header>
+
+      <section class="view is-active" id="view-dashboard">
+        <div class="page-head"><div><p class="eyebrow">Operational overview</p><h1>Good afternoon, Ali.</h1><p class="subhead">A controlled summary of active work. Use Campaigns to prepare approved data and the workbench to complete assigned calls.</p></div><button class="button primary" data-view="campaigns">Open Campaign Control Room</button></div>
+        <div class="stat-row">
+          <article class="stat-card"><div class="stat-label">Campaigns in view</div><div class="stat-value">4</div><div class="stat-foot">2 active · 1 draft</div></article>
+          <article class="stat-card"><div class="stat-label">Contacts ready</div><div class="stat-value">1,284</div><div class="stat-foot">Validated for assignment</div></article>
+          <article class="stat-card"><div class="stat-label">Calls completed today</div><div class="stat-value">86</div><div class="stat-foot">+14% vs. yesterday</div></article>
+          <article class="stat-card"><div class="stat-label">DNC protections</div><div class="stat-value">39</div><div class="stat-foot">Skipped before allocation</div></article>
+        </div>
+        <div class="dash-main">
+          <article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Campaigns in motion</h2><button class="button small secondary" data-view="campaigns">View all</button></div>
+            <div class="campaign-row"><div><span class="campaign-name">August service renewal</span><span class="campaign-meta">Customer outreach · Africa/Harare</span></div><span class="chip active">Active</span><strong class="mono">842</strong><span class="muted">3 agents assigned</span><button class="button small secondary" data-view="campaign-detail">Open</button></div>
+            <div class="campaign-row"><div><span class="campaign-name">September readiness</span><span class="campaign-meta">Approved CRM import</span></div><span class="chip draft">Draft</span><strong class="mono">0</strong><span class="muted">Import review pending</span><button class="button small secondary" data-view="campaign-detail">Open</button></div>
+            <div class="campaign-row"><div><span class="campaign-name">VIP follow-up</span><span class="campaign-meta">Customer care</span></div><span class="chip paused">Paused</span><strong class="mono">442</strong><span class="muted">Captain review</span><button class="button small secondary" data-view="campaign-detail">Open</button></div>
+          </article>
+          <article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Queue composition</h2><span class="chip active">Healthy</span></div><div class="queue-graphic"><div class="queue-bar"><span></span><span></span><span></span><span></span></div><div class="legend"><span><i></i>Ready 42%</span><span><i></i>Assigned 26%</span><span><i></i>Callbacks 18%</span><span><i></i>Closed 14%</span></div></div><div class="divider"></div><p class="muted" style="margin:0;font-size:13px">No queue total is exposed to Agents. Each Agent receives one securely leased contact at a time.</p></article>
+        </div>
+        <div class="grid-2" style="margin-top:20px"><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Recent controlled activity</h2><button class="button small secondary" data-view="audit">Audit trail</button></div><div class="activity-item"><span class="activity-dot"></span><div><p><strong>Import approved</strong> for September readiness</p><small>Manager · 09:42</small></div></div><div class="activity-item"><span class="activity-dot" style="background:var(--mint)"></span><div><p><strong>Disposition recorded</strong> by Call Agent 07</p><small>Agent workbench · 09:37</small></div></div><div class="activity-item"><span class="activity-dot" style="background:var(--amber)"></span><div><p><strong>DNC contact skipped</strong> before lease allocation</p><small>Suppression control · 09:22</small></div></div></article><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Manager shortcuts</h2></div><div class="grid-2" style="margin-top:17px"><button class="button secondary" data-view="campaigns">Create campaign</button><button class="button secondary" data-view="workforce">Manage accounts</button><button class="button secondary" data-view="teams">Review teams</button><button class="button secondary" data-view="workbench">Preview Agent view</button></div></article></div>
+      </section>
+
+      <section class="view" id="view-campaigns">
+        <div class="campaign-hero"><div><p class="eyebrow">Campaign Control Room</p><h1>Build the queue with intent.</h1><p>Capture provenance, validate incoming files, and release only approved campaign data.</p></div><button class="button" id="open-campaign-modal">New campaign</button></div>
+        <div class="privacy-line"><b>Privacy boundary</b><span>This management area shows only campaign and validation aggregates. Contact names, numbers, and approved metadata never appear here.</span></div>
+        <div class="filter-bar" style="margin-top:20px"><input aria-label="Search campaigns" placeholder="Search campaigns"><select aria-label="Filter campaign status"><option>All statuses</option><option>Active</option><option>Draft</option><option>Paused</option><option>Archived</option></select><div class="filter-spacer"></div><span class="muted">4 campaigns</span></div>
+        <div class="campaign-list" id="campaign-list">
+          <article class="campaign-item"><span class="item-number">01</span><div><strong>August service renewal</strong><small>Customer outreach · created 01 Aug 2026</small></div><span class="chip active">Active</span><div class="campaign-metric">842<small>contacts</small></div><div class="campaign-metric hide-at-narrow">3<small>agents</small></div><button class="button secondary small" data-view="campaign-detail">Open</button></article>
+          <article class="campaign-item"><span class="item-number">02</span><div><strong>September readiness</strong><small>Approved CRM export · created today</small></div><span class="chip draft">Draft</span><div class="campaign-metric">0<small>contacts</small></div><div class="campaign-metric hide-at-narrow">0<small>agents</small></div><button class="button secondary small" data-view="campaign-detail">Open</button></article>
+          <article class="campaign-item"><span class="item-number">03</span><div><strong>VIP follow-up</strong><small>Customer care · captain review required</small></div><span class="chip paused">Paused</span><div class="campaign-metric">442<small>contacts</small></div><div class="campaign-metric hide-at-narrow">2<small>agents</small></div><button class="button secondary small" data-view="campaign-detail">Open</button></article>
+          <article class="campaign-item"><span class="item-number">04</span><div><strong>July reconnection</strong><small>Retention countdown started</small></div><span class="chip archived">Archived</span><div class="campaign-metric">1,093<small>contacts</small></div><div class="campaign-metric hide-at-narrow">0<small>agents</small></div><button class="button secondary small" data-view="campaign-detail">Open</button></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-campaign-detail">
+        <div class="crumb"><button data-view="campaigns">Campaigns</button><span>/</span><span>September readiness</span></div>
+        <div class="campaign-detail-head"><div><span class="chip draft">Draft</span><h1>September readiness</h1><p class="muted" style="margin:7px 0 0">Approved CRM export · Africa/Harare · Zimbabwe baseline</p></div><div class="detail-actions"><button class="button secondary small" id="pause-campaign">Pause</button><button class="button primary small" id="launch-campaign">Launch when ready</button></div></div>
+        <div class="tabs" role="tablist" aria-label="Campaign detail sections"><button class="tab is-active" data-campaign-tab="intake" role="tab">Data intake</button><button class="tab" data-campaign-tab="staffing" role="tab">Staffing</button><button class="tab" data-campaign-tab="governance" role="tab">Governance</button></div>
+        <div class="tab-panel is-active" id="campaign-tab-intake">
+          <div class="intake-grid"><article class="card card-pad"><div class="card-title-row"><div><h2 class="card-title">Import and validate</h2><p class="muted" style="margin:5px 0 0;font-size:12px">Upload a controlled file. Validation creates a reviewable aggregate before commitment.</p></div><span class="chip attention" id="import-state">Awaiting file</span></div><div class="upload-zone"><div><strong>Approved CSV or XLSX</strong><span>Max 10 MB · direct server quarantine</span><br><button class="button small primary" id="stage-import" type="button" style="margin-top:10px">Stage example file</button></div></div><div class="intake-stage"><div class="stage-step complete"><span class="step">✓</span><div class="stage-copy"><strong>Capture provenance</strong><span>Purpose, source, date and lawful basis recorded</span></div></div><div class="stage-step" id="stage-validate"><span class="step">2</span><div class="stage-copy"><strong>Validate file</strong><span>Classify format, duplicates and suppression hits</span></div></div><div class="stage-step" id="stage-approve"><span class="step">3</span><div class="stage-copy"><strong>Approve decision</strong><span>A manager reviews the aggregate before commitment</span></div></div><div class="stage-step" id="stage-commit"><span class="step">4</span><div class="stage-copy"><strong>Commit approved contacts</strong><span>Idempotent release into the protected queue</span></div></div></div></article>
+          <article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Validation review</h2><button class="button small secondary" id="approve-import" disabled>Approve</button></div><p class="muted" id="review-empty" style="margin:19px 0">Stage a file to view validation aggregates. No raw contact values are displayed.</p><div id="review-ready" class="hidden"><div class="review-numbers"><div><strong>1,284</strong><small>Valid rows</small></div><div><strong>39</strong><small>Suppression hits</small></div><div><strong>12</strong><small>Duplicate rows</small></div></div><div class="data-note">Validation preview contains counts and reasons only. The protected imported file remains outside the user interface.</div><div class="divider"></div><label>Reviewer note<textarea id="review-note" placeholder="Explain the approval decision">Validated against the approved campaign purpose.</textarea></label><div class="modal-actions" style="margin-top:13px"><button class="button primary small" id="commit-import" disabled>Commit approved import</button></div></div></article></div>
+          <div class="grid-2" style="margin-top:20px"><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Disposition definitions</h2><button class="button small secondary" id="add-disposition">Add disposition</button></div><div class="table-wrap" style="margin-top:15px"><table><thead><tr><th>Label</th><th>Outcome</th><th>DNC</th><th></th></tr></thead><tbody id="disposition-body"><tr><td><strong>Reached customer</strong><br><small class="muted mono">reached_customer</small></td><td>Complete</td><td><span class="muted">No</span></td><td class="actions"><button class="button small secondary">Edit</button></td></tr><tr><td><strong>Explicit do-not-call</strong><br><small class="muted mono">explicit_dnc</small></td><td>Suppress</td><td><span class="chip attention">Protected</span></td><td class="actions"><button class="button small secondary">View</button></td></tr></tbody></table></div></article><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Campaign provenance</h2><button class="button small secondary" id="edit-provenance">Edit draft</button></div><div class="divider"></div><div class="grid-2"><div><small class="muted">Purpose</small><strong>Customer service readiness</strong></div><div><small class="muted">Data source</small><strong>Approved CRM export</strong></div><div><small class="muted">Obtained</small><strong>20 Aug 2026</strong></div><div><small class="muted">Lawful basis</small><strong>Consent reference C-2026-09</strong></div></div></article></div>
+        </div>
+        <div class="tab-panel" id="campaign-tab-staffing"><div class="staff-grid"><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Assigned Agents</h2><span class="muted mono">2 / 6</span></div><div class="person-row"><span class="avatar">CN</span><div><strong>Call Agent 07</strong><small>Primary assignment · active</small></div><span class="person-action chip active">Ready</span></div><div class="person-row"><span class="avatar">TM</span><div><strong>Call Agent 12</strong><small>Primary assignment · active</small></div><span class="person-action chip active">Ready</span></div><div class="person-row"><span class="avatar">KS</span><div><strong>Call Agent 04</strong><small>Pending assignment</small></div><button class="button secondary small person-action">Assign</button></div></article><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Assign an Agent</h2></div><div class="form-grid" style="margin-top:18px"><label>Agent<select><option>Call Agent 04</option><option>Call Agent 09</option></select></label><label>Assignment type<select><option>Primary</option><option>Support</option></select></label><label class="full">Assignment note<input placeholder="Optional staffing reason"></label></div><div class="modal-actions"><button class="button primary" id="assign-agent">Assign Agent</button></div></article></div></div>
+        <div class="tab-panel" id="campaign-tab-governance"><div class="grid-2"><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Retention</h2><span class="chip draft">Not started</span></div><div class="governance-box" style="margin-top:18px"><strong>60-day completion countdown</strong><span>The countdown begins only when every contact has a final disposition and the campaign information site number has been used. A Team Captain can export the completed database before deletion.</span></div><div class="divider"></div><p class="muted" style="margin:0">Campaign is still in draft, so no retention deadline exists yet.</p></article><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Control checks</h2></div><div class="intake-stage"><div class="stage-step complete"><span class="step">✓</span><div class="stage-copy"><strong>Jurisdiction selected</strong><span>Zimbabwe DPA baseline, configurable for future jurisdiction</span></div></div><div class="stage-step complete"><span class="step">✓</span><div class="stage-copy"><strong>DNC protection active</strong><span>Marked numbers are skipped unless a captain records a justification</span></div></div><div class="stage-step complete"><span class="step">✓</span><div class="stage-copy"><strong>Access is role-scoped</strong><span>Campaign data is never shared outside a permitted scope</span></div></div></div></article></div></div>
+      </section>
+
+      <section class="view" id="view-workbench">
+        <div class="page-head"><div><p class="eyebrow">Agent Workbench</p><h1>One call. One clear next step.</h1><p class="subhead">This tour demonstrates the keyboard-first Agent view. The live application reveals a contact only after a valid, exclusive lease.</p></div><span class="chip active">Lease active</span></div>
+        <div class="work-layout"><article class="card work-contact"><span class="contact-label">Current leased contact</span><div class="contact-number">+263 ••• ••• 743</div><div class="contact-mask">Masked in this tour · Contact reference #0147</div><div class="contact-time">● Hold expires in 14:38</div><div class="contact-prompt"><p><strong>Campaign context</strong></p><p style="margin-top:8px">August service renewal · Customer outreach</p><p style="margin-top:8px">Approved metadata: Harare region</p></div><div class="work-meta"><div><strong>1</strong><small>Attempt</small></div><div><strong>None</strong><small>Callback</small></div><div><strong>Standard</strong><small>Priority</small></div><div><strong>Active</strong><small>Campaign</small></div></div><div class="work-actions"><button class="button secondary" id="renew-lease">Renew lease</button><button class="button danger" id="skip-contact">Skip with reason</button></div></article>
+          <article class="card card-pad"><div class="card-title-row"><div><h2 class="card-title">Record the outcome</h2><p class="muted" style="margin:5px 0 0;font-size:12px">A final disposition safely returns the next eligible item to your queue.</p></div></div><div class="disposition-list"><label class="disposition"><input type="radio" name="disposition" checked><span><strong>Reached customer</strong><small>Complete the current work item</small></span></label><label class="disposition"><input type="radio" name="disposition"><span><strong>No answer</strong><small>Requeue within campaign rules</small></span></label><label class="disposition"><input type="radio" name="disposition"><span><strong>Callback requested</strong><small>Schedule a specific time in campaign timezone</small></span></label><label class="disposition"><input type="radio" name="disposition"><span><strong>Explicit do-not-call</strong><small>Immediately suppress future allocation</small></span></label></div><div class="divider"></div><div class="form-grid"><label class="full">Call note<textarea placeholder="Record an approved operational note">Customer asked for a follow-up after reviewing the service renewal details.</textarea></label><label>Callback time<select><option>Not required</option><option>Tomorrow 09:00</option><option>Tomorrow 14:00</option></select></label><label>Campaign timezone<input value="Africa/Harare" readonly></label></div><div class="work-form-actions"><button class="button secondary" id="cancel-work">Cancel</button><button class="button primary" id="complete-work">Save disposition</button></div></article></div>
+      </section>
+
+      <section class="view" id="view-workforce">
+        <div class="page-head"><div><p class="eyebrow">Workforce administration</p><h1>Accounts, roles and access.</h1><p class="subhead">Workforce ID is derived from the login email. A Super Admin can reset a password or 2FA authentication when required.</p></div><button class="button primary" id="new-user">Create user</button></div>
+        <div class="filter-bar"><input aria-label="Search workforce" placeholder="Search name, email or workforce ID"><select aria-label="Filter workforce"><option>Active accounts</option><option>All accounts</option><option>Pending activation</option></select><div class="filter-spacer"></div><button class="button secondary small">Export view</button></div>
+        <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Workforce ID</th><th>Roles</th><th>Status</th><th></th></tr></thead><tbody><tr><td><strong>Ali Moyo</strong></td><td>manager@ciphercontact.example</td><td class="mono">manager</td><td><span class="role-pill">manager</span></td><td><span class="chip active">Active</span></td><td class="actions"><button class="button small secondary" id="manage-account">Manage</button></td></tr><tr><td><strong>Call Agent 07</strong></td><td>agent07@ciphercontact.example</td><td class="mono">agent07</td><td><span class="role-pill">agent</span></td><td><span class="chip active">Active</span></td><td class="actions"><button class="button small secondary">Manage</button></td></tr><tr><td><strong>Team Captain 02</strong></td><td>captain02@ciphercontact.example</td><td class="mono">captain02</td><td><span class="role-pill">team_captain</span></td><td><span class="chip active">Active</span></td><td class="actions"><button class="button small secondary">Manage</button></td></tr><tr><td><strong>Call Agent 14</strong></td><td>agent14@ciphercontact.example</td><td class="mono">agent14</td><td><span class="role-pill">agent</span></td><td><span class="chip attention">Invitation pending</span></td><td class="actions"><button class="button small secondary">Manage</button></td></tr></tbody></table></div>
+      </section>
+
+      <section class="view" id="view-teams">
+        <div class="page-head"><div><p class="eyebrow">Team structure</p><h1>Teams set the working scope.</h1><p class="subhead">Use teams to constrain visibility and operational responsibility without turning the application into a multi-tenant system.</p></div><button class="button primary" id="new-team">Create team</button></div>
+        <div class="team-grid"><article class="card team-card"><span class="chip active">Active</span><h3>Harare North</h3><p class="mono">HAR-NORTH · Africa/Harare</p><div class="team-stats"><div><strong>8</strong><small>Members</small></div><div><strong>2</strong><small>Campaigns</small></div></div><button class="button secondary small">Manage team</button></article><article class="card team-card"><span class="chip active">Active</span><h3>Harare South</h3><p class="mono">HAR-SOUTH · Africa/Harare</p><div class="team-stats"><div><strong>6</strong><small>Members</small></div><div><strong>1</strong><small>Campaign</small></div></div><button class="button secondary small">Manage team</button></article><article class="card team-card"><span class="chip paused">Paused</span><h3>Bulawayo pilot</h3><p class="mono">BYO-PILOT · Africa/Harare</p><div class="team-stats"><div><strong>3</strong><small>Members</small></div><div><strong>0</strong><small>Campaigns</small></div></div><button class="button secondary small">Manage team</button></article></div>
+        <article class="card card-pad" style="margin-top:20px"><div class="card-title-row"><h2 class="card-title">Scope reminder</h2></div><div class="privacy-line" style="margin-top:15px"><b>Single organization</b><span>Teams organize access and staffing inside the one organization. They are not tenants and do not create separate data stores.</span></div></article>
+      </section>
+
+      <section class="view" id="view-audit">
+        <div class="page-head"><div><p class="eyebrow">Immutable activity record</p><h1>Audit trail.</h1><p class="subhead">Search controlled actions by user, event type or time. The record shows who did what, when, and in which campaign scope.</p></div><button class="button secondary" id="export-audit">Export audit view</button></div>
+        <div class="audit-layout"><article class="card card-pad audit-filter"><h3>Find an event</h3><div class="filter-stack"><label>Event type<select><option>All event types</option><option>Campaign changes</option><option>Import decisions</option><option>Workforce actions</option><option>Agent work</option></select></label><label>Actor<input placeholder="Name or workforce ID"></label><label>Campaign<select><option>All campaigns</option><option>September readiness</option><option>August service renewal</option></select></label><label>Time period<select><option>Last 7 days</option><option>Today</option><option>Last 30 days</option></select></label><button class="button primary" id="run-audit-search">Apply filters</button></div></article><article class="card card-pad"><div class="card-title-row"><h2 class="card-title">Results</h2><span class="muted mono" id="audit-count">238 events</span></div><div id="audit-results"><div class="audit-event"><span class="audit-time">09:42:14</span><div><strong>Import approval recorded</strong><p>September readiness · decision version 1</p><small>manager · campaign.import.approve · success</small></div></div><div class="audit-event"><span class="audit-time">09:37:29</span><div><strong>Disposition completed</strong><p>August service renewal · work item completed</p><small>agent07 · work.complete · success</small></div></div><div class="audit-event"><span class="audit-time">09:22:08</span><div><strong>Suppression matched</strong><p>Queue allocation skipped a protected do-not-call record</p><small>system · suppression.match · success</small></div></div><div class="audit-event"><span class="audit-time">08:58:41</span><div><strong>Role assignment updated</strong><p>Call Agent 14 granted Agent role in organization scope</p><small>manager · workforce.assign_role · success</small></div></div></div></article></div>
+      </section>
+    </main>
+  </section>
+
+  <div class="modal-layer" id="campaign-modal" aria-hidden="true"><form class="modal" id="new-campaign-form"><div class="modal-head"><div><p class="eyebrow">Controlled draft</p><h2>Create a campaign</h2><p class="modal-note">Required provenance is recorded before any contact file may be committed.</p></div><button class="icon-button" type="button" data-close-modal aria-label="Close"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="form-grid"><label>Campaign name<input id="campaign-name" required placeholder="e.g. October service check"></label><label>Purpose<input required placeholder="What should this campaign achieve?"></label><label>Data source<input required placeholder="Approved source system"></label><label>Data obtained<input type="date" required></label><label class="full">Lawful basis or consent reference<input required placeholder="Reference ID"></label><label class="full">Operational description<textarea placeholder="Optional description"></textarea></label></div><div class="privacy-line" style="margin-top:18px"><b>Default</b><span>Zimbabwe jurisdiction baseline · Africa/Harare timezone</span></div><div class="modal-actions"><button class="button secondary" type="button" data-close-modal>Cancel</button><button class="button primary" type="submit">Create controlled draft</button></div></form></div>
+
+  <div class="modal-layer" id="user-modal" aria-hidden="true"><form class="modal" id="new-user-form"><div class="modal-head"><div><p class="eyebrow">Workforce administration</p><h2>Create a user</h2><p class="modal-note">The workforce ID will be generated from the email username.</p></div><button class="icon-button" type="button" data-close-modal aria-label="Close"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="form-grid"><label>Email<input type="email" required placeholder="name@organization.example"></label><label>Display name<input required placeholder="Display name"></label><label>Initial role<select><option>Agent</option><option>Team Captain</option><option>Manager</option><option>Viewer</option></select></label><label>Scope<select><option>Organization-wide</option><option>Harare North</option><option>Harare South</option></select></label></div><div class="modal-actions"><button class="button secondary" type="button" data-close-modal>Cancel</button><button class="button primary" type="submit">Create user</button></div></form></div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"><span class="toast-dot"></span><span id="toast-message">Action recorded for the tour.</span></div>
+
+  <script>
+    (() => {
+      const titles = { dashboard: "Overview", campaigns: "Campaigns", "campaign-detail": "Campaign detail", workbench: "Agent Workbench", workforce: "Workforce", teams: "Teams", audit: "Audit trail" };
+      const toast = document.getElementById("toast");
+      let toastTimer;
+      const showToast = (message) => {
+        document.getElementById("toast-message").textContent = message;
+        toast.classList.add("is-visible");
+        window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(() => toast.classList.remove("is-visible"), 3200);
+      };
+      const showView = (view) => {
+        document.querySelectorAll(".view").forEach((item) => item.classList.toggle("is-active", item.id === `view-${view}`));
+        document.querySelectorAll("[data-view]").forEach((item) => item.classList.toggle("is-active", item.dataset.view === view && item.matches(".rail-button, .side-link")));
+        document.getElementById("topbar-title").textContent = titles[view] || "CipherContact";
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      };
+      const openModal = (id) => { const modal = document.getElementById(id); modal.classList.add("is-open"); modal.setAttribute("aria-hidden", "false"); modal.querySelector("input, select, textarea")?.focus(); };
+      const closeModal = (modal) => { modal.classList.remove("is-open"); modal.setAttribute("aria-hidden", "true"); };
+
+      document.addEventListener("click", (event) => {
+        const trigger = event.target.closest("[data-view]");
+        if (trigger) { showView(trigger.dataset.view); return; }
+        if (event.target.closest("#open-campaign-modal")) openModal("campaign-modal");
+        if (event.target.closest("#new-user")) openModal("user-modal");
+        if (event.target.closest("[data-close-modal]")) closeModal(event.target.closest(".modal-layer"));
+        if (event.target.closest("#back-to-login, #tour-logout")) { document.getElementById("workspace-screen").classList.remove("is-active"); document.getElementById("login-screen").classList.add("is-active"); showToast("Returned to the synthetic sign-in screen."); }
+        if (event.target.closest("#theme-toggle")) { document.documentElement.dataset.theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; showToast("Theme changed for this tour."); }
+        if (event.target.closest("#stage-import")) {
+          document.getElementById("import-state").textContent = "Reviewed";
+          document.getElementById("import-state").className = "chip attention";
+          document.getElementById("review-empty").classList.add("hidden");
+          document.getElementById("review-ready").classList.remove("hidden");
+          document.getElementById("approve-import").disabled = false;
+          document.getElementById("stage-validate").classList.add("complete");
+          document.getElementById("stage-validate").querySelector(".step").textContent = "✓";
+          showToast("Example file staged. Aggregate validation is ready for review.");
+        }
+        if (event.target.closest("#approve-import")) {
+          event.currentTarget;
+          document.getElementById("approve-import").textContent = "Approved";
+          document.getElementById("approve-import").disabled = true;
+          document.getElementById("commit-import").disabled = false;
+          document.getElementById("stage-approve").classList.add("complete");
+          document.getElementById("stage-approve").querySelector(".step").textContent = "✓";
+          showToast("Approval decision recorded. The import can now be committed.");
+        }
+        if (event.target.closest("#commit-import")) {
+          document.getElementById("commit-import").textContent = "Committed";
+          document.getElementById("commit-import").disabled = true;
+          document.getElementById("import-state").textContent = "Ready";
+          document.getElementById("import-state").className = "chip active";
+          document.getElementById("stage-commit").classList.add("complete");
+          document.getElementById("stage-commit").querySelector(".step").textContent = "✓";
+          showToast("1,284 approved contacts were committed to the protected queue.");
+        }
+        if (event.target.closest("#launch-campaign")) { event.target.closest("#launch-campaign").textContent = "Launched"; event.target.closest("#launch-campaign").className = "button primary small"; showToast("Campaign launch recorded in the tour."); }
+        if (event.target.closest("#pause-campaign")) showToast("Pause action would require the relevant capability in the live application.");
+        if (event.target.closest("#assign-agent")) showToast("Call Agent 04 assigned to September readiness.");
+        if (event.target.closest("#add-disposition")) { const row = document.createElement("tr"); row.innerHTML = "<td><strong>Callback arranged</strong><br><small class='muted mono'>callback_arranged</small></td><td>Schedule callback</td><td><span class='muted'>No</span></td><td class='actions'><button class='button small secondary'>Edit</button></td>"; document.getElementById("disposition-body").append(row); showToast("A sample disposition was added to the tour."); }
+        if (event.target.closest("#edit-provenance")) showToast("Draft provenance can be edited before the campaign launches.");
+        if (event.target.closest("#renew-lease")) showToast("Lease renewed. The protected hold countdown has been extended.");
+        if (event.target.closest("#skip-contact")) showToast("The live application would require a skip reason before returning the work item.");
+        if (event.target.closest("#complete-work")) showToast("Disposition saved. The next eligible work item would be leased safely.");
+        if (event.target.closest("#cancel-work")) showToast("No change was saved.");
+        if (event.target.closest("#manage-account")) showToast("Account controls include password and 2FA reset for Super Admins.");
+        if (event.target.closest("#new-team")) showToast("Team creation is available to authorized Managers.");
+        if (event.target.closest("#export-audit")) showToast("The audit export is intentionally represented as a controlled, filtered view.");
+        if (event.target.closest("#run-audit-search")) { document.getElementById("audit-count").textContent = "12 matching events"; showToast("Audit filters applied to the tour results."); }
+      });
+
+      document.querySelectorAll("[data-campaign-tab]").forEach((tab) => tab.addEventListener("click", () => {
+        const target = tab.dataset.campaignTab;
+        document.querySelectorAll("[data-campaign-tab]").forEach((item) => item.classList.toggle("is-active", item === tab));
+        document.querySelectorAll(".tab-panel").forEach((item) => item.classList.toggle("is-active", item.id === `campaign-tab-${target}`));
+      }));
+      document.querySelectorAll(".modal-layer").forEach((modal) => modal.addEventListener("click", (event) => { if (event.target === modal) closeModal(modal); }));
+      document.getElementById("tour-login").addEventListener("submit", (event) => { event.preventDefault(); document.getElementById("login-screen").classList.remove("is-active"); document.getElementById("workspace-screen").classList.add("is-active"); showView("dashboard"); showToast("Signed in to the interactive UI tour."); });
+      document.getElementById("new-campaign-form").addEventListener("submit", (event) => { event.preventDefault(); const name = document.getElementById("campaign-name").value || "October service check"; const item = document.createElement("article"); item.className = "campaign-item"; item.innerHTML = `<span class="item-number">05</span><div><strong>${name.replace(/[<>&]/g, "")}</strong><small>New controlled draft · created in this tour</small></div><span class="chip draft">Draft</span><div class="campaign-metric">0<small>contacts</small></div><div class="campaign-metric hide-at-narrow">0<small>agents</small></div><button class="button secondary small" data-view="campaign-detail">Open</button>`; document.getElementById("campaign-list").prepend(item); closeModal(document.getElementById("campaign-modal")); event.target.reset(); showToast("Controlled campaign draft created in the tour."); });
+      document.getElementById("new-user-form").addEventListener("submit", (event) => { event.preventDefault(); closeModal(document.getElementById("user-modal")); event.target.reset(); showToast("A synthetic user invitation was created for the tour."); });
+    })();
+  </script>
+</body>
+</html>
