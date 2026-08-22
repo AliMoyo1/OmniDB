@@ -78,46 +78,92 @@
 
     /* Login */
     #login-screen {
+      position: relative;
+      isolation: isolate;
       align-items: stretch;
-      background: #0c1d51;
-      color: #f6f8ff;
+      padding: 24px;
+      background:
+        radial-gradient(ellipse at 15% 0%, rgba(166, 216, 105, .21), transparent 38%),
+        linear-gradient(135deg, #111511, #090b09);
+      color: #f4f6f0;
       overflow: hidden;
     }
+    #login-screen::before {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(7, 10, 8, .82), rgba(8, 10, 9, .37) 52%, rgba(6, 8, 7, .58)),
+        linear-gradient(180deg, rgba(8, 10, 9, .16), rgba(8, 10, 9, .48));
+      content: "";
+      pointer-events: none;
+    }
+    #login-screen::after {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+      opacity: .3;
+      background-image: linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, .028) 1px, transparent 1px);
+      background-size: 46px 46px;
+      mask-image: linear-gradient(90deg, #000, transparent 68%);
+      content: "";
+      pointer-events: none;
+    }
+    .login-video {
+      position: absolute;
+      z-index: 0;
+      inset: -4%;
+      width: 108%;
+      height: 108%;
+      object-fit: cover;
+      filter: saturate(.72) contrast(1.08) brightness(.73);
+      animation: login-drift 32s ease-in-out infinite alternate;
+    }
+    @keyframes login-drift { from { transform: scale(1); } to { transform: scale(1.055) translate3d(-.7%, -.45%, 0); } }
     .login-hero {
       position: relative;
       display: flex;
+      z-index: 2;
       flex: 1.25;
       min-width: 520px;
       flex-direction: column;
       justify-content: space-between;
-      padding: 52px 58px;
+      padding: 26px clamp(34px, 5.2vw, 82px) 34px;
       overflow: hidden;
-      background:
-        linear-gradient(125deg, rgba(18, 49, 145, .92), rgba(15, 26, 75, .97)),
-        #0c1d51;
     }
     .login-hero::before, .login-hero::after {
       position: absolute;
       content: "";
       pointer-events: none;
-      border: 1px solid rgba(170, 197, 255, .28);
+      border: 1px solid rgba(205, 244, 132, .20);
       transform: rotate(-25deg);
     }
     .login-hero::before { width: 670px; height: 670px; top: -310px; right: -230px; border-radius: 44% 56% 50% 50%; }
     .login-hero::after { width: 510px; height: 510px; bottom: -330px; left: -210px; border-radius: 40% 60% 62% 38%; }
-    .brand-mark { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 11px; letter-spacing: .06em; font-size: 14px; font-weight: 800; text-transform: uppercase; }
-    .brand-mark .mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; color: #163a9b; background: #fff; font-family: var(--mono); font-size: 18px; }
-    .hero-copy { position: relative; z-index: 1; max-width: 570px; }
+    .brand-mark { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 11px; color: #f5f7f1; letter-spacing: .06em; font-size: 14px; font-weight: 800; text-transform: uppercase; }
+    .brand-mark .mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; color: #151810; background: #c8f477; box-shadow: 0 8px 24px rgba(200, 244, 119, .24); font-family: var(--mono); font-size: 18px; }
+    .hero-copy { position: relative; z-index: 1; max-width: 610px; padding-bottom: 18px; }
     .eyebrow { margin: 0 0 12px; color: var(--blue); font-family: var(--mono); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
-    .login-hero .eyebrow { color: #9db6ff; }
-    .hero-copy h1 { max-width: 510px; margin: 0; font-size: clamp(40px, 4vw, 66px); line-height: .98; letter-spacing: -.055em; }
-    .hero-copy p { max-width: 510px; margin: 22px 0 0; color: #c8d6ff; font-size: 18px; }
-    .security-strip { position: relative; z-index: 1; display: flex; gap: 24px; color: #c8d6ff; font-size: 13px; }
-    .security-strip span::before { margin-right: 7px; color: #87e0bf; content: "●"; }
-    .login-panel { display: flex; width: 480px; align-items: center; justify-content: center; padding: 48px; color: var(--ink); background: var(--paper); }
-    .login-card { width: 100%; max-width: 340px; }
-    .login-card h2 { margin: 0; font-size: 32px; letter-spacing: -.035em; }
-    .login-card > p { margin: 9px 0 29px; color: var(--muted); }
+    .login-hero .eyebrow { color: #c8f477; }
+    .hero-copy h1 { max-width: 590px; margin: 0; color: #f7f8f4; font-size: clamp(43px, 4.35vw, 69px); line-height: .98; letter-spacing: -.058em; text-shadow: 0 4px 26px rgba(0, 0, 0, .25); }
+    .hero-copy p { max-width: 535px; margin: 22px 0 0; color: rgba(239, 244, 234, .76); font-size: 17px; }
+    .security-strip { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px 20px; color: rgba(235, 241, 229, .78); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .security-strip span { display: inline-flex; align-items: center; }
+    .security-strip span::before { width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: #c8f477; box-shadow: 0 0 12px rgba(200, 244, 119, .68); content: ""; }
+    .login-panel { position: relative; z-index: 2; display: flex; width: min(456px, 34vw); align-items: center; justify-content: center; padding: 18px 20px 18px 0; color: #f5f7f1; }
+    .login-card { position: relative; width: 100%; max-width: 408px; overflow: hidden; padding: 31px; border: 1px solid rgba(255, 255, 255, .19); border-radius: 22px; background: linear-gradient(145deg, rgba(35, 39, 34, .70), rgba(12, 15, 12, .52)); box-shadow: 0 26px 68px rgba(0, 0, 0, .39), inset 0 1px rgba(255, 255, 255, .10); backdrop-filter: blur(24px) saturate(128%); }
+    .login-card::before { position: absolute; inset: 0; opacity: .7; background: linear-gradient(122deg, rgba(255, 255, 255, .11), transparent 30%, transparent 70%, rgba(200, 244, 119, .08)); content: ""; pointer-events: none; }
+    .login-card > * { position: relative; z-index: 1; }
+    .login-card h2 { margin: 0; color: #f7f8f4; font-size: 34px; letter-spacing: -.045em; }
+    .login-card > p { margin: 9px 0 29px; color: rgba(231, 239, 225, .67); }
+    .login-card .eyebrow { color: #c8f477; }
+    .login-card label { color: rgba(245, 248, 240, .84); }
+    .login-card input { border-color: rgba(255, 255, 255, .13); color: #f6f8f1; background: rgba(3, 5, 3, .34); }
+    .login-card input::placeholder { color: rgba(236, 242, 230, .43); }
+    .login-card input:focus { border-color: rgba(200, 244, 119, .72); box-shadow: 0 0 0 3px rgba(200, 244, 119, .13); }
+    .login-card .button.primary { color: #151810; background: #c8f477; box-shadow: 0 11px 25px rgba(155, 202, 88, .20); }
+    .login-card .button.primary:hover { box-shadow: 0 14px 30px rgba(155, 202, 88, .27); }
+    .login-card .tour-note { color: rgba(229, 237, 222, .52); }
 
     /* Shared workspace shell */
     #workspace-screen { position: relative; isolation: isolate; overflow: hidden; background: transparent; }
@@ -478,6 +524,7 @@
     :root[data-theme="light"] .reactive-card.is-reacting { border-color: rgba(72, 112, 62, .32); box-shadow: 0 24px 45px rgba(30, 53, 35, .16), 0 0 0 1px rgba(116, 161, 78, .05), inset 0 1px rgba(255, 255, 255, .82); }
     :root[data-theme="dark"] .reactive-card.is-reacting { border-color: rgba(201, 244, 119, .30); box-shadow: 0 24px 45px rgba(0, 0, 0, .34), 0 0 0 1px rgba(201, 244, 119, .045), inset 0 1px rgba(255, 255, 255, .055); }
     @media (prefers-reduced-motion: reduce) {
+      .login-video { display: none; }
       *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
     }
     .toast .toast-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mint); }
@@ -493,6 +540,9 @@
 </head>
 <body>
   <section class="tour-screen is-active" id="login-screen" aria-label="CipherContact sign-in screen">
+    <video class="login-video" autoplay loop muted playsinline preload="metadata" aria-hidden="true">
+      <source src="assets/ciphercontact-login-ambient.mp4" type="video/mp4">
+    </video>
     <div class="login-hero">
       <div class="brand-mark"><span class="mark">C</span> CipherContact</div>
       <div class="hero-copy">
@@ -500,7 +550,7 @@
         <h1>Every contact moves with purpose.</h1>
         <p>A controlled workspace for the campaign data your teams are trusted to use. Designed for on-site work laptops, governed from intake to retention.</p>
       </div>
-      <div class="security-strip"><span>Authenticated access</span><span>Role-aware work</span><span>Zimbabwe baseline</span></div>
+      <div class="security-strip"><span>Two-factor sign-in</span><span>Role-aware work</span><span>Zimbabwe DPA baseline</span></div>
     </div>
     <div class="login-panel">
       <form class="login-card" id="tour-login">
