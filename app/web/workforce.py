@@ -172,7 +172,10 @@ def user_detail(
             .order_by(Team.name)
         )
     )
-    reporting_line = db.scalar(
+    # .first() (a Row, subscriptable as (assignment, user)), not .scalar() (which
+    # would silently collapse to just the first selected entity - the assignment -
+    # and break the template's reporting_line[1] lookup for the supervisor).
+    reporting_line = db.execute(
         select(ReportingAssignment, User)
         .join(User, ReportingAssignment.supervisor_user_id == User.id)
         .where(
@@ -180,7 +183,7 @@ def user_detail(
             ReportingAssignment.status == "active",
             ReportingAssignment.assignment_type == "primary",
         )
-    )
+    ).first()
     scope_teams = list(db.scalars(select(Team).where(Team.status == "active").order_by(Team.name)))
     candidate_supervisors = [
         candidate for candidate in workforce_service.list_visible_users(db, user.id, limit=100)
