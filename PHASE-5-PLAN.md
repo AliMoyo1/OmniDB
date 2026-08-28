@@ -1,6 +1,7 @@
 # Phase 5 plan: production hardening and controlled pilot
 
-Status: in progress - starting with 5A (concurrency and load tests).
+Status: 5A (concurrency and load tests) complete (2026-08-28). Rest of Phase 5
+not started.
 
 ## Scope reconciliation against the decision log
 
@@ -22,7 +23,7 @@ Asked the user which slice to start with; chose **concurrency & load tests**
 sustained real-world run, out of scope for this sub-phase - noted as a follow-up for
 the user to run during actual pilot prep using whatever this sub-phase produces.
 
-## 5A: concurrency and load tests [in progress]
+## 5A: concurrency and load tests [done]
 
 `tests/concurrency/` already covers two real invariants under genuine concurrent
 Postgres transactions (separate thread, separate session, real races, not
@@ -115,7 +116,26 @@ Plan:
       from the performance file.
 - [x] ruff and mypy clean on every changed file (checked locally, no Docker
       needed for either).
-- [ ] Pushed, CI green - next step.
+- [x] Pushed (commit `e4cbbfe`). CI's `integration` job failed - but on
+      `test_login_page_renders_and_has_a_form`, not on anything from this
+      increment (that test, and everything else, including the new
+      staffing-capacity test, passed). Traced it to five commits from a
+      different tool (`CodexSandboxOffline`, 2026-08-22) that redesigned the
+      login page (video background, new copy, "premium UI system") and had
+      been sitting on `main` with this one test broken for six days -
+      unrelated to and predating this session's Phase 5A work, just inherited
+      by pushing on top of it. Confirmed by inspection that it's a stale
+      assertion, not a real regression: the test still checked for the exact
+      literal `<form method="post" action="/login">`, and the redesign added
+      `class="login-card"` to that tag - the Codex commit that added several
+      *new* assertions for its own markup in this same test function simply
+      missed updating this pre-existing one to match. Asked the user how to
+      handle a pre-existing break from unrelated, uncoordinated work in the
+      same repo; asked to fix and continue. Fixed
+      (commit `c10dd0d`) and re-pushed.
+- [x] CI green on `c10dd0d` (run 33158752533): build, security, integration,
+      quality all passed. `main` is clean again; the new staffing-capacity
+      test passed for real against CI's Postgres.
 
 ## Log
 - 2026-08-21: reconciled Phase 5 scope, asked the user which slice to start with
@@ -130,3 +150,9 @@ Plan:
   instead of an empirical local red run, and moved straight to push + CI
   rather than block on Docker recovering, since CI's Postgres is independent
   of it either way.
+- 2026-08-28: pushed 5A; CI's integration job failed on a pre-existing,
+  unrelated break inherited from a different tool's login-page redesign that
+  had been on `main` unfixed since 2026-08-22 (see verification status above).
+  Asked the user how to handle it; fixed the stale test assertion and
+  re-pushed on their instruction. CI green on the re-push (run 33158752533,
+  commit `c10dd0d`) - 5A done.

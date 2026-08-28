@@ -784,3 +784,43 @@ remained healthy, the live schema stayed at `0009_single_active_agent_lease
 (head)`, and HTTPS `/healthz` and `/login` returned 200. The protected
 `/campaigns` route redirected unauthenticated requests to `/login` with CSP and
 HSTS headers present; recent application logs contained no errors.
+
+## 2026-08-28: Phase 5A - concurrency and load tests
+
+Started Phase 5 (production hardening and controlled pilot). Most of it isn't
+buildable here - it needs real infrastructure, real people, and real approvals -
+so asked the user which slice to start with; they picked concurrency and load
+tests (master plan step 3). See PHASE-5-PLAN.md for the full reconciliation and
+why the eight-hour soak test (step 4) is out of scope for this pass.
+
+Audited the codebase for check-then-act sequences with no lock spanning the
+read and the write, the same shape `tests/concurrency/` already covers for
+leasing and DNC suppression, and found one this session hadn't tested:
+`app/campaigns/service.py::_check_staffing_capacity` read a count and the
+caller inserted a row afterward with nothing serializing two concurrent
+callers. A new concurrency test
+(`tests/concurrency/test_staffing_capacity_concurrency.py`) races N concurrent
+`assign_agent_to_campaign` calls against one under-capacity team; fixed by
+locking the `CampaignTeamAssignment` row (`FOR UPDATE`) for the transaction,
+the same shape of fix leasing already uses. Diagnosed the race by reading the
+code rather than an empirical local red run - local Docker Desktop went down
+mid-increment (processes running, CLI and every container unresponsive) - and
+verified through CI instead, which doesn't depend on local Docker.
+
+Also added a first load test under `tests/performance/` (an empty scaffold
+since Phase 1): 60 agents racing 60 items under full contention, printing
+leasing throughput. New `performance` pytest marker, deliberately excluded
+from both CI job selectors - shared CI runners give meaningless throughput
+numbers, and Phase 5 itself expects real performance validation on approved
+hardware, not commodity CI.
+
+Pushed and hit an unrelated, pre-existing CI failure: five commits from a
+different tool (`CodexSandboxOffline`, 2026-08-22) had redesigned the login
+page and left `test_login_page_renders_and_has_a_form` broken on `main` for
+six days - a stale exact-string assertion, not a real bug (the redesign added
+`class="login-card"` to the form tag; the test still checked for the tag
+without it). Told the user rather than silently fixing or silently ignoring
+it, since it meant another tool had been working on the same repo
+uncoordinated with this session; asked to fix and continue. Fixed the
+assertion, re-pushed, CI green (build/security/integration/quality all pass,
+commit `c10dd0d`).
