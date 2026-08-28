@@ -57,7 +57,7 @@ def test_login_page_renders_and_has_a_form():
     client = TestClient(app, follow_redirects=False)
     resp = client.get("/login")
     assert resp.status_code == 200
-    assert '<form method="post" action="/login">' in resp.text
+    assert '<form class="login-card" method="post" action="/login">' in resp.text
     assert 'class="login-scene"' in resp.text
     assert '/static/media/ciphercontact-login-ambient.mp4' in resp.text
 
