@@ -65,6 +65,10 @@ def _new_user(prefix: str) -> uuid.UUID:
 
 
 def _draft_campaign(actor_id: uuid.UUID) -> uuid.UUID:
+    """A draft campaign with one committed contact - launch_campaign's own
+    precondition (a campaign with zero contacts can never launch, flag or no
+    flag), not something the flags feature itself needs to be bare for."""
+    number = zw_numbers(1)[0]
     with SessionLocal() as db:
         campaign = Campaign(
             owning_scope_type="organization",
@@ -79,6 +83,19 @@ def _draft_campaign(actor_id: uuid.UUID) -> uuid.UUID:
             created_by=actor_id,
         )
         db.add(campaign)
+        db.flush()
+        protected = protect(number, "ZW")
+        contact = Contact(
+            phone_ciphertext=protected.ciphertext, phone_fingerprint=protected.fingerprint,
+        )
+        db.add(contact)
+        db.flush()
+        db.add(
+            CampaignContact(
+                campaign_id=campaign.id, contact_id=contact.id, status="queued",
+                imported_at=datetime.now(UTC),
+            )
+        )
         db.commit()
         return campaign.id
 
