@@ -865,3 +865,17 @@ new integration tests (`tests/integration/test_web_workforce_flow.py`)
 covering the create-user round trip and every lifecycle action list above,
 plus the unauthenticated and unauthorized-agent redirects; these could only be
 collected, not run, locally - pushed for CI to give the real answer.
+
+CI caught a real bug static checks and template parsing could not:
+`user_detail`'s reporting-line query used `db.scalar(select(ReportingAssignment,
+User)...)`, which collapses a multi-entity select down to just the first
+entity, not the `(assignment, user)` tuple the template's `reporting_line[1]`
+lookup expected - `db.scalar()` on a two-entity select silently drops the
+joined row's second column rather than erroring, so nothing before a real
+request through Jinja2 could have caught it. `test_set_reporting_line` failed
+with `UndefinedError` on the very first CI run. Fixed by switching to
+`db.execute(...).first()`, the same pattern the team-memberships query on the
+same page already used correctly one section up - checked the rest of the
+file for the same `db.scalar()`-on-a-joined-select mistake and found no other
+instance. Re-pushed; CI green across all four jobs, 97 of 97 tests passing
+(commit `31b1529`).
