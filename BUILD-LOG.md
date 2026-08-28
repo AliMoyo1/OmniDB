@@ -1048,3 +1048,11 @@ trail, and the ai_enabled lock through all three surfaces (service, web,
 JSON API); these could only be collected, not run, locally. Local Docker
 Desktop is still down (see the Phase 5A entry), so this is another push-for-
 CI-to-confirm, same as everything else built while it's been unavailable.
+
+First CI run found one real bug - in the test fixture, not the flags feature.
+`_draft_campaign` built a campaign with zero contacts; `launch_campaign`'s own
+separate precondition ("no committed imported contacts") tripped once the
+flag check passed, which is exactly what should happen - the off-path
+assertion had already proven the flag itself worked before the fixture's gap
+surfaced. Gave the fixture a committed contact, re-pushed, CI green across
+all four jobs (commit `e84fa3d`, run 33170144544, 122/122 integration tests).

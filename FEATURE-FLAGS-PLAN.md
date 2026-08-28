@@ -1,6 +1,6 @@
 # Feature flags plan
 
-Status: built and verified locally (2026-08-28); CI pending push.
+Status: done (2026-08-28). CI green on `e84fa3d`.
 
 ## Scope
 
@@ -114,7 +114,11 @@ the backend rejection.
       `/flags` redirects to `/login` without touching the database, full
       non-integration suite passes locally (27/27, unaffected) - no live DB
       available this session for the integration suite itself.
-- [ ] Pushed, CI green - next step.
+- [x] CI green on `e84fa3d` (run 33170144544): build, security, integration
+      (122/122), quality all passed. First push (`4093fc7`) surfaced one real
+      bug, but in the test's own fixture, not the flag logic - the off-path
+      assertion had already passed before the fixture's missing-contact issue
+      hit on the re-enabled path. Fixed and confirmed green.
 
 ## Log
 - 2026-08-28: reconciled scope against master plan section 21.2, confirmed
@@ -128,3 +132,8 @@ the backend rejection.
   migration confirmed correctly chained via `alembic history`. Pushing for
   CI to give the real answer on the integration suite (no live DB this
   session).
+- 2026-08-28: first CI run failed one test - `_draft_campaign`'s fixture had
+  no contacts, so `launch_campaign`'s own separate precondition tripped once
+  the flag check passed, not a flag bug (the off-path assertion had already
+  succeeded). Fixed the fixture, re-pushed, CI green (commit `e84fa3d`, run
+  33170144544) - done.
