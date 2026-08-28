@@ -919,3 +919,8 @@ against a manually-backdated event) and four at the web level in
 unauthorized-agent redirect, a Manager's own login event renders, and the
 filter form round-trips its submitted value back into the input while
 genuinely narrowing results). Pushed for CI to confirm.
+
+CI green across all four jobs on the first push (commit `ee6d5e6`) - the
+extra care after the reporting-line bug held up. Every dashboard-embedded
+section now has its own dedicated page (Campaigns, Agent Workbench,
+Workforce, Audit); the original dashboard remains as a summary/overview only.
