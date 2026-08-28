@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from app.api.admin import router as admin_router
 from app.api.campaigns import campaigns_router, imports_router
+from app.api.flags import router as flags_router
 from app.api.work import agent_router, work_router
 from app.api.workforce import router as workforce_router
 from app.auth.router import router as auth_router
@@ -24,6 +25,7 @@ from app.web.auth_pages import router as web_auth_router
 from app.web.campaigns import router as web_campaigns_router
 from app.web.dashboard import router as web_dashboard_router
 from app.web.dependencies import InvalidFormCsrf, RedirectToLogin
+from app.web.flags import router as web_flags_router
 from app.web.workforce import router as web_workforce_router
 
 configure_logging(get_settings().log_level)
@@ -69,11 +71,13 @@ app.include_router(imports_router)
 app.include_router(work_router)
 app.include_router(agent_router)
 app.include_router(workforce_router)
+app.include_router(flags_router)
 app.include_router(web_auth_router)
 app.include_router(web_agent_work_router)
 app.include_router(web_campaigns_router)
 app.include_router(web_workforce_router)
 app.include_router(web_audit_router)
+app.include_router(web_flags_router)
 app.include_router(web_dashboard_router)
 
 

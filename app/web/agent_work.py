@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.authz import service as authz
 from app.authz.capabilities import WORK_QUEUE
 from app.db import get_session
+from app.flags.service import FeatureDisabledError
 from app.models.campaign import Campaign, CampaignDispositionDefinition
 from app.models.identity import User
 from app.reporting import agent_stats
@@ -119,7 +120,10 @@ def next_contact(
 ):
     if not _authorized(db, user):
         return _redirect(error="Not authorized for agent work.")
-    result = work_service.lease_next(db, user.id)
+    try:
+        result = work_service.lease_next(db, user.id)
+    except FeatureDisabledError as exc:
+        return _redirect(error=str(exc))
     db.commit()
     if result is None:
         return _redirect(error="No contact is available in your assigned campaign.")
@@ -159,7 +163,10 @@ def complete_contact(
             self_reported_duration_seconds=duration_seconds,
             idempotency_key=idempotency_key,
         )
-    except (LeaseConflict, DispositionMismatch, MissingRequiredField, IdempotencyConflict) as exc:
+    except (
+        LeaseConflict, DispositionMismatch, MissingRequiredField, IdempotencyConflict,
+        FeatureDisabledError,
+    ) as exc:
         db.rollback()
         return _redirect(error=str(exc))
     db.commit()

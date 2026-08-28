@@ -37,6 +37,7 @@ from app.campaigns.service import (
     DispositionPolicyError,
 )
 from app.db import get_session
+from app.flags.service import FeatureDisabledError
 from app.imports import service as import_service
 from app.imports.service import (
     ImportNotReady,
@@ -303,7 +304,7 @@ def upload_import(
             display_filename=file.filename or "upload",
             file_chunks=_read_chunks(file.file),
         )
-    except UploadRejected as exc:
+    except (UploadRejected, FeatureDisabledError) as exc:
         return _campaign_redirect(campaign_id, error=str(exc))
     db.commit()
     metadata = [column.strip() for column in metadata_columns.split(",") if column.strip()]
@@ -474,7 +475,7 @@ def campaign_lifecycle(
         return _campaign_redirect(campaign_id, error="Not authorized for that campaign action.")
     try:
         handler(db, campaign, actor_id=user.id)
-    except CampaignStateError as exc:
+    except (CampaignStateError, FeatureDisabledError) as exc:
         db.rollback()
         return _campaign_redirect(campaign_id, error=str(exc))
     db.commit()

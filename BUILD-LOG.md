@@ -1005,3 +1005,46 @@ entirely, since no finer-grained pause flag exists yet. Writing the runbooks
 is done; actually drilling them against the real stack (what the master plan
 calls "cold-boot, service-restart, disk-alert, backup, and restore drills")
 still needs Docker, which is down until the user's own check on Saturday.
+
+## 2026-08-28: Feature flags
+
+Master plan section 21.2 names eight server-enforced, audited rollout flags
+and none existed. Built the infrastructure and wired up the five that gate
+something real today: `campaign_import_enabled` (`import_service.
+create_import_job`), `campaign_launch_enabled` (`campaign_service.
+launch_campaign`), `shared_pool_enabled` (`work_service.lease_next` - checked
+*after* the existing-lease resume path, so it pauses new leasing without
+abandoning work an agent already holds), `callbacks_enabled` (`work_service.
+complete_work_item`, only when a callback is actually being scheduled), and
+`viewer_enabled` (`workforce_service.assign_role`, only for new Viewer
+grants - existing Viewer assignments keep working). `retention_execution_
+enabled` and `analytics_enabled` are seeded but inert - nothing exists yet to
+gate. `ai_enabled` is hard-locked false in code, not just documented as
+"permanently false for MVP" - `set_flag` refuses to enable it, the same shape
+as ADR-009's protected DNC semantic code.
+
+This also closes a real gap found while writing RUNBOOKS.md's rollback
+procedure: there was no way to pause new leasing without stopping the whole
+web/worker service. `shared_pool_enabled` is that switch now.
+
+Storage is a real table (migration 0010, seeded with values matching current
+shipped behavior - a flag defaulting to off for an already-working feature
+would be a regression, not a rollout gate), not env vars, so toggling is
+audited and needs no redeploy. Every check happens once in the service layer;
+the ten web/JSON API call sites just gained one more `except
+FeatureDisabledError`. New `/flags` page and `/api/v1/flags`, gated by
+`MANAGE_ROLES` for a first pass.
+
+Verified everything not requiring a live database: ruff and mypy clean across
+all 81 source files, every new/changed template parses through the real
+Jinja2 loader, all four new routes present in the generated OpenAPI schema,
+an unauthenticated request to `/flags` redirects to `/login` without
+touching the database, and the new migration is confirmed correctly chained
+as head via `alembic history` (reads migration files only, no DB connection
+needed for that specific check). 17 new integration tests
+(`tests/integration/test_flags_flow.py`) prove each enforcement point both
+ways - off rejects, on is unaffected - plus the seeded defaults, the audit
+trail, and the ai_enabled lock through all three surfaces (service, web,
+JSON API); these could only be collected, not run, locally. Local Docker
+Desktop is still down (see the Phase 5A entry), so this is another push-for-
+CI-to-confirm, same as everything else built while it's been unavailable.

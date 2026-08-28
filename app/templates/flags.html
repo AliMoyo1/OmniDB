@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Feature flags | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">Rollout control</p>
+      <h1>Feature flags.</h1>
+      <p>Server-enforced and audited. A flag narrows what the system currently allows - it is never a substitute for a user's own authorization.</p>
+    </div>
+  </div>
+</div>
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">{{ flags|length }} flag{{ '' if flags|length == 1 else 's' }}</p><h2>Rollout flags</h2></div><span class="panel-note">Toggling takes effect immediately, no redeploy.</span></div>
+  {% if flags %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Flag</th><th>Status</th><th>Last updated</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for flag in flags %}
+        <tr>
+          <td><code>{{ flag.flag_key }}</code></td>
+          <td>
+            {% if flag.flag_key in permanently_disabled %}
+            <span class="badge muted">permanently disabled</span>
+            {% elif flag.enabled %}
+            <span class="badge">enabled</span>
+            {% else %}
+            <span class="badge muted">disabled</span>
+            {% endif %}
+          </td>
+          <td>{{ flag.updated_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td>
+            {% if flag.flag_key not in permanently_disabled %}
+            <form method="post" action="/flags/{{ flag.flag_key }}" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="text" name="reason_code" placeholder="reason (optional)" size="16">
+              <input type="hidden" name="enabled" value="{{ 'false' if flag.enabled else 'true' }}">
+              <button type="submit" class="secondary">{{ "Disable" if flag.enabled else "Enable" }}</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="empty">No flags seeded yet.</p>{% endif %}
+</section>
+{% endblock %}

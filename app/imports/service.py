@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.audit.service import record_audit
 from app.config import get_settings
 from app.db_locks import lock_phone_fingerprint
+from app.flags import service as flags
 from app.imports import classify, parser, storage, validators
 from app.imports.parser import ParseLimitExceeded
 from app.models.base import utcnow
@@ -69,6 +70,7 @@ def create_import_job(
     display_filename: str,
     file_chunks: Iterable[bytes],
 ) -> ImportJob:
+    flags.require_enabled(db, "campaign_import_enabled")
     settings = get_settings()
     ext = validators.check_extension(display_filename)  # cheap check before writing anything
     stored_filename = _truncate_filename_preserving_extension(display_filename)

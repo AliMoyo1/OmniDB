@@ -16,6 +16,7 @@ from app.auth.dependencies import require_csrf
 from app.authz.capabilities import WORK_QUEUE
 from app.authz.dependencies import require_capability
 from app.db import get_session
+from app.flags.service import FeatureDisabledError
 from app.models.identity import User
 from app.reporting import agent_stats
 from app.work import service as work_service
@@ -64,7 +65,10 @@ def lease_next(
     # response_model=None disables automatic response inference so a raw Response can
     # be returned untouched for the no-work case, avoiding any ambiguity around a 204
     # (which must never carry a body) combined with a declared Optional response model.
-    result = work_service.lease_next(db, user.id)
+    try:
+        result = work_service.lease_next(db, user.id)
+    except FeatureDisabledError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()
     if result is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -103,6 +107,8 @@ def complete_work_item(
         ) from None
     except (DispositionMismatch, MissingRequiredField) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+    except FeatureDisabledError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()
     return CompleteOut(
         attempt_id=str(result.attempt_id), work_item_state=result.work_item_state,

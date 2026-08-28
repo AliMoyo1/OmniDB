@@ -49,6 +49,12 @@
       <span class="dock-item-label">Audit</span>
     </a>
     {% endif %}
+    {% if can_manage_teams %}
+    <a class="dock-item {% if active_section == 'flags' %}active{% endif %}" href="/flags" title="Feature flags">
+      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22V4M4 4h14l-3 4 3 4H4"/></svg>
+      <span class="dock-item-label">Flags</span>
+    </a>
+    {% endif %}
   </nav>
 
   <aside class="side-nav" aria-label="Secondary">
@@ -88,6 +94,12 @@
     <a href="/audit">
       <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z"/></svg>
       Audit trail
+    </a>
+    {% endif %}
+    {% if can_manage_teams %}
+    <a href="/flags">
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22V4M4 4h14l-3 4 3 4H4"/></svg>
+      Feature flags
     </a>
     {% endif %}
     <div class="side-nav-label">Account</div>

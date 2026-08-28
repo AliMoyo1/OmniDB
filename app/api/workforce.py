@@ -17,6 +17,7 @@ from app.auth.dependencies import get_current_user, require_csrf
 from app.authz import service as authz
 from app.authz.capabilities import APPOINT_TEAM_CAPTAIN, MANAGE_ROLES
 from app.db import get_session
+from app.flags.service import FeatureDisabledError
 from app.models.authz import ReportingAssignment, RoleAssignment
 from app.models.identity import Team, TeamMembership, User
 from app.workforce import service as workforce_service
@@ -224,6 +225,8 @@ def assign_role(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except authz.SelfApprovalError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except FeatureDisabledError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     db.commit()
     return _role_out(assignment)
 

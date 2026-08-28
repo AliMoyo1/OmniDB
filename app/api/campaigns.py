@@ -42,6 +42,7 @@ from app.campaigns.service import (
     DispositionPolicyError,
 )
 from app.db import get_session
+from app.flags.service import FeatureDisabledError
 from app.imports import service as import_service
 from app.imports.schemas import (
     ImportCommitOut,
@@ -213,7 +214,7 @@ def launch_campaign(
     _require_campaign_capability(db, user, LAUNCH_CAMPAIGN, campaign)
     try:
         campaign_service.launch_campaign(db, campaign, actor_id=user.id)
-    except CampaignStateError as exc:
+    except (CampaignStateError, FeatureDisabledError) as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()
     return _campaign_out(campaign)
@@ -489,6 +490,8 @@ def upload_import(
         )
     except UploadRejected as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+    except FeatureDisabledError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()
 
     parse_import_job_task.delay(str(job.id), phone_column, name_column, meta_cols)

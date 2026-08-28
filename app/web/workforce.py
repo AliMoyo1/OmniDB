@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.authz import service as authz
 from app.authz.capabilities import APPOINT_TEAM_CAPTAIN, MANAGE_ROLES
 from app.db import get_session
+from app.flags.service import FeatureDisabledError
 from app.models.authz import ReportingAssignment, RoleAssignment
 from app.models.identity import Team, TeamMembership, User
 from app.web.dependencies import require_page_user, verify_form_csrf
@@ -262,7 +263,7 @@ def assign_role_action(
             db, target_user_id=user_id, role_code=role_code, scope_type=scope_type,
             scope_id=parsed_scope_id, appointed_by=user.id,
         )
-    except (UnknownRole, authz.SelfApprovalError) as exc:
+    except (UnknownRole, authz.SelfApprovalError, FeatureDisabledError) as exc:
         db.rollback()
         return _user_redirect(user_id, error=str(exc))
     db.commit()

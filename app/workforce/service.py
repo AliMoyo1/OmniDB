@@ -30,6 +30,7 @@ from app.authz.capabilities import (
     ROLE_TEAM_LEADER,
     ROLE_VIEWER,
 )
+from app.flags import service as flags
 from app.models.authz import ReportingAssignment, RoleAssignment
 from app.models.base import utcnow
 from app.models.identity import Organization, Team, TeamMembership, User
@@ -198,6 +199,12 @@ def assign_role(
 ) -> RoleAssignment:
     if role_code not in ROLE_APPOINTMENT_CAPABILITY:
         raise UnknownRole(f"{role_code} is not an appointable role")
+    if role_code == ROLE_VIEWER:
+        # A rollout gate on new grants, not a live kill switch: existing Viewer
+        # assignments keep working even while this is off, matching the
+        # master plan's flags as "ready to onboard this capability," not an
+        # incident switch (that's shared_pool_enabled's job for leasing).
+        flags.require_enabled(db, "viewer_enabled")
     authz.assert_not_self(appointed_by, target_user_id)
     now = utcnow()
     # Re-granting the same (user, role, scope) supersedes the prior grant rather than

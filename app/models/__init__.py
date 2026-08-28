@@ -13,6 +13,7 @@ from app.models.campaign import (
     CampaignUserAssignment,
 )
 from app.models.contact import CampaignContact, Contact, SuppressionEntry
+from app.models.flags import FeatureFlag
 from app.models.identity import Organization, Team, TeamMembership, User
 from app.models.imports import ImportDecision, ImportJob, ImportRow
 from app.models.session import Session
@@ -43,4 +44,5 @@ __all__ = [
     "ImportJob",
     "ImportRow",
     "ImportDecision",
+    "FeatureFlag",
 ]

@@ -13,6 +13,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
+from app.flags import service as flags
 from app.models.base import utcnow
 from app.models.campaign import (
     Campaign,
@@ -318,6 +319,7 @@ def update_campaign(db: Session, campaign: Campaign, *, actor_id: uuid.UUID, **f
 
 
 def launch_campaign(db: Session, campaign: Campaign, *, actor_id: uuid.UUID) -> Campaign:
+    flags.require_enabled(db, "campaign_launch_enabled")
     if campaign.status != "draft":
         raise CampaignStateError(f"cannot launch a campaign in state {campaign.status}")
     missing = [

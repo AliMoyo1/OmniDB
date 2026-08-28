@@ -24,6 +24,7 @@ from app.db_locks import (
     lock_phone_fingerprint,
     try_lock_phone_fingerprint,
 )
+from app.flags import service as flags
 from app.models.base import utcnow
 from app.models.campaign import Campaign, CampaignDispositionDefinition, CampaignUserAssignment
 from app.models.contact import CampaignContact, Contact, SuppressionEntry
@@ -346,6 +347,11 @@ def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
     active_lease = _get_active_lease_locked(db, agent_id, now)
     if active_lease is not None:
         return active_lease
+
+    # Checked here, not before the resume path above: shared_pool_enabled=false
+    # means "pause new leases," not "abandon whatever an agent already holds" -
+    # matches the master plan's own rollback guidance (RUNBOOKS.md).
+    flags.require_enabled(db, "shared_pool_enabled")
 
     work_item: WorkItem | None = None
     campaign_contact: CampaignContact | None = None
@@ -679,6 +685,8 @@ def complete_work_item(
         raise DispositionMismatch("disposition is not active")
     if disposition.requires_notes and not notes:
         raise MissingRequiredField("notes are required for this disposition")
+    if callback_at is not None:
+        flags.require_enabled(db, "callbacks_enabled")
     if disposition.requires_callback_time and callback_at is None:
         raise MissingRequiredField("a callback time is required for this disposition")
     if disposition.requires_callback_time and callback_at is not None and callback_at <= utcnow():
