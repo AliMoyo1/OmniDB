@@ -211,7 +211,9 @@ authentication bypass found elsewhere.
 - [x] Fix applied for the one real finding (`team_detail` view-authorization
       gap), with a regression test.
 - [x] ruff and mypy clean; full non-integration suite passes locally (27/27).
-- [ ] Pushed, CI green - next step.
+- [x] CI green on `5140567` (run 33167864900): build, security, integration,
+      quality all passed, including the new team_detail regression test
+      running for real against CI's Postgres.
 
 ## Log
 - 2026-08-21: reconciled Phase 5 scope, asked the user which slice to start with

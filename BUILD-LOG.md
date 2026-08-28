@@ -967,3 +967,6 @@ injection, no XSS (autoescaping on throughout, no `|safe`/`Markup` anywhere),
 no other CSRF or authorization gaps found. See PHASE-5-PLAN.md's "5B" section
 for the full write-up. ruff and mypy clean, full non-integration suite
 passing locally; pushed for CI.
+
+CI green across all four jobs (commit `5140567`, run 33167864900), including
+the new regression test running for real against CI's Postgres.
