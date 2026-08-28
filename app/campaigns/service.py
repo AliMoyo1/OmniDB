@@ -46,12 +46,21 @@ def _check_staffing_capacity(
     destination's staffing capacity where one is set. No team, or a team with no
     capacity configured, means unlimited - staffing_capacity is optional (plan 4C's
     fuller staffing model is out of scope; this is the minimal real check D-18's
-    "destination capacity" preflight needs)."""
+    "destination capacity" preflight needs).
+
+    The team_assignment row is locked (FOR UPDATE) for the caller's transaction:
+    without it, two concurrent assignment requests for the same (campaign, team)
+    can both read the same under-capacity count before either commits and both
+    succeed, landing the team over capacity - the same TOCTOU shape the leasing
+    path already closes with SELECT ... FOR UPDATE SKIP LOCKED. Locking this row
+    serializes concurrent callers so the second one re-reads a count that already
+    reflects the first one's insert."""
     if team_id is None:
         return
     now = utcnow()
     team_assignment = db.scalar(
-        select(CampaignTeamAssignment).where(
+        select(CampaignTeamAssignment)
+        .where(
             CampaignTeamAssignment.campaign_id == campaign_id,
             CampaignTeamAssignment.team_id == team_id,
             CampaignTeamAssignment.status == "active",
@@ -61,6 +70,7 @@ def _check_staffing_capacity(
                 CampaignTeamAssignment.effective_to > now,
             ),
         )
+        .with_for_update()
     )
     if team_assignment is None or team_assignment.staffing_capacity is None:
         return

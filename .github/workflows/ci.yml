@@ -22,7 +22,7 @@ jobs:
       - name: Mypy
         run: mypy app
       - name: Unit and authorization tests
-        run: pytest -m "not integration"
+        run: pytest -m "not integration and not performance"
 
   integration:
     runs-on: ubuntu-latest

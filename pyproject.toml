@@ -87,4 +87,5 @@ testpaths = ["tests"]
 addopts = "-ra"
 markers = [
   "integration: requires a database and Redis",
+  "performance: throughput/load test, not run by CI - meaningful numbers need real hardware, not a shared CI runner",
 ]
