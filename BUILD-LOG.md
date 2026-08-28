@@ -970,3 +970,38 @@ passing locally; pushed for CI.
 
 CI green across all four jobs (commit `5140567`, run 33167864900), including
 the new regression test running for real against CI's Postgres.
+
+## 2026-08-28: Phase 5C - runbooks
+
+Master plan Phase 5 lists "completed runbooks" as a deliverable. Tried the
+`operations:runbook` skill first; it returned its own formatting template
+rather than drafted content, so wrote `RUNBOOKS.md` directly against that
+template, verifying every command against the real codebase instead of
+approximating: `scripts/backup.sh`/`restore.sh`/`restore-test.sh` turned out
+to already exist and already work (this session's earlier BUILD-LOG entries
+had only referenced their output in prose, never the scripts themselves),
+`scripts/release-manifest.sh`, every service's restart policy and healthcheck
+in `compose.yaml` (beat has none - the runbook says so and gives a manual
+verification instead of pretending one exists), and the real distinction
+between `/healthz` (liveness only) and `/readyz` (an actual Postgres+Redis
+check, gated by a health token) in `app/main.py`.
+
+Six runbooks: deploy/release, rollback (built on the master plan's own
+non-breaking-rollback spine - roll back the app image first, database restore
+only with the incident owner's explicit approval, never delete volumes as a
+routine step), backup and restore, service restart, cold boot, and disk
+space. The cold-boot runbook's troubleshooting table includes the Docker
+Desktop WSL2/HCS failure this session hit firsthand this week - a Windows
+logon-type permission error blocking VM creation, and separately a full data
+reset after a Docker Desktop self-update - real, specific, first-hand
+knowledge rather than a generic "check if Docker is running" line.
+
+Deliberately honest about what's still missing rather than writing around it:
+the contacts table is role placeholders with no real names yet, flagged at
+the top of the file; `deploy/monitoring/` is an empty scaffold, so the
+disk-space runbook is a manual check, not a response to a real alert;
+rollback's "pause new leases" step is approximated by stopping web/worker
+entirely, since no finer-grained pause flag exists yet. Writing the runbooks
+is done; actually drilling them against the real stack (what the master plan
+calls "cold-boot, service-restart, disk-alert, backup, and restore drills")
+still needs Docker, which is down until the user's own check on Saturday.

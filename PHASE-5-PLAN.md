@@ -1,7 +1,11 @@
 # Phase 5 plan: production hardening and controlled pilot
 
-Status: 5A (concurrency and load tests) and 5B (manual security review)
-complete (2026-08-28). Rest of Phase 5 not started.
+Status: 5A (concurrency and load tests), 5B (manual security review), and 5C
+(runbooks) complete (2026-08-28). Backup/restore and cold-boot/service-restart
+*drills* - actually running these runbooks against the real stack, not just
+writing them - still need Docker, on hold until it's back. Rest of Phase 5
+(container/dynamic security review, LAN cert/Tailscale distribution, training,
+the real pilot) not started.
 
 ## Scope reconciliation against the decision log
 
@@ -215,6 +219,49 @@ authentication bypass found elsewhere.
       quality all passed, including the new team_detail regression test
       running for real against CI's Postgres.
 
+## 5C: runbooks [done]
+
+Master plan Phase 5 lists "completed runbooks" as a deliverable and "support
+and incident owners can execute runbooks" as a success criterion. Tried the
+`operations:runbook` skill; it returned its own formatting template rather than
+generated content (evidently a style guide to apply, not an autonomous
+drafting agent) - wrote the runbooks directly against that template, using
+real commands and behavior read from the actual codebase rather than
+approximating from memory: `scripts/backup.sh`/`restore.sh`/`restore-test.sh`
+(already-working encrypted-backup tooling this session had only referenced in
+prose before), `scripts/release-manifest.sh`, every service's `restart:`
+policy and healthcheck (or lack of one - `beat` has none) from `compose.yaml`,
+and the real `/healthz` (liveness only) vs `/readyz` (genuine Postgres+Redis
+check, health-token-gated) distinction from `app/main.py`.
+
+Six runbooks in `RUNBOOKS.md`: deploy/release, rollback (built directly on the
+master plan's own non-breaking-rollback spine - image first, database restore
+only with incident-owner approval, never delete volumes), backup and restore,
+service restart (dependency order matters - `web`/`worker` need `postgres`/
+`redis` healthy first), cold boot, and disk space. Folded in the Docker
+Desktop WSL2/HCS failure mode this session hit firsthand (a Windows logon-type
+permission error blocking VM creation, and separately a data-reset after a
+Docker Desktop self-update) as a real troubleshooting entry in the cold-boot
+runbook, since it's genuine first-hand knowledge, not a hypothetical.
+
+Being honest about what's still a gap rather than papering over it: contacts
+are role placeholders (no real names/phone numbers exist yet - flagged at the
+top of the file), `deploy/monitoring/` is an empty scaffold so the disk-space
+runbook is a manual check, not a response to a real alert, and rollback's
+"pause new leases" step is approximated by stopping `web`/`worker` entirely
+since no finer-grained pause flag exists.
+
+### 5C verification status
+- [x] Verified every command/behavior claim against the actual scripts and
+      source (`compose.yaml`, `app/main.py`, `scripts/*.sh`) rather than
+      writing from memory or convention alone.
+- [ ] Actually running these runbooks against the real stack (the drills the
+      master plan asks for, not just having them written) - needs Docker,
+      on hold.
+- [x] Committed and pushed (docs-only change, no app code - CI will run but
+      isn't the meaningful verification here; reading the runbook against the
+      real stack is).
+
 ## Log
 - 2026-08-21: reconciled Phase 5 scope, asked the user which slice to start with
   (concurrency & load tests chosen), audited for untested check-then-act races,
@@ -239,4 +286,9 @@ authentication bypass found elsewhere.
   broken-access-control gap (team_detail's missing view check), noted two
   lower-severity operational findings (encryption key-rotation not actually
   wired up, X-Forwarded-For trust) for awareness rather than immediate fixes.
-  ruff/mypy/local suite clean; pushing for CI.
+  ruff/mypy/local suite clean; pushing for CI. CI green
+  (commit `5140567`, run 33167864900) - 5B done.
+- 2026-08-28: wrote 5C (RUNBOOKS.md - deploy/release, rollback, backup and
+  restore, service restart, cold boot, disk space), verified every command
+  against the real scripts/compose.yaml/app code rather than writing from
+  memory. Actually drilling them against the real stack still needs Docker.
