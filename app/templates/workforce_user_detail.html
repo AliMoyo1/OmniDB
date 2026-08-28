@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ target.display_name }} | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-detail-head">
+  <div><a class="back-link" href="/workforce">← All workforce</a><p class="eyebrow">Workforce control room</p><h1>{{ target.display_name }}</h1><p>{{ target.email }} &middot; {{ target.workforce_id }}</p></div>
+  <div class="lifecycle-stack"><span class="status-chip status-{{ 'active' if target.active else 'archived' }}">{% if target.active %}active{% else %}inactive{% endif %}</span>
+    {% if target.active %}
+    <form method="post" action="/workforce/users/{{ target.id }}/disable"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="reason_code" value="manager_action"><button type="submit" class="quiet-danger">Disable</button></form>
+    {% else %}
+    <form method="post" action="/workforce/users/{{ target.id }}/reactivate"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="reason_code" value="manager_action"><button type="submit" class="secondary">Reactivate</button></form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="ops-grid">
+  <section class="ops-panel">
+    <div class="panel-heading"><div><p class="eyebrow">01 · Access</p><h2>Roles</h2></div><span class="panel-note">A role grants capability only at its own scope.</span></div>
+    {% if roles %}
+    <div class="assignment-list">
+      {% for ra in roles %}
+      <div>
+        <div><strong>{{ ra.role_code }}</strong><span>{{ ra.scope_type }}{% if ra.scope_id %} &middot; {{ ra.scope_id|string|truncate(8, True, "") }}{% endif %}</span></div>
+        <span class="badge">{{ ra.status }}</span>
+        <form method="post" action="/workforce/roles/{{ ra.id }}/end"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="reason_code" value="manager_action"><button type="submit" class="secondary">End</button></form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}<p class="empty">No active roles.</p>{% endif %}
+
+    <form method="post" action="/workforce/users/{{ target.id }}/roles" class="disposition-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="mapping-grid">
+        <label>Role<select name="role_code" required>{% for r in appointable_roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select></label>
+        <label>Scope<select name="scope_type" required><option value="organization">org-wide</option><option value="team">team</option></select></label>
+      </div>
+      <label>Team scope <span>required only for a team-scoped role</span>
+        <select name="scope_id"><option value="">— org-wide —</option>{% for t in scope_teams %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select>
+      </label>
+      <button type="submit" class="secondary">Grant role</button>
+    </form>
+  </section>
+
+  <section class="ops-panel">
+    <div class="panel-heading"><div><p class="eyebrow">02 · Hierarchy</p><h2>Reporting line</h2></div><span class="panel-note">A new primary line supersedes, not stacks.</span></div>
+    {% if reporting_line %}
+    <div class="assignment-list"><div><div><strong>{{ reporting_line[1].display_name }}</strong><span>{{ reporting_line[1].workforce_id }}</span></div><span class="badge">supervisor</span></div></div>
+    {% else %}<p class="empty">No reporting line set.</p>{% endif %}
+
+    <form method="post" action="/workforce/users/{{ target.id }}/reporting-line" class="disposition-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Supervisor<select name="supervisor_user_id" required><option value="">Select a supervisor</option>{% for candidate in candidate_supervisors %}<option value="{{ candidate.id }}">{{ candidate.display_name }} &middot; {{ candidate.workforce_id }}</option>{% endfor %}</select></label>
+      <button type="submit" class="secondary">Set reporting line</button>
+    </form>
+  </section>
+
+  <section class="ops-panel">
+    <div class="panel-heading"><div><p class="eyebrow">03 · Teams</p><h2>Team memberships</h2></div><span class="panel-note">Managed from each team's page.</span></div>
+    {% if memberships %}
+    <div class="assignment-list">
+      {% for membership, team in memberships %}
+      <div><a href="/workforce/teams/{{ team.id }}"><strong>{{ team.name }}</strong><span>{{ team.external_code }}</span></a><span class="badge">member</span></div>
+      {% endfor %}
+    </div>
+    {% else %}<p class="empty">Not a member of any team.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

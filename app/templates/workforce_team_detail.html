@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ team.name }} | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-detail-head">
+  <div><a class="back-link" href="/workforce">← All workforce</a><p class="eyebrow">Workforce control room</p><h1>{{ team.name }}</h1><p>{{ team.external_code }} &middot; {{ team.default_timezone }}</p></div>
+</div>
+
+<div class="ops-grid">
+  <section class="ops-panel">
+    <div class="panel-heading"><div><p class="eyebrow">01 · Roster</p><h2>Team members</h2></div><span class="panel-note">Removing a member does not affect their org-wide roles.</span></div>
+    {% if members %}
+    <div class="assignment-list">
+      {% for membership, member in members %}
+      <div>
+        <a href="/workforce/users/{{ member.id }}"><strong>{{ member.display_name }}</strong><span>{{ member.workforce_id }}</span></a>
+        {% if can_manage_team %}
+        <form method="post" action="/workforce/memberships/{{ membership.id }}/end"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="secondary">Remove</button></form>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}<p class="empty">No members yet.</p>{% endif %}
+
+    {% if can_manage_team %}
+    <form method="post" action="/workforce/teams/{{ team.id }}/members" class="assignment-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Add member<select name="member_user_id" required><option value="">Select a user</option>{% for candidate in candidate_members %}<option value="{{ candidate.id }}">{{ candidate.display_name }} &middot; {{ candidate.workforce_id }}</option>{% endfor %}</select></label>
+      <button type="submit" class="secondary">Add to team</button>
+    </form>
+    {% else %}<p class="permission-note">You can view this team's roster, but cannot manage its membership.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

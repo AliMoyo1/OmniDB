@@ -824,3 +824,44 @@ it, since it meant another tool had been working on the same repo
 uncoordinated with this session; asked to fix and continue. Fixed the
 assertion, re-pushed, CI green (build/security/integration/quality all pass,
 commit `c10dd0d`).
+
+## 2026-08-28: Workforce Control Room
+
+The Campaign Control Room and Agent Workbench each gave their domain a proper
+list+detail page; workforce management was still confined to the dashboard's
+original inline sections, which only ever exposed the create half of what
+`app/workforce/service.py` and its JSON API (`app/api/workforce.py`) already
+supported. `disable_user`, `reactivate_user`, `end_role_assignment`,
+`end_team_membership`, and `set_reporting_line` were all fully built, tested at
+the API level, and had no web route at all. Phase 6 (validated analytics) - the
+next phase in the master plan - is explicitly scoped to start only after pilot
+approval and depends on the Phase 4C target-policy work the decision log
+deferred, so it wasn't a real option yet; this gap was.
+
+Added `/workforce` (list: users and teams, matching the existing
+`campaign_list.html`/`campaign_detail.html` list+detail pattern and reusing its
+generic `.ops-*` CSS building blocks rather than inventing new ones),
+`/workforce/users/{id}` (roles with grant/end, reporting line with a
+set-supervisor form, team memberships read-only with a link to the owning
+team), and `/workforce/teams/{id}` (roster with add/remove). Every route is a
+thin layer over the existing, already-tested service functions - no new
+service logic, no new migration. Left the dashboard's original inline
+workforce/teams sections and their routes in place rather than removing them,
+matching how the Campaign Control Room's own addition left `dashboard.py`'s
+older campaign routes alongside it; updated the dock and sidebar nav links to
+point at the new pages instead of `/dashboard#workforce` / `/dashboard#teams`.
+
+Local Docker Desktop was still down (see the Phase 5A entry above - a Windows
+logon-type/HCS permission error blocking WSL2 VM creation, unresolved as of
+this entry), so this could not get a live-browser or real-Postgres pass this
+time. Verified everything that does not need a running database: ruff and
+mypy clean, all four new templates parse through the real Jinja2 loader with
+no syntax errors (the same class of bug - a duplicate block, an undefined
+variable - that has bitten this build before), `app.main` imports cleanly
+with the new router registered (confirmed via the generated OpenAPI schema:
+all 12 new routes present), and an unauthenticated `TestClient` request to
+`/workforce` redirects to `/login` without touching the database. Added seven
+new integration tests (`tests/integration/test_web_workforce_flow.py`)
+covering the create-user round trip and every lifecycle action list above,
+plus the unauthenticated and unauthorized-agent redirects; these could only be
+collected, not run, locally - pushed for CI to give the real answer.

@@ -23,6 +23,7 @@ from app.web.auth_pages import router as web_auth_router
 from app.web.campaigns import router as web_campaigns_router
 from app.web.dashboard import router as web_dashboard_router
 from app.web.dependencies import InvalidFormCsrf, RedirectToLogin
+from app.web.workforce import router as web_workforce_router
 
 configure_logging(get_settings().log_level)
 
@@ -70,6 +71,7 @@ app.include_router(workforce_router)
 app.include_router(web_auth_router)
 app.include_router(web_agent_work_router)
 app.include_router(web_campaigns_router)
+app.include_router(web_workforce_router)
 app.include_router(web_dashboard_router)
 
 

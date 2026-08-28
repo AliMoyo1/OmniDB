@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Workforce | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">Workforce control room</p>
+      <h1>People, roles, and teams.</h1>
+      <p>Create identities, grant scoped roles, and organize teams. Disabling a user immediately revokes their active sessions and leases.</p>
+    </div>
+    {% if can_manage_workforce %}<a class="button-link" href="#create-user">New user</a>{% endif %}
+  </div>
+</div>
+
+{% if can_manage_workforce %}
+<section class="campaign-shelf" aria-label="Workforce">
+  {% if workforce_users %}
+    {% for u in workforce_users %}
+    <a class="campaign-tile status-{{ 'active' if u.active else 'archived' }}" data-glass-tilt href="/workforce/users/{{ u.id }}">
+      <div class="campaign-tile-top"><span class="status-chip">{% if u.active %}active{% else %}inactive{% endif %}</span><span class="campaign-arrow">↗</span></div>
+      <h2>{{ u.display_name }}</h2>
+      <p>{{ u.email }}</p>
+      <div class="campaign-tile-stats"><span>{{ user_roles.get(u.id, [])|join(", ") or "No roles yet" }}</span></div>
+    </a>
+    {% endfor %}
+  {% else %}
+  <div class="ops-empty"><div class="empty-mark">+</div><h2>No workforce users in view</h2><p>Create the first user to get started.</p></div>
+  {% endif %}
+</section>
+
+<section id="create-user" class="ops-form-card">
+  <div class="form-intro"><p class="eyebrow">Provision access</p><h2>Create a user</h2><p>New users have no role until one is granted from their profile.</p></div>
+  <form method="post" action="/workforce/users" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Email<input type="email" name="email" required></label>
+    <label>Display name<input name="display_name" maxlength="200" required></label>
+    <div class="wide create-submit"><p>A one-time activation link is shown after creation.</p><button type="submit">Create user</button></div>
+  </form>
+</section>
+{% endif %}
+
+<div class="campaign-control-hero" id="teams">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">Teams</p>
+      <h1>Team structure.</h1>
+      <p>Teams scope role appointments, campaign staffing, and reporting lines.</p>
+    </div>
+    {% if can_manage_teams %}<a class="button-link" href="#create-team">New team</a>{% endif %}
+  </div>
+</div>
+
+<section class="campaign-shelf" aria-label="Teams">
+  {% if teams %}
+    {% for t in teams %}
+    <a class="campaign-tile status-active" data-glass-tilt href="/workforce/teams/{{ t.id }}">
+      <div class="campaign-tile-top"><span class="status-chip">{{ t.external_code }}</span><span class="campaign-arrow">↗</span></div>
+      <h2>{{ t.name }}</h2>
+      <p>{{ t.default_timezone }}</p>
+    </a>
+    {% endfor %}
+  {% else %}
+  <div class="ops-empty"><div class="empty-mark">+</div><h2>No teams yet</h2><p>Create a team to start assigning roles and staffing within it.</p></div>
+  {% endif %}
+</section>
+
+{% if can_manage_teams %}
+<section id="create-team" class="ops-form-card">
+  <div class="form-intro"><p class="eyebrow">Organize</p><h2>Create a team</h2><p>Team codes are used in staffing and role-scope references.</p></div>
+  <form method="post" action="/workforce/teams" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Name<input name="name" maxlength="200" required></label>
+    <label>Code<input name="external_code" maxlength="50" required></label>
+    <div class="wide create-submit"><p>Default timezone: {{ default_timezone }}</p><button type="submit">Create team</button></div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
