@@ -82,6 +82,37 @@ def test_agent_without_appointment_capability_is_redirected_away():
     assert resp.headers["location"].startswith("/dashboard")
 
 
+def test_agent_cannot_view_a_team_detail_page_by_url():
+    """Regression test for a real gap found in review: team_detail only gated its
+    management actions, not viewing itself - any authenticated user, including a
+    plain Agent with no appointment capability, could browse straight to another
+    team's roster by URL. Viewing must be gated the same way workforce_list already
+    gates whether a team's tile (and link) appears at all."""
+    from app.main import app
+
+    manager, _ = _manager()
+    resp = manager.post(
+        "/workforce/teams",
+        data={
+            "csrf_token": _csrf(manager),
+            "name": f"Private Team {uuid.uuid4().hex[:6]}",
+            "external_code": f"priv-{uuid.uuid4().hex[:8]}",
+        },
+    )
+    assert resp.status_code == 303
+    team_id = resp.headers["location"].split("/workforce/teams/")[1].split("?")[0]
+
+    email = f"wfagentview-{uuid.uuid4().hex[:8]}@example.com"
+    make_user_with_role(email, "agent")
+    agent_client = TestClient(app, follow_redirects=False)
+    login(agent_client, email)
+    resp = agent_client.get(f"/workforce/teams/{team_id}")
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert location.startswith("/workforce")
+    assert not location.startswith("/workforce/teams/")
+
+
 def test_manager_sees_workforce_list_with_create_forms():
     client, _ = _manager()
     resp = client.get("/workforce")

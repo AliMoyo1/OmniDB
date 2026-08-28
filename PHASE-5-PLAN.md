@@ -1,7 +1,7 @@
 # Phase 5 plan: production hardening and controlled pilot
 
-Status: 5A (concurrency and load tests) complete (2026-08-28). Rest of Phase 5
-not started.
+Status: 5A (concurrency and load tests) and 5B (manual security review)
+complete (2026-08-28). Rest of Phase 5 not started.
 
 ## Scope reconciliation against the decision log
 
@@ -137,6 +137,82 @@ Plan:
       quality all passed. `main` is clean again; the new staffing-capacity
       test passed for real against CI's Postgres.
 
+## 5B: manual security review [done]
+
+Master plan Phase 5 step 2: "container, dependency, dynamic, and manual security
+review." CI already covers dependency (pip-audit) and secret-scanning (gitleaks)
+on every push; dynamic testing needs a running app, unavailable with local Docker
+still down. This was the manual pass: read the security-critical code directly -
+CSRF (`app/auth/csrf.py`, `app/web/dependencies.py::verify_form_csrf`), session/
+login handling (`app/web/auth_pages.py`), and, route by route, every web
+"control room" module (`campaigns.py`, `workforce.py`, `audit.py`,
+`agent_work.py`) checking that each state-changing action holds `verify_form_csrf`
+and checks the real capability against the *actual loaded resource's* scope, not
+attacker-supplied scope fields - the classic IDOR shape. Also checked the PII
+encryption/fingerprinting layer (`app/security/encryption.py`,
+`app/security/phone.py`) and swept for raw/interpolated SQL (none found -
+everything goes through parameterized SQLAlchemy Core/ORM).
+
+Tried the `security-review` skill first; it's built for diffing a PR/branch, not
+auditing a whole existing app, and it ran against the session's *primary* working
+directory (a different, unrelated project) rather than this repo, with nothing
+staged to diff - unusable here. Did the review directly instead.
+
+### Findings
+
+1. **Broken access control, `app/web/workforce.py::team_detail` (fixed)** - the
+   route checked authorization for the *management actions* on a team's page
+   (`can_manage_team`, gating add/remove-member forms) but never checked whether
+   the requester was authorized to *view* the page at all. `workforce_list`
+   already gates whether a team's tile - and link - appears on the list page
+   behind `can_manage_workforce OR can_manage_teams`; `team_detail` had no
+   equivalent check, so any authenticated user, including a plain Agent with no
+   appointment capability, could load any team's full roster (names, workforce
+   IDs) by navigating straight to `/workforce/teams/{team_id}` - a classic forced-
+   browsing gap: the list page hides it, the endpoint underneath doesn't
+   independently enforce it. Confirmed `user_detail`, `campaigns.py`, and
+   `agent_work.py` do NOT have the equivalent gap (each checks a real capability
+   or resource-ownership condition before rendering anything) - isolated to this
+   one route. Fixed by adding the same `can_manage_workforce OR can_manage_teams`
+   gate `workforce_list` already uses, so "can see the tile" and "can open the
+   page" are the same bar again. New regression test:
+   `test_agent_cannot_view_a_team_detail_page_by_url` in
+   `tests/integration/test_web_workforce_flow.py`.
+2. **Encryption key-rotation is not actually implemented (not fixed - noted for
+   awareness)** - `app/security/encryption.py::decrypt` parses the `v{n}:` version
+   prefix off the ciphertext but never uses it; every decrypt uses whatever key is
+   currently configured, regardless of which version encrypted the value. Not
+   exploitable today (only one key has ever been configured, so nothing is
+   actually broken yet), but the versioning scheme implies rotation is supported
+   when it isn't - the first real key rotation would silently fail to decrypt
+   every value encrypted under the old key. Worth a real fix before this build
+   ever rotates `FIELD_ENCRYPTION_KEY` for real, not before pilot.
+3. **`X-Forwarded-For` trusted without a known-proxy check (not fixed - noted for
+   awareness, not a reportable vulnerability)** - `app/web/auth_pages.py::_client_ip`
+   takes the first value from `X-Forwarded-For` unconditionally. If a client can
+   ever reach the app directly (bypassing Caddy) or Caddy doesn't overwrite rather
+   than append client-supplied values, a request could spoof its apparent source
+   IP. The only consequences are IP-based login rate-limit keying (rate-limiting
+   is explicitly out of scope for this kind of review - it fails safe, not open)
+   and less accurate `source_ip` on audit events - no auth bypass, no data
+   exposure. Worth confirming Caddy's proxy config overwrites rather than trusts
+   incoming `X-Forwarded-For` as part of Phase 5's LAN/TLS verification pass, not
+   urgent on its own.
+
+No SQL injection, no XSS (Jinja2 autoescaping is on throughout, confirmed no
+`|safe`/`Markup` usage on any user-controlled value), no CSRF gaps (every state-
+changing route checked holds `verify_form_csrf`; `/login` correctly has none,
+since there's no session yet to bind a token to), no hardcoded secrets, no
+authentication bypass found elsewhere.
+
+### 5B verification status
+- [x] Full manual pass across auth, CSRF, authorization (all four control rooms),
+      PII encryption/fingerprinting, and a SQL-injection sweep.
+- [x] Fix applied for the one real finding (`team_detail` view-authorization
+      gap), with a regression test.
+- [x] ruff and mypy clean; full non-integration suite passes locally (27/27).
+- [ ] Pushed, CI green - next step.
+
 ## Log
 - 2026-08-21: reconciled Phase 5 scope, asked the user which slice to start with
   (concurrency & load tests chosen), audited for untested check-then-act races,
@@ -156,3 +232,9 @@ Plan:
   Asked the user how to handle it; fixed the stale test assertion and
   re-pushed on their instruction. CI green on the re-push (run 33158752533,
   commit `c10dd0d`) - 5A done.
+- 2026-08-28: ran 5B (manual security review) directly after the skill's diff-
+  review mode turned out not to fit a whole-app audit. Found and fixed a real
+  broken-access-control gap (team_detail's missing view check), noted two
+  lower-severity operational findings (encryption key-rotation not actually
+  wired up, X-Forwarded-For trust) for awareness rather than immediate fixes.
+  ruff/mypy/local suite clean; pushing for CI.

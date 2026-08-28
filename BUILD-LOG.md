@@ -924,3 +924,46 @@ CI green across all four jobs on the first push (commit `ee6d5e6`) - the
 extra care after the reporting-line bug held up. Every dashboard-embedded
 section now has its own dedicated page (Campaigns, Agent Workbench,
 Workforce, Audit); the original dashboard remains as a summary/overview only.
+
+## 2026-08-28: Phase 5B - manual security review
+
+Master plan Phase 5 requires container, dependency, dynamic, and manual
+security review before pilot. CI already covers dependency (pip-audit) and
+secrets (gitleaks) on every push; dynamic testing needs a running app,
+unavailable with local Docker still down. This was the manual pass.
+
+Tried the `security-review` skill first - it's built for reviewing a PR
+diff, and it ran against the session's primary working directory (a
+different, unrelated project) with nothing staged, not this repo. Read the
+security-critical code directly instead: CSRF issuance and verification,
+session/login handling, every state-changing route across all four web
+control rooms (campaigns, workforce, audit, agent work) checked for CSRF
+coverage and for authorization against the real loaded resource's scope
+rather than attacker-supplied scope fields, the PII encryption/fingerprinting
+layer, and a sweep for raw/interpolated SQL (none found).
+
+Found one real, exploitable gap - in code from earlier today.
+`app/web/workforce.py::team_detail` gated the management actions on a
+team's page (add/remove member) but never checked whether the requester
+could view the page at all. `workforce_list` already hides a team's tile
+unless the viewer holds `can_manage_workforce` or `can_manage_teams`, but
+`team_detail` had no equivalent check underneath it - any authenticated
+user, including a plain Agent with no appointment capability, could load any
+team's full roster by navigating straight to its URL. Confirmed
+`user_detail`, the Campaign Control Room, and the Agent Workbench do not
+have the equivalent gap - isolated to this one route. Fixed by adding the
+same gate `workforce_list` already uses, with a new regression test
+(`test_agent_cannot_view_a_team_detail_page_by_url`).
+
+Two lower-severity items noted for awareness, not fixed now: encryption
+key-rotation isn't actually wired up (`decrypt` parses the ciphertext's
+version prefix but never uses it - harmless today since only one key has
+ever been configured, but the first real rotation would silently break old
+values), and `X-Forwarded-For` is trusted without confirming Caddy
+overwrites rather than passes through client-supplied values (affects
+rate-limit keying and audit-log IP accuracy only, no auth or data impact -
+worth folding into Phase 5's own LAN/TLS verification pass). No SQL
+injection, no XSS (autoescaping on throughout, no `|safe`/`Markup` anywhere),
+no other CSRF or authorization gaps found. See PHASE-5-PLAN.md's "5B" section
+for the full write-up. ruff and mypy clean, full non-integration suite
+passing locally; pushed for CI.

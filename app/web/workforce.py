@@ -326,8 +326,17 @@ def team_detail(
     user: User = Depends(require_page_user),
 ):
     team = db.get(Team, team_id)
-    if team is None:
-        return _index_redirect(error="Team not found.")
+    # Viewing must be gated too, not just the management actions below it: without
+    # this check any authenticated user - down to a plain Agent with no appointment
+    # capability at all - could browse straight to another team's roster by URL,
+    # bypassing the same can_manage_workforce/can_manage_teams gate workforce_list
+    # already enforces before it ever links to a team. Matching that gate exactly
+    # keeps "can see the tile" and "can open the page" the same bar.
+    if team is None or not (
+        _any_appointment_capability(db, user)
+        or authz.has_assigned_capability(db, user.id, MANAGE_ROLES)
+    ):
+        return _index_redirect(error="Team not found or not authorized.")
     can_manage_team = authz.has_scope_capability(
         db, user.id, APPOINT_TEAM_CAPTAIN, scope_type="team", scope_id=team.id
     )
