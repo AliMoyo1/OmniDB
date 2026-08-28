@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Audit trail | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">Protected audit trail</p>
+      <h1>Every action, accountably.</h1>
+      <p>Scoped to what your role can see - your own activity, plus your team's if you hold a team-scoped grant, or everything if your role is organization-wide.</p>
+    </div>
+  </div>
+</div>
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Narrow the trail</p><h2>Filters</h2></div><span class="panel-note">Filters narrow your visible scope, never widen it.</span></div>
+  <form method="get" action="/audit" class="disposition-form">
+    <div class="mapping-grid">
+      <label>Action contains<input type="text" name="action" value="{{ filter_action }}" placeholder="e.g. workforce.role"></label>
+      <label>Result<select name="result">
+        <option value="" {% if not filter_result %}selected{% endif %}>Any</option>
+        {% for r in results %}<option value="{{ r }}" {% if filter_result == r %}selected{% endif %}>{{ r }}</option>{% endfor %}
+      </select></label>
+    </div>
+    <div class="mapping-grid">
+      <label>From<input type="date" name="since" value="{{ filter_since }}"></label>
+      <label>To<input type="date" name="until" value="{{ filter_until }}"></label>
+    </div>
+    <button type="submit" class="secondary">Apply filters</button>
+    {% if filter_action or filter_result or filter_since or filter_until %}<a class="back-link" href="/audit">Clear filters</a>{% endif %}
+  </form>
+</section>
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">{{ events|length }} event{{ '' if events|length == 1 else 's' }}</p><h2>Recent activity</h2></div><span class="panel-note">Most recent 200 within scope and filters.</span></div>
+  {% if events %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Result</th><th>Target</th><th>Reason</th></tr></thead>
+      <tbody>
+        {% for e in events %}
+        <tr>
+          <td>{{ e.occurred_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td>{% if e.actor_user_id and actors.get(e.actor_user_id) %}{{ actors[e.actor_user_id].display_name }}{% else %}System{% endif %}</td>
+          <td><code>{{ e.action }}</code></td>
+          <td><span class="badge {% if e.result != 'success' %}muted{% endif %}">{{ e.result }}</span></td>
+          <td>{% if e.target_type %}{{ e.target_type }}{% else %}—{% endif %}</td>
+          <td>{{ e.reason_code or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="empty">No audit activity matches your current view.</p>{% endif %}
+</section>
+{% endblock %}

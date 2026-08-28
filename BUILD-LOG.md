@@ -879,3 +879,43 @@ same page already used correctly one section up - checked the rest of the
 file for the same `db.scalar()`-on-a-joined-select mistake and found no other
 instance. Re-pushed; CI green across all four jobs, 97 of 97 tests passing
 (commit `31b1529`).
+
+## 2026-08-28: Audit trail page
+
+The last dashboard-embedded section without its own page. The master plan
+names "protected audit search" as in-scope for Phase 4A, but only the
+"protected" half existed - `list_visible_audit_events` (shared by the
+dashboard's inline table and the JSON `GET /api/v1/admin/audit-events`) took a
+`limit` and nothing else. Added optional `action` (substring, case-insensitive),
+`result` (exact match against the three real values in use - success, failure,
+denied), and `since`/`until` (date range) filters to that one shared function,
+so the JSON endpoint and the new page both gained real search for free. The
+filters narrow within whatever the actor's own visibility scope already allows
+- they never widen it; a team-scoped Team Leader filtering by action still
+only sees their own team's events.
+
+Added `/audit`: a filter form (plain GET, so results are bookmarkable/
+shareable, no CSRF needed since nothing state-changing happens) over a table of
+matching events, each row resolving the actor's display name via one batched
+lookup query (not N+1) rather than showing a bare UUID. Reused the same
+`.ops-panel`/`.mapping-grid` chrome as the other control rooms; the results
+table itself uses the plain `table`/`.table-wrap` CSS from this build's
+original design pass, since the newer row-based `.assignment-list` pattern
+suits two-column data and audit rows have six.
+
+Verified everything not requiring a live database (still true as of this
+entry - see the Phase 5A and Workforce Control Room entries above for why):
+ruff and mypy clean, `audit.html` parses through the real Jinja2 loader, the
+new route is present in the generated OpenAPI schema, and an unauthenticated
+request redirects to `/login` without touching the database. This time,
+learning from the reporting-line bug two entries up, double-checked every new
+`db.scalar()`/`db.scalars()` call against its select()'s entity count before
+pushing - the batched actor lookup is a single-entity `select(User)`, correctly
+using `.scalars()`. Seven new integration tests: three at the JSON/service
+level in `tests/integration/test_reporting_and_audit_flow.py` (action filter
+narrows without widening scope, result filter, date-range filter proven
+against a manually-backdated event) and four at the web level in
+`tests/integration/test_web_audit_flow.py` (unauthenticated redirect,
+unauthorized-agent redirect, a Manager's own login event renders, and the
+filter form round-trips its submitted value back into the input while
+genuinely narrowing results). Pushed for CI to confirm.

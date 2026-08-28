@@ -265,3 +265,67 @@ def test_audit_search_team_scoped_sees_only_own_team_and_self(manager_client):
 def test_agent_cannot_search_audit_events(agent_client):
     resp = agent_client.get("/api/v1/admin/audit-events")
     assert resp.status_code == 403
+
+
+def test_audit_search_action_filter_narrows_within_scope(manager_client):
+    unique = uuid.uuid4().hex[:8]
+    with SessionLocal() as db:
+        db.add(
+            AuditEvent(action=f"filtertest.match.{unique}", result="success", actor_user_id=None)
+        )
+        db.add(
+            AuditEvent(action=f"filtertest.other.{unique}", result="success", actor_user_id=None)
+        )
+        db.commit()
+
+    resp = manager_client.get(f"/api/v1/admin/audit-events?action=match.{unique}")
+    assert resp.status_code == 200
+    actions = {e["action"] for e in resp.json()}
+    assert f"filtertest.match.{unique}" in actions
+    assert f"filtertest.other.{unique}" not in actions
+
+
+def test_audit_search_result_filter(manager_client):
+    unique = uuid.uuid4().hex[:8]
+    with SessionLocal() as db:
+        db.add(
+            AuditEvent(action=f"filtertest.result.{unique}", result="denied", actor_user_id=None)
+        )
+        db.commit()
+
+    matching = manager_client.get(
+        f"/api/v1/admin/audit-events?action=filtertest.result.{unique}&result=denied"
+    ).json()
+    assert len(matching) == 1
+    assert matching[0]["result"] == "denied"
+
+    non_matching = manager_client.get(
+        f"/api/v1/admin/audit-events?action=filtertest.result.{unique}&result=success"
+    ).json()
+    assert non_matching == []
+
+
+def test_audit_search_date_range_filter(manager_client):
+    unique = uuid.uuid4().hex[:8]
+    with SessionLocal() as db:
+        db.add(
+            AuditEvent(
+                action=f"filtertest.old.{unique}",
+                result="success",
+                actor_user_id=None,
+                occurred_at=datetime(2020, 1, 1, tzinfo=UTC),
+            )
+        )
+        db.commit()
+
+    excluded = manager_client.get(
+        f"/api/v1/admin/audit-events"
+        f"?action=filtertest.old.{unique}&since=2026-01-01T00:00:00Z"
+    ).json()
+    assert excluded == []
+
+    included = manager_client.get(
+        f"/api/v1/admin/audit-events?action=filtertest.old.{unique}"
+    ).json()
+    actions = {e["action"] for e in included}
+    assert f"filtertest.old.{unique}" in actions

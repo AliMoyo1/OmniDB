@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc, select
@@ -122,10 +123,20 @@ def audit_visibility(db: Session, actor_id: uuid.UUID) -> tuple[bool, set[uuid.U
 
 
 def list_visible_audit_events(
-    db: Session, actor_id: uuid.UUID, *, limit: int = 50
+    db: Session,
+    actor_id: uuid.UUID,
+    *,
+    limit: int = 50,
+    action: str | None = None,
+    result: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> list[AuditEvent]:
-    """Shared by the JSON endpoint below and the dashboard page - one scoping
-    implementation, not two that could quietly drift apart."""
+    """Shared by the JSON endpoint below and the audit page - one scoping
+    implementation, not two that could quietly drift apart. The filters narrow
+    within whatever the actor's own visibility already allows; they never widen
+    it - plan 4A's "protected audit search" is the visibility scope plus these,
+    not search replacing the scope."""
     sees_everyone, team_ids = audit_visibility(db, actor_id)
     stmt = select(AuditEvent).order_by(desc(AuditEvent.occurred_at)).limit(min(limit, 200))
     if not sees_everyone:
@@ -140,18 +151,32 @@ def list_visible_audit_events(
                 )
             )
         stmt = stmt.where(AuditEvent.actor_user_id.in_(visible_actor_ids))
+    if action:
+        stmt = stmt.where(AuditEvent.action.ilike(f"%{action}%"))
+    if result:
+        stmt = stmt.where(AuditEvent.result == result)
+    if since:
+        stmt = stmt.where(AuditEvent.occurred_at >= since)
+    if until:
+        stmt = stmt.where(AuditEvent.occurred_at <= until)
     return list(db.scalars(stmt))
 
 
 @router.get("/audit-events")
 def audit_events(
     limit: int = 50,
+    action: str | None = None,
+    result: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
     db: Session = Depends(get_session),
     actor: User = Depends(get_current_user),
 ) -> list[dict]:
     if not authz.has_assigned_capability(db, actor.id, VIEW_AUDIT):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not authorized")
-    rows = list_visible_audit_events(db, actor.id, limit=limit)
+    rows = list_visible_audit_events(
+        db, actor.id, limit=limit, action=action, result=result, since=since, until=until
+    )
     return [
         {
             "id": str(row.id),
