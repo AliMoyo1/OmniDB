@@ -32,7 +32,6 @@ from app.db import get_session
 from app.models.base import utcnow
 from app.models.identity import User
 from app.models.session import Session as SessionModel
-from app.security.passwords import hash_password
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -256,13 +255,9 @@ def activate(
             status.HTTP_400_BAD_REQUEST,
             f"password must be at least {_MIN_PASSWORD_LENGTH} characters",
         )
-    user_id = service.consume_activation_token(db, payload.token)
-    if user_id is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
-    user = db.get(User, user_id)
+    user = service.activate_user_password(db, payload.token, payload.new_password)
     if user is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
-    user.password_hash = hash_password(payload.new_password)
     sess.revoke_all_for_user(db, user.id)
     record_audit(db, action="auth.activate", result="success", actor_user_id=user.id)
     db.commit()

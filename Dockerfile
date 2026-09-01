@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # /var/lib (root-owned by default) and both web and worker mount the same named volume
 # there, so ownership must be set here for Docker to carry it into the fresh volume.
 RUN groupadd --system app && useradd --system --gid app --home-dir /app app && \
-    mkdir -p /var/lib/ciphercontact/quarantine && \
+    mkdir -p /var/lib/ciphercontact/quarantine /var/lib/ciphercontact/bootstrap && \
     chown -R app:app /var/lib/ciphercontact
 
 WORKDIR /app

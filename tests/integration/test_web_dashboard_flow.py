@@ -11,9 +11,12 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.auth import service as auth_service
 from app.db import SessionLocal
 from app.models.authz import RoleAssignment
-from tests.integration.conftest import TEST_PASSWORD, login, make_user_with_role
+from app.models.identity import User
+from app.security.passwords import verify_password
+from tests.integration.conftest import TEST_PASSWORD, login, make_user, make_user_with_role
 
 pytestmark = pytest.mark.integration
 
@@ -65,6 +68,73 @@ def test_login_page_renders_and_has_a_form():
     assert media.status_code == 200
     assert media.headers["content-type"].startswith("video/mp4")
 
+
+def test_activation_page_renders_a_token_form():
+    from app.main import app
+
+    client = TestClient(app, follow_redirects=False)
+    resp = client.get("/activate")
+
+    assert resp.status_code == 200
+    assert '<form class="login-card activation-card" method="post" action="/activate">' in resp.text
+    assert 'name="activation_token"' in resp.text
+    assert 'name="new_password"' in resp.text
+    assert 'name="confirm_password"' in resp.text
+    assert "one-time activation code" in resp.text.lower()
+
+
+def test_activation_form_sets_a_password_without_echoing_or_replaying_the_token():
+    from app.main import app
+
+    email = f"web-activation-{uuid.uuid4().hex[:8]}@example.com"
+    user_id = make_user(email)
+    new_password = "new correct horse battery staple"
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        assert user is not None
+        user.password_hash = None
+        token = auth_service.issue_activation_token(db, user.id)
+        db.commit()
+
+    client = TestClient(app, follow_redirects=False)
+    mismatch = client.post(
+        "/activate",
+        data={
+            "activation_token": token,
+            "new_password": new_password,
+            "confirm_password": "different password entirely",
+        },
+    )
+    assert mismatch.status_code == 400
+    assert "Passwords do not match." in mismatch.text
+
+    first = client.post(
+        "/activate",
+        data={
+            "activation_token": token,
+            "new_password": new_password,
+            "confirm_password": new_password,
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert "Your account is ready." in first.text
+    assert token not in first.text
+
+    second = client.post(
+        "/activate",
+        data={
+            "activation_token": token,
+            "new_password": "another strong password",
+            "confirm_password": "another strong password",
+        },
+    )
+    assert second.status_code == 400
+    assert "Activation failed." in second.text
+
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        assert user is not None and user.password_hash is not None
+        assert verify_password(new_password, user.password_hash)
 
 def test_login_success_sets_cookies_and_redirects_to_dashboard():
     from app.main import app

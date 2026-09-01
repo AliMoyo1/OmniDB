@@ -1,0 +1,45 @@
+# Copy this file to /srv/edge/sites/ciphercontact.caddy only after replacing
+# ciphercontact.example.invalid with the approved, DNS-resolving hostname.
+# The edge Caddy is shared with EcoAegis; this is a separate site file and does
+# not change /srv/edge/Caddyfile or the EcoAegis site configuration.
+
+ciphercontact.example.invalid {
+	encode zstd gzip
+
+	# The application accepts a 10 MiB upload. Leave limited multipart overhead
+	# while stopping oversized request bodies before they reach the app.
+	request_body {
+		max_size 12MB
+	}
+
+	# Readiness is an authenticated internal diagnostic endpoint. Do not proxy it
+	# to the public internet, even though the application also hides it without
+	# its health token.
+	@readiness path /readyz
+	respond @readiness 404
+
+	reverse_proxy ciphercontact-web:8000 {
+		# Replace, rather than trust, client-provided forwarding headers so login
+		# rate limits and audit source-IP fields use the actual remote client.
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+
+		health_uri /healthz
+		health_interval 30s
+		health_timeout 5s
+
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 60s
+		}
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+	}
+}
