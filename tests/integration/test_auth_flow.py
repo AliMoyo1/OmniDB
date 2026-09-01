@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import timedelta
 
+import pyotp
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -19,6 +20,7 @@ from app.security.passwords import verify_password
 from app.security.tokens import hash_token
 from tests.integration.conftest import (
     TEST_PASSWORD,
+    TEST_TOTP_SECRET,
     csrf_headers,
     login,
     make_user,
@@ -38,11 +40,8 @@ def test_login_then_me(client: TestClient):
     email = f"user-{uuid.uuid4().hex[:8]}@example.com"
     make_user(email)
 
-    login = client.post(
-        "/api/v1/auth/login", json={"email": email, "password": TEST_PASSWORD}
-    )
-    assert login.status_code == 200, login.text
-    assert "cc_session" in login.cookies
+    login(client, email)
+    assert client.cookies.get("cc_session")
 
     me = client.get("/api/v1/auth/me")
     assert me.status_code == 200
@@ -139,7 +138,10 @@ def test_sensitive_admin_reset_requires_recent_reauthentication(client: TestClie
 
     reauthenticated = client.post(
         "/api/v1/auth/reauthenticate",
-        json={"password": TEST_PASSWORD},
+        json={
+            "password": TEST_PASSWORD,
+            "totp_code": pyotp.TOTP(TEST_TOTP_SECRET).now(),
+        },
         headers=csrf_headers(client),
     )
     assert reauthenticated.status_code == 200, reauthenticated.text

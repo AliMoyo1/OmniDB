@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Account security - CipherContact{% endblock %}
+{% block content %}
+
+<section class="security-hero">
+  <div>
+    <p class="eyebrow">Account security</p>
+    <h1>Two-step verification</h1>
+    <p>Protect your CipherContact account with a time-based code from Microsoft Authenticator or another compatible app.</p>
+  </div>
+  <span class="security-state {% if mfa_active %}is-active{% else %}is-required{% endif %}">
+    <span aria-hidden="true"></span>
+    {% if mfa_active %}Active{% else %}Setup required{% endif %}
+  </span>
+</section>
+
+{% if mfa_active %}
+<section class="security-card security-enabled-card">
+  <div class="security-check" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>
+  </div>
+  <div>
+    <p class="eyebrow">Verified protection</p>
+    <h2>Your authenticator is connected</h2>
+    <p>A current six-digit code is required whenever you sign in as <strong>{{ user.email }}</strong>.</p>
+    <p class="security-footnote">For lockout recovery, contact a Super Admin. Disabling two-step verification is not available as a self-service action.</p>
+  </div>
+</section>
+{% else %}
+<div class="security-progress" aria-label="Authenticator setup progress">
+  <div class="security-progress-item {% if recently_reauthenticated %}is-complete{% else %}is-current{% endif %}">
+    <span>1</span><div><strong>Confirm identity</strong><small>Enter your current password</small></div>
+  </div>
+  <div class="security-progress-line"></div>
+  <div class="security-progress-item {% if enrollment_secret or setup_in_progress %}is-complete{% elif recently_reauthenticated %}is-current{% endif %}">
+    <span>2</span><div><strong>Add authenticator</strong><small>Enter the setup key in your app</small></div>
+  </div>
+  <div class="security-progress-line"></div>
+  <div class="security-progress-item {% if enrollment_secret or setup_in_progress %}is-current{% endif %}">
+    <span>3</span><div><strong>Verify code</strong><small>Prove the setup works</small></div>
+  </div>
+</div>
+
+<div class="security-grid">
+  <section class="security-card {% if recently_reauthenticated %}is-complete{% endif %}">
+    <div class="security-card-head">
+      <span class="security-step-number">01</span>
+      <div><p class="eyebrow">Identity check</p><h2>Confirm your password</h2></div>
+    </div>
+    {% if recently_reauthenticated %}
+    <div class="security-confirmed"><span aria-hidden="true">✓</span> Identity confirmed for this setup session.</div>
+    {% else %}
+    <p>Re-enter your password before CipherContact creates an authenticator secret.</p>
+    <form method="post" action="/security/mfa/reauthenticate" class="security-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Current password
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      {% if user.totp_enrolled %}
+      <label>Current authenticator code
+        <input type="text" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6">
+      </label>
+      {% endif %}
+      <button type="submit">Confirm identity</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="security-card {% if not recently_reauthenticated %}is-locked{% endif %}">
+    <div class="security-card-head">
+      <span class="security-step-number">02</span>
+      <div><p class="eyebrow">Authenticator app</p><h2>Add CipherContact</h2></div>
+    </div>
+    {% if recently_reauthenticated %}
+      {% if enrollment_secret %}
+      <ol class="security-instructions">
+        <li>Open Microsoft Authenticator or another TOTP app on your phone.</li>
+        <li>Add an <strong>Other account</strong> and choose manual key entry.</li>
+        <li>Use <strong>CipherContact</strong> as the issuer and <strong>{{ user.email }}</strong> as the account.</li>
+        <li>Enter the setup key below and select a time-based key.</li>
+      </ol>
+      <div class="mfa-secret-panel">
+        <span>One-time setup key</span>
+        <code class="mfa-secret" aria-label="One-time authenticator setup key">{{ enrollment_secret_display }}</code>
+        <small>Treat this key like a password. It is shown only in this response.</small>
+      </div>
+      {% elif setup_in_progress %}
+      <p>An authenticator setup is already in progress. Enter its current code in step 3, or create a new key to restart.</p>
+      <form method="post" action="/security/mfa/start" class="security-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="secondary">Create a new setup key</button>
+      </form>
+      {% else %}
+      <p>CipherContact will create a unique setup key. The key is never placed in a URL or saved in browser storage.</p>
+      <form method="post" action="/security/mfa/start" class="security-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Create setup key</button>
+      </form>
+      {% endif %}
+    {% else %}
+    <p class="security-locked-copy">Complete the identity check before creating a setup key.</p>
+    {% endif %}
+  </section>
+
+  <section class="security-card security-verify-card {% if not setup_in_progress and not enrollment_secret %}is-locked{% endif %}">
+    <div class="security-card-head">
+      <span class="security-step-number">03</span>
+      <div><p class="eyebrow">Final check</p><h2>Verify six digits</h2></div>
+    </div>
+    {% if setup_in_progress or enrollment_secret %}
+    <p>Enter the current code generated for CipherContact. A successful check activates MFA and signs out every older session.</p>
+    <form method="post" action="/security/mfa/verify" class="security-form security-code-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Authenticator code
+        <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" placeholder="000000" required autofocus>
+      </label>
+      <button type="submit">Activate two-step verification</button>
+    </form>
+    {% else %}
+    <p class="security-locked-copy">Create and add the setup key before verifying a code.</p>
+    {% endif %}
+  </section>
+</div>
+{% endif %}
+
+{% endblock %}

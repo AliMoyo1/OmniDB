@@ -22,6 +22,7 @@ from app.auth.router import _MIN_PASSWORD_LENGTH, clear_auth_cookies, set_auth_c
 from app.auth.service import AuthError
 from app.db import get_session
 from app.models.base import utcnow
+from app.models.identity import User
 from app.web.dependencies import require_page_session, verify_form_csrf
 from app.web.templates import templates
 
@@ -35,11 +36,31 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _redirect_for_existing_session(
+    db: Session, token: str | None
+) -> RedirectResponse | None:
+    row = sess.load_session(db, token)
+    if row is None:
+        return None
+    user = db.get(User, row.user_id)
+    if user is None or not user.active:
+        sess.revoke_session(db, row)
+        db.commit()
+        return None
+    target = (
+        "/dashboard"
+        if user.totp_enrolled and row.mfa_state == sess.MFA_SATISFIED
+        else "/security/mfa"
+    )
+    db.commit()
+    return RedirectResponse(target, status_code=303)
+
+
 @router.get("/login")
 def login_form(request: Request, db: Session = Depends(get_session)):
-    token = request.cookies.get(sess.COOKIE_NAME)
-    if sess.load_session(db, token) is not None:
-        return RedirectResponse("/dashboard", status_code=303)
+    redirect = _redirect_for_existing_session(db, request.cookies.get(sess.COOKIE_NAME))
+    if redirect is not None:
+        return redirect
     return templates.TemplateResponse(request, "login.html", {})
 
 
@@ -86,23 +107,31 @@ def login_submit(
         )
 
     ratelimit.reset_account(rate_key)
-    row, token = sess.create_session(db, user.id, source_summary=source, mfa_state="satisfied")
+    mfa_state = sess.MFA_SATISFIED if user.totp_enrolled else sess.MFA_ENROLLMENT_REQUIRED
+    row, token = sess.create_session(
+        db,
+        user.id,
+        source_summary=source,
+        mfa_state=mfa_state,
+        recently_reauthenticated=user.totp_enrolled,
+    )
     user.last_login_at = utcnow()
     record_audit(
         db, action="auth.login", result="success", actor_user_id=user.id,
         target_type="session", target_id=row.id, source_ip=ip, user_agent_summary=source,
     )
     db.commit()
-    response = RedirectResponse("/dashboard", status_code=303)
+    target = "/dashboard" if user.totp_enrolled else "/security/mfa"
+    response = RedirectResponse(target, status_code=303)
     set_auth_cookies(response, token, row.id)
     return response
 
 
 @router.get("/activate")
 def activate_form(request: Request, db: Session = Depends(get_session)):
-    token = request.cookies.get(sess.COOKIE_NAME)
-    if sess.load_session(db, token) is not None:
-        return RedirectResponse("/dashboard", status_code=303)
+    redirect = _redirect_for_existing_session(db, request.cookies.get(sess.COOKIE_NAME))
+    if redirect is not None:
+        return redirect
     return templates.TemplateResponse(
         request, "activate.html", {"password_min_length": _MIN_PASSWORD_LENGTH}
     )

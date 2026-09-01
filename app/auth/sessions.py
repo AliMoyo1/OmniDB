@@ -14,6 +14,8 @@ from app.models.session import Session as SessionModel
 from app.security.tokens import generate_token, hash_token
 
 COOKIE_NAME = "cc_session"
+MFA_ENROLLMENT_REQUIRED = "enrollment_required"
+MFA_SATISFIED = "satisfied"
 
 
 def create_session(
@@ -21,7 +23,8 @@ def create_session(
     user_id: uuid.UUID,
     *,
     source_summary: str | None = None,
-    mfa_state: str = "satisfied",
+    mfa_state: str = MFA_SATISFIED,
+    recently_reauthenticated: bool = True,
 ) -> tuple[SessionModel, str]:
     settings = get_settings()
     now = utcnow()
@@ -34,7 +37,7 @@ def create_session(
         absolute_expires_at=now + timedelta(hours=settings.session_absolute_hours),
         source_summary=source_summary,
         mfa_state=mfa_state,
-        reauthenticated_at=now,
+        reauthenticated_at=now if recently_reauthenticated else None,
     )
     db.add(row)
     db.flush()

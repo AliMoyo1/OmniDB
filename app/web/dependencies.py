@@ -26,6 +26,10 @@ class InvalidFormCsrf(Exception):
     """Raised instead of a 403 for the same page-friendly-response reason."""
 
 
+class RedirectToMfaEnrollment(Exception):
+    """Raised when a valid password session has not completed TOTP enrollment."""
+
+
 def require_page_session(
     request: Request, db: Session = Depends(get_session)
 ) -> SessionModel:
@@ -37,13 +41,22 @@ def require_page_session(
     return row
 
 
-def require_page_user(
+def require_authenticated_page_user(
     db: Session = Depends(get_session),
     session: SessionModel = Depends(require_page_session),
 ) -> User:
     user = db.get(User, session.user_id)
     if user is None or not user.active:
         raise RedirectToLogin()
+    return user
+
+
+def require_page_user(
+    user: User = Depends(require_authenticated_page_user),
+    session: SessionModel = Depends(require_page_session),
+) -> User:
+    if not user.totp_enrolled or session.mfa_state != sess.MFA_SATISFIED:
+        raise RedirectToMfaEnrollment()
     return user
 
 

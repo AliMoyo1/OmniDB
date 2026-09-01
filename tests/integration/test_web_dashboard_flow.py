@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 
+import pyotp
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -16,7 +17,13 @@ from app.db import SessionLocal
 from app.models.authz import RoleAssignment
 from app.models.identity import User
 from app.security.passwords import verify_password
-from tests.integration.conftest import TEST_PASSWORD, login, make_user, make_user_with_role
+from tests.integration.conftest import (
+    TEST_PASSWORD,
+    TEST_TOTP_SECRET,
+    login,
+    make_user,
+    make_user_with_role,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -143,7 +150,12 @@ def test_login_success_sets_cookies_and_redirects_to_dashboard():
     make_user_with_role(email, "manager")
     client = TestClient(app, follow_redirects=False)
     resp = client.post(
-        "/login", data={"email": email, "password": TEST_PASSWORD, "totp_code": ""}
+        "/login",
+        data={
+            "email": email,
+            "password": TEST_PASSWORD,
+            "totp_code": pyotp.TOTP(TEST_TOTP_SECRET).now(),
+        },
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/dashboard"
