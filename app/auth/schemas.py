@@ -30,6 +30,7 @@ class UserOut(BaseModel):
     email: str
     display_name: str
     workforce_id: str
+    mfa_enrollment_required: bool = False
 
 
 class TotpEnrollOut(BaseModel):

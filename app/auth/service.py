@@ -23,6 +23,10 @@ class AuthError(Exception):
     """Login failed. The message is intentionally generic to avoid enumeration."""
 
 
+class TotpEnrollmentError(Exception):
+    """TOTP enrollment could not continue in the user's current state."""
+
+
 def normalize_email(email: str) -> str:
     return email.strip().lower()
 
@@ -44,6 +48,39 @@ def authenticate(db: DbSession, email: str, password: str, totp_code: str | None
         )
         if not secret or not totp_mod.verify_code(secret, totp_code):
             raise AuthError("invalid credentials")
+    return user
+
+
+def begin_totp_enrollment(db: DbSession, user_id: uuid.UUID) -> tuple[User, str]:
+    """Create one pending TOTP secret without replacing an active enrollment."""
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None or not user.active:
+        raise TotpEnrollmentError("account unavailable")
+    if user.totp_enrolled:
+        raise TotpEnrollmentError("already enrolled")
+    secret = totp_mod.new_secret()
+    user.totp_secret_ciphertext = totp_mod.encrypt_secret(secret)
+    db.flush()
+    return user, secret
+
+
+def complete_totp_enrollment(db: DbSession, user_id: uuid.UUID, code: str) -> User:
+    """Verify and activate the pending TOTP secret while holding the user row lock."""
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None or not user.active:
+        raise TotpEnrollmentError("account unavailable")
+    if user.totp_enrolled:
+        raise TotpEnrollmentError("already enrolled")
+    if not user.totp_secret_ciphertext:
+        raise TotpEnrollmentError("no enrollment in progress")
+    normalized_code = code.strip().replace(" ", "")
+    secret = totp_mod.decrypt_secret(user.totp_secret_ciphertext)
+    if len(normalized_code) != 6 or not normalized_code.isdigit():
+        raise TotpEnrollmentError("invalid code")
+    if not totp_mod.verify_code(secret, normalized_code):
+        raise TotpEnrollmentError("invalid code")
+    user.totp_enrolled = True
+    db.flush()
     return user
 
 

@@ -6,9 +6,11 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
+import pyotp
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth import totp as totp_mod
 from app.db import SessionLocal
 from app.models.authz import RoleAssignment
 from app.models.campaign import CampaignUserAssignment
@@ -16,6 +18,7 @@ from app.models.identity import User
 from app.security.passwords import hash_password
 
 TEST_PASSWORD = "correct horse battery staple"
+TEST_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 
 
 @pytest.fixture
@@ -25,13 +28,19 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def make_user(email: str, password: str = TEST_PASSWORD) -> uuid.UUID:
+def make_user(
+    email: str, password: str = TEST_PASSWORD, *, totp_enrolled: bool = True
+) -> uuid.UUID:
     with SessionLocal() as db:
         user = User(
             workforce_id=email.split("@")[0],
             email=email,
             display_name="Test User",
             password_hash=hash_password(password),
+            totp_secret_ciphertext=(
+                totp_mod.encrypt_secret(TEST_TOTP_SECRET) if totp_enrolled else None
+            ),
+            totp_enrolled=totp_enrolled,
         )
         db.add(user)
         db.commit()
@@ -44,6 +53,7 @@ def make_user_with_role(
     password: str = TEST_PASSWORD,
     scope_type: str = "organization",
     scope_id: uuid.UUID | None = None,
+    totp_enrolled: bool = True,
 ) -> uuid.UUID:
     with SessionLocal() as db:
         user = User(
@@ -51,6 +61,10 @@ def make_user_with_role(
             email=email,
             display_name="Test User",
             password_hash=hash_password(password),
+            totp_secret_ciphertext=(
+                totp_mod.encrypt_secret(TEST_TOTP_SECRET) if totp_enrolled else None
+            ),
+            totp_enrolled=totp_enrolled,
         )
         db.add(user)
         db.flush()
@@ -68,7 +82,14 @@ def make_user_with_role(
 
 
 def login(client: TestClient, email: str, password: str = TEST_PASSWORD) -> None:
-    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    response = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": email,
+            "password": password,
+            "totp_code": pyotp.TOTP(TEST_TOTP_SECRET).now(),
+        },
+    )
     assert response.status_code == 200, response.text
 
 

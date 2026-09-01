@@ -13,6 +13,7 @@ from app.auth import csrf, ratelimit, service
 from app.auth import sessions as sess
 from app.auth import totp as totp_mod
 from app.auth.dependencies import (
+    get_authenticated_user,
     get_current_session,
     get_current_user,
     require_csrf,
@@ -75,6 +76,7 @@ def _user_out(user: User) -> UserOut:
         email=user.email,
         display_name=user.display_name,
         workforce_id=user.workforce_id,
+        mfa_enrollment_required=not user.totp_enrolled,
     )
 
 
@@ -113,7 +115,14 @@ def login(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials") from None
 
     ratelimit.reset_account(rate_key)
-    row, token = sess.create_session(db, user.id, source_summary=source, mfa_state="satisfied")
+    mfa_state = sess.MFA_SATISFIED if user.totp_enrolled else sess.MFA_ENROLLMENT_REQUIRED
+    row, token = sess.create_session(
+        db,
+        user.id,
+        source_summary=source,
+        mfa_state=mfa_state,
+        recently_reauthenticated=user.totp_enrolled,
+    )
     user.last_login_at = utcnow()
     record_audit(
         db, action="auth.login", result="success", actor_user_id=user.id,
@@ -147,18 +156,33 @@ def me(user: User = Depends(get_current_user)) -> UserOut:
 
 @router.post("/reauthenticate", dependencies=[Depends(require_csrf)])
 def reauthenticate(
+    request: Request,
     payload: ReauthRequest,
     db: Session = Depends(get_session),
     session: SessionModel = Depends(get_current_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_authenticated_user),
 ) -> dict[str, str]:
+    rate_key = f"reauth:{service.normalize_email(user.email)}"
+    if not ratelimit.check_and_increment(rate_key, _client_ip(request)):
+        record_audit(
+            db,
+            action="auth.reauthenticate",
+            result="denied",
+            actor_user_id=user.id,
+            reason_code="rate_limited",
+        )
+        db.commit()
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many attempts")
     try:
         service.authenticate(db, user.email, payload.password, payload.totp_code)
     except AuthError:
         record_audit(db, action="auth.reauthenticate", result="failure", actor_user_id=user.id)
         db.commit()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials") from None
-    session.mfa_state = "satisfied"
+    ratelimit.reset_account(rate_key)
+    session.mfa_state = (
+        sess.MFA_SATISFIED if user.totp_enrolled else sess.MFA_ENROLLMENT_REQUIRED
+    )
     session.reauthenticated_at = utcnow()
     record_audit(db, action="auth.reauthenticate", result="success", actor_user_id=user.id)
     db.commit()
@@ -211,15 +235,19 @@ def revoke_session(
 )
 def totp_enroll(
     db: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    session: SessionModel = Depends(get_current_session),
+    user: User = Depends(get_authenticated_user),
 ) -> TotpEnrollOut:
-    secret = totp_mod.new_secret()
-    user.totp_secret_ciphertext = totp_mod.encrypt_secret(secret)
-    user.totp_enrolled = False  # not active until a code is verified
+    try:
+        locked_user, secret = service.begin_totp_enrollment(db, user.id)
+    except service.TotpEnrollmentError as exc:
+        status_code = status.HTTP_409_CONFLICT if str(exc) == "already enrolled" else 400
+        raise HTTPException(status_code, str(exc)) from None
+    session.mfa_state = sess.MFA_ENROLLMENT_REQUIRED
     record_audit(db, action="auth.totp.enroll_start", result="success", actor_user_id=user.id)
     db.commit()
     return TotpEnrollOut(
-        secret=secret, provisioning_uri=totp_mod.provisioning_uri(secret, user.email)
+        secret=secret, provisioning_uri=totp_mod.provisioning_uri(secret, locked_user.email)
     )
 
 
@@ -228,20 +256,55 @@ def totp_enroll(
     dependencies=[Depends(require_csrf), Depends(require_recent_reauthentication)],
 )
 def totp_verify(
+    request: Request,
+    response: Response,
     payload: TotpVerifyRequest,
     db: Session = Depends(get_session),
-    user: User = Depends(get_current_user),
+    session: SessionModel = Depends(get_current_session),
+    user: User = Depends(get_authenticated_user),
 ) -> dict[str, str]:
-    if not user.totp_secret_ciphertext:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no enrollment in progress")
-    secret = totp_mod.decrypt_secret(user.totp_secret_ciphertext)
-    if not totp_mod.verify_code(secret, payload.code):
-        record_audit(db, action="auth.totp.verify", result="failure", actor_user_id=user.id)
+    rate_key = f"totp-enrollment:{service.normalize_email(user.email)}"
+    if not ratelimit.check_and_increment(rate_key, _client_ip(request)):
+        record_audit(
+            db,
+            action="auth.totp.verify",
+            result="denied",
+            actor_user_id=user.id,
+            reason_code="rate_limited",
+        )
         db.commit()
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid code")
-    user.totp_enrolled = True
-    record_audit(db, action="auth.totp.verify", result="success", actor_user_id=user.id)
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many attempts")
+    try:
+        enrolled_user = service.complete_totp_enrollment(db, user.id, payload.code)
+    except service.TotpEnrollmentError as exc:
+        record_audit(
+            db,
+            action="auth.totp.verify",
+            result="failure",
+            actor_user_id=user.id,
+            reason_code=str(exc).replace(" ", "_"),
+        )
+        db.commit()
+        status_code = status.HTTP_409_CONFLICT if str(exc) == "already enrolled" else 400
+        raise HTTPException(status_code, str(exc)) from None
+    ratelimit.reset_account(rate_key)
+    sess.revoke_all_for_user(db, enrolled_user.id)
+    new_session, token = sess.create_session(
+        db,
+        enrolled_user.id,
+        source_summary=session.source_summary,
+        mfa_state=sess.MFA_SATISFIED,
+    )
+    record_audit(
+        db,
+        action="auth.totp.verify",
+        result="success",
+        actor_user_id=enrolled_user.id,
+        target_type="session",
+        target_id=new_session.id,
+    )
     db.commit()
+    set_auth_cookies(response, token, new_session.id)
     return {"status": "ok"}
 
 

@@ -24,8 +24,9 @@ from app.web.audit import router as web_audit_router
 from app.web.auth_pages import router as web_auth_router
 from app.web.campaigns import router as web_campaigns_router
 from app.web.dashboard import router as web_dashboard_router
-from app.web.dependencies import InvalidFormCsrf, RedirectToLogin
+from app.web.dependencies import InvalidFormCsrf, RedirectToLogin, RedirectToMfaEnrollment
 from app.web.flags import router as web_flags_router
+from app.web.security import router as web_security_router
 from app.web.workforce import router as web_workforce_router
 
 configure_logging(get_settings().log_level)
@@ -50,10 +51,19 @@ async def _redirect_to_login(request: Request, exc: RedirectToLogin) -> Redirect
     return RedirectResponse("/login", status_code=303)
 
 
+@app.exception_handler(RedirectToMfaEnrollment)
+async def _redirect_to_mfa(
+    request: Request, exc: RedirectToMfaEnrollment
+) -> RedirectResponse:
+    return RedirectResponse("/security/mfa", status_code=303)
+
+
 @app.exception_handler(InvalidFormCsrf)
 async def _invalid_form_csrf(request: Request, exc: InvalidFormCsrf) -> RedirectResponse:
     if request.url.path.startswith("/agent/work"):
         target = "/agent/work"
+    elif request.url.path.startswith("/security/mfa"):
+        target = "/security/mfa"
     elif request.url.path.startswith("/campaigns"):
         target = "/campaigns"
     else:
@@ -78,6 +88,7 @@ app.include_router(web_campaigns_router)
 app.include_router(web_workforce_router)
 app.include_router(web_audit_router)
 app.include_router(web_flags_router)
+app.include_router(web_security_router)
 app.include_router(web_dashboard_router)
 
 
