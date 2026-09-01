@@ -12,7 +12,7 @@ from app.auth import totp as totp_mod
 from app.models.activation import ActivationToken
 from app.models.base import utcnow
 from app.models.identity import User
-from app.security.passwords import dummy_verify, verify_password
+from app.security.passwords import dummy_verify, hash_password, verify_password
 from app.security.tokens import generate_token, hash_token
 
 _ACTIVATION_MAX_AGE = 24 * 3600
@@ -122,3 +122,15 @@ def consume_activation_token(db: DbSession, token: str) -> uuid.UUID | None:
     row.used_at = now
     db.flush()
     return row.user_id
+
+
+def activate_user_password(db: DbSession, token: str, new_password: str) -> User | None:
+    """Consume one activation token and set its user password in this transaction."""
+    user_id = consume_activation_token(db, token)
+    if user_id is None:
+        return None
+    user = db.get(User, user_id)
+    if user is None:
+        return None
+    user.password_hash = hash_password(new_password)
+    return user

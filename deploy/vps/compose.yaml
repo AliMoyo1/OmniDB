@@ -1,0 +1,213 @@
+name: ciphercontact
+
+# Production deployment for the shared VPS. This file deliberately has no Caddy
+# service and publishes no host ports. The existing edge Caddy owns 80/443; only
+# the CipherContact web service joins its external `edge` network.
+
+x-default-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-common: &app-common
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  image: "ciphercontact:${CIPHERCONTACT_IMAGE_TAG:-local}"
+  env_file:
+    - /srv/ciphercontact/config/app.env
+  environment:
+    APP_ENV: production
+    COOKIE_SECURE: "true"
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    REDIS_URL: redis://redis:6379/0
+  secrets:
+    - db_password
+    - app_secret_key
+    - field_encryption_key
+    - phone_fingerprint_hmac_key
+    - health_token
+  # UID 999 is the image's non-root `app` user. GID 30001 is deliberately
+  # unused by the host, so root-owned secret files can be group-readable only
+  # by this application rather than by the host's systemd-journal group (999).
+  user: "999:30001"
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *default-logging
+  restart: unless-stopped
+
+services:
+  postgres:
+    # A fixed patch release. Pin the pulled image digest in the release record.
+    image: postgres:16.15
+    environment:
+      POSTGRES_DB: ciphercontact
+      POSTGRES_USER: ciphercontact
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ciphercontact -d ciphercontact"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    mem_limit: 768m
+    pids_limit: 256
+    cpus: "1.0"
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.7-alpine
+    command:
+      ["redis-server", "--save", "60", "1", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redisdata:/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    mem_limit: 256m
+    pids_limit: 128
+    cpus: "0.5"
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  web:
+    <<: *app-common
+    volumes:
+      - quarantine:/var/lib/ciphercontact/quarantine
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      data: {}
+      edge:
+        aliases:
+          - ciphercontact-web
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 512m
+    pids_limit: 256
+    cpus: "0.75"
+    stop_grace_period: 30s
+
+  worker:
+    <<: *app-common
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    volumes:
+      - quarantine:/var/lib/ciphercontact/quarantine
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    mem_limit: 1g
+    pids_limit: 384
+    cpus: "1.0"
+    stop_grace_period: 60s
+
+  beat:
+    <<: *app-common
+    command:
+      ["celery", "-A", "app.worker.celery_app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - data
+    mem_limit: 256m
+    pids_limit: 128
+    cpus: "0.5"
+    stop_grace_period: 30s
+  # Operator-only profile. It has no edge attachment, no published port, and is
+  # never started by `up` unless explicitly targeted with the `ops` profile.
+  bootstrap:
+    <<: *app-common
+    profiles: ["ops"]
+    entrypoint: ["python", "-m", "app.ops.bootstrap_super_admin"]
+    command: []
+    volumes:
+      - bootstrap:/var/lib/ciphercontact/bootstrap
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data
+    mem_limit: 256m
+    pids_limit: 128
+    cpus: "0.5"
+    stop_grace_period: 30s
+    restart: "no"
+
+networks:
+  # The app database and broker can never accept traffic from the host or edge.
+  data:
+    internal: true
+  # This pre-existing shared network is owned by /srv/edge, not this project.
+  edge:
+    external: true
+    name: edge
+
+volumes:
+  pgdata:
+  redisdata:
+  quarantine:
+  bootstrap:
+
+secrets:
+  db_password:
+    file: /srv/ciphercontact/secrets/db_password
+  app_secret_key:
+    file: /srv/ciphercontact/secrets/app_secret_key
+  field_encryption_key:
+    file: /srv/ciphercontact/secrets/field_encryption_key
+  phone_fingerprint_hmac_key:
+    file: /srv/ciphercontact/secrets/phone_fingerprint_hmac_key
+  health_token:
+    file: /srv/ciphercontact/secrets/health_token

@@ -45,3 +45,14 @@ def lock_idempotency_key(
     material = f"{namespace}:{actor_id}:{idempotency_key}".encode()
     lock_id = int.from_bytes(hashlib.sha256(material).digest()[:8], "big", signed=True)
     db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+
+
+def initial_super_admin_bootstrap_lock_id() -> int:
+    """Return the installation-wide advisory lock used by first-admin provisioning."""
+    digest = hashlib.sha256(b"ciphercontact:initial-super-admin-bootstrap:v1").digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=True)
+
+
+def lock_initial_super_admin(db: Session) -> None:
+    """Serialize creation of the first active Super Admin for this installation."""
+    db.execute(select(func.pg_advisory_xact_lock(initial_super_admin_bootstrap_lock_id())))

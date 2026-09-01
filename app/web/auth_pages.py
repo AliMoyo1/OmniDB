@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.audit.service import record_audit
 from app.auth import ratelimit, service
 from app.auth import sessions as sess
-from app.auth.router import clear_auth_cookies, set_auth_cookies
+from app.auth.router import _MIN_PASSWORD_LENGTH, clear_auth_cookies, set_auth_cookies
 from app.auth.service import AuthError
 from app.db import get_session
 from app.models.base import utcnow
@@ -97,6 +97,60 @@ def login_submit(
     set_auth_cookies(response, token, row.id)
     return response
 
+
+@router.get("/activate")
+def activate_form(request: Request, db: Session = Depends(get_session)):
+    token = request.cookies.get(sess.COOKIE_NAME)
+    if sess.load_session(db, token) is not None:
+        return RedirectResponse("/dashboard", status_code=303)
+    return templates.TemplateResponse(
+        request, "activate.html", {"password_min_length": _MIN_PASSWORD_LENGTH}
+    )
+
+
+@router.post("/activate")
+def activate_submit(
+    request: Request,
+    db: Session = Depends(get_session),
+    activation_token: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+):
+    context: dict[str, object] = {"password_min_length": _MIN_PASSWORD_LENGTH}
+    if len(new_password) < _MIN_PASSWORD_LENGTH:
+        context["flash_error"] = (
+            f"Password must be at least {_MIN_PASSWORD_LENGTH} characters long."
+        )
+        return templates.TemplateResponse(request, "activate.html", context, status_code=400)
+    if new_password != confirm_password:
+        context["flash_error"] = "Passwords do not match."
+        return templates.TemplateResponse(request, "activate.html", context, status_code=400)
+
+    user = service.activate_user_password(db, activation_token.strip(), new_password)
+    if user is None:
+        record_audit(
+            db,
+            action="auth.activate",
+            result="failure",
+            reason_code="invalid_or_expired_token",
+            source_ip=_client_ip(request),
+            user_agent_summary=request.headers.get("user-agent", "")[:255],
+        )
+        db.commit()
+        context["flash_error"] = "Activation failed. Verify the one-time code and try again."
+        return templates.TemplateResponse(request, "activate.html", context, status_code=400)
+
+    sess.revoke_all_for_user(db, user.id)
+    record_audit(
+        db,
+        action="auth.activate",
+        result="success",
+        actor_user_id=user.id,
+        source_ip=_client_ip(request),
+        user_agent_summary=request.headers.get("user-agent", "")[:255],
+    )
+    db.commit()
+    return templates.TemplateResponse(request, "activate.html", {"activated": True})
 
 @router.post("/logout")
 def logout_submit(
