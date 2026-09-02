@@ -49,7 +49,16 @@ class WorkItem(UUIDMixin, TimestampMixin, Base):
     campaign_contact_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaign_contacts.id"))
     batch_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("batches.id"), nullable=True)
     campaign_user_assignment_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("campaign_user_assignments.id"), nullable=True
+        ForeignKey(
+            "campaign_user_assignments.id",
+            # The naming convention's auto-generated name for this column/table
+            # pair is 67 chars, over Postgres's 63-char limit - migration 0002
+            # already hand-shortened it in the database; this makes the model
+            # describe the same name instead of silently diverging from it
+            # (autogenerate would otherwise see this as a rename every time).
+            name="fk_work_items_cua_id",
+        ),
+        nullable=True,
     )
     assigned_agent_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id"), nullable=True
@@ -81,10 +90,27 @@ class CallAttempt(UUIDMixin, Base):
     campaign_contact_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaign_contacts.id"))
     agent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     campaign_user_assignment_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("campaign_user_assignments.id"), nullable=True
+        ForeignKey(
+            "campaign_user_assignments.id",
+            # The naming convention's auto-generated name for this column/table
+            # pair is 70 chars, over Postgres's 63-char limit - migration 0002
+            # already hand-shortened it in the database; this makes the model
+            # describe the same name instead of silently diverging from it
+            # (autogenerate would otherwise see this as a rename every time).
+            name="fk_call_attempts_cua_id",
+        ),
+        nullable=True,
     )
     disposition_definition_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("campaign_disposition_definitions.id")
+        ForeignKey(
+            "campaign_disposition_definitions.id",
+            # The naming convention's auto-generated name for this column/table
+            # pair is 75 chars, over Postgres's 63-char limit - migration 0002
+            # already hand-shortened it in the database; this makes the model
+            # describe the same name instead of silently diverging from it
+            # (autogenerate would otherwise see this as a rename every time).
+            name="fk_call_attempts_disposition_id",
+        )
     )
     semantic_outcome: Mapped[str] = mapped_column(String(50))
     notes_ciphertext: Mapped[str | None] = mapped_column(String(4096), nullable=True)
