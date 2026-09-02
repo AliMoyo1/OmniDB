@@ -37,7 +37,9 @@ from app.workforce_imports.service import (
     SelfApproval,
     StaleDecisionVersion,
     UnknownImportType,
+    UnresolvedBlockingErrors,
     UploadRejected,
+    WarningsNotAcknowledged,
 )
 from app.workforce_imports.tasks import parse_workforce_import_job_task
 
@@ -70,6 +72,17 @@ def _job_out(job: WorkforceImportJob) -> WorkforceImportJobOut:
 def _load_job_or_404(db: Session, import_id: uuid.UUID) -> WorkforceImportJob:
     job = db.get(WorkforceImportJob, import_id)
     if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "import job not found")
+    return job
+
+
+def _load_accessible_job_or_404(
+    db: Session, import_id: uuid.UUID, actor_id: uuid.UUID
+) -> WorkforceImportJob:
+    job = db.get(WorkforceImportJob, import_id)
+    if job is None or not import_service.can_access_job(db, actor_id, job):
+        # Same 404 either way - a job outside the caller's scope should not be
+        # distinguishable from one that doesn't exist (finding #1).
         raise HTTPException(status.HTTP_404_NOT_FOUND, "import job not found")
     return job
 
@@ -109,7 +122,7 @@ def get_workforce_import(
     db: Session = Depends(get_session),
     user: User = Depends(_require_any_appointment_capability),
 ) -> WorkforceImportJobOut:
-    return _job_out(_load_job_or_404(db, import_id))
+    return _job_out(_load_accessible_job_or_404(db, import_id, user.id))
 
 
 @router.get("/{import_id}/preview", response_model=WorkforceImportPreviewOut)
@@ -118,7 +131,7 @@ def preview_workforce_import(
     db: Session = Depends(get_session),
     user: User = Depends(_require_any_appointment_capability),
 ) -> WorkforceImportPreviewOut:
-    job = _load_job_or_404(db, import_id)
+    job = _load_accessible_job_or_404(db, import_id, user.id)
     examples = import_service.get_preview(db, job)
     return WorkforceImportPreviewOut(
         job=_job_out(job),
@@ -141,16 +154,20 @@ def decide_workforce_import(
     db: Session = Depends(get_session),
     user: User = Depends(_require_any_appointment_capability),
 ) -> WorkforceImportDecisionOut:
-    job = _load_job_or_404(db, import_id)
     try:
         decision = import_service.record_decision(
-            db, job, decided_by=user.id, decision=payload.decision,
+            db, import_id, decided_by=user.id, decision=payload.decision,
             decision_tier=payload.decision_tier, note=payload.note,
+            acknowledge_warnings=payload.acknowledge_warnings,
         )
+    except ImportNotReady as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from None
     except SelfApproval as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from None
     except InsufficientApprovalAuthority as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from None
+    except (UnresolvedBlockingErrors, WarningsNotAcknowledged) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
     db.commit()
@@ -187,6 +204,11 @@ def commit_workforce_import(
     except ImportNotReady as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT, {"code": "approval_required", "message": str(exc)}
+        ) from None
+    except UnresolvedBlockingErrors as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "blocking_errors_unresolved", "message": str(exc)},
         ) from None
     db.commit()
     try:

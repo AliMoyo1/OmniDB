@@ -44,6 +44,25 @@ class DuplicateCampaignCode(Exception):
     pass
 
 
+class InvalidCampaignCode(Exception):
+    pass
+
+
+def normalize_campaign_code(external_code: str) -> str:
+    """The one place this is enforced regardless of caller - CampaignCreateRequest's
+    own field validator only covers the JSON API; the web form and the dashboard's
+    separate, older create-campaign form both call this function directly with a
+    raw Form(...) string, not through that schema."""
+    cleaned = external_code.strip()
+    if not cleaned:
+        raise InvalidCampaignCode("external_code must not be empty")
+    if len(cleaned) > 50:
+        raise InvalidCampaignCode("external_code must be at most 50 characters")
+    if any(character.isspace() for character in cleaned):
+        raise InvalidCampaignCode("external_code must not contain whitespace")
+    return cleaned
+
+
 def _check_staffing_capacity(
     db: Session, campaign_id: uuid.UUID, team_id: uuid.UUID | None
 ) -> None:
@@ -287,6 +306,7 @@ def create_campaign(
     data_obtained_at,
     lawful_basis_or_consent_reference: str | None,
 ) -> Campaign:
+    external_code = normalize_campaign_code(external_code)
     if db.scalar(select(Campaign.id).where(Campaign.external_code == external_code)) is not None:
         raise DuplicateCampaignCode(f"a campaign with code '{external_code}' already exists")
     campaign = Campaign(

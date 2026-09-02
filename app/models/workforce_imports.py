@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -67,8 +67,27 @@ class WorkforceImportRow(UUIDMixin, TimestampMixin, Base):
 
 class WorkforceImportDecision(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "workforce_import_decisions"
+    __table_args__ = (
+        # Two concurrent decision calls on the same job must not both be able to
+        # claim the same version - record_decision locks the job row before
+        # incrementing, but this is the backstop that makes the race impossible
+        # even if that locking discipline is ever bypassed.
+        UniqueConstraint(
+            "import_job_id", "decision_version", name="uq_workforce_import_decisions_job_version"
+        ),
+    )
 
-    import_job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workforce_import_jobs.id"))
+    import_job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "workforce_import_jobs.id",
+            # The naming convention's auto-generated name for this column/table
+            # pair is 65 chars, over Postgres's 63-char limit - migration 0011
+            # already hand-shortened it in the database; this makes the model
+            # describe the same name instead of silently diverging from it
+            # (autogenerate would otherwise see this as a rename every time).
+            name="fk_workforce_import_decisions_job_id_workforce_import_jobs",
+        )
+    )
     decision_version: Mapped[int] = mapped_column(Integer)
     decision: Mapped[str] = mapped_column(String(30))
     decision_tier: Mapped[str] = mapped_column(String(20), default="standard")

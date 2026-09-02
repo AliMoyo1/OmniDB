@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class CampaignCreateRequest(BaseModel):
@@ -21,6 +21,23 @@ class CampaignCreateRequest(BaseModel):
     data_source: str | None = None
     data_obtained_at: date | None = None
     lawful_basis_or_consent_reference: str | None = None
+
+    @field_validator("external_code")
+    @classmethod
+    def canonical_external_code(cls, value: str) -> str:
+        # Same shape as every other "code" field this build resolves by exact
+        # match (external_workforce_id, team_code): trimmed, non-empty, bounded
+        # to the column's own length, and never whitespace-internal - a code
+        # with leading/trailing or embedded whitespace would create a campaign
+        # the CSV importer's own exact-match lookup could never resolve.
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("external_code must not be empty")
+        if len(cleaned) > 50:
+            raise ValueError("external_code must be at most 50 characters")
+        if any(character.isspace() for character in cleaned):
+            raise ValueError("external_code must not contain whitespace")
+        return cleaned
 
     @model_validator(mode="after")
     def require_team_scope_id(self) -> CampaignCreateRequest:

@@ -41,6 +41,7 @@ from app.campaigns.service import (
     CampaignStateError,
     DispositionPolicyError,
     DuplicateCampaignCode,
+    InvalidCampaignCode,
 )
 from app.db import get_session
 from app.flags.service import FeatureDisabledError
@@ -143,6 +144,8 @@ def create_campaign(
         )
     except DuplicateCampaignCode as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    except InvalidCampaignCode as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
     db.commit()
     return _campaign_out(campaign)
 

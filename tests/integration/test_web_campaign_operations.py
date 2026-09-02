@@ -191,3 +191,38 @@ def test_campaign_form_csrf_returns_to_campaign_area(manager_client):
     )
     assert response.status_code == 303
     assert response.headers["location"].startswith("/campaigns?flash_error=")
+
+
+def test_create_campaign_rejects_invalid_external_code(manager_client):
+    """Review finding A3: external_code had zero server-side validation on the
+    browser form path (no Pydantic schema sits in front of it, unlike the JSON
+    API). A whitespace-only or embedded-whitespace code would create a
+    campaign the CSV importer's own exact-match lookup could never resolve."""
+
+    def _attempt(external_code: str):
+        return manager_client.post(
+            "/campaigns",
+            data={
+                "csrf_token": _csrf(manager_client),
+                "external_code": external_code,
+                "name": f"Bad code campaign {uuid.uuid4().hex[:8]}",
+                "purpose": "Customer outreach",
+                "data_source": "Approved CRM export",
+                "data_obtained_at": "2026-01-01",
+                "lawful_basis_or_consent_reference": "consent-ref-123",
+                "description": "",
+            },
+            follow_redirects=False,
+        )
+
+    blank = _attempt("   ")
+    assert blank.status_code == 303
+    assert blank.headers["location"].startswith("/campaigns?flash_error=")
+
+    embedded_space = _attempt(f"bad code {uuid.uuid4().hex[:8]}")
+    assert embedded_space.status_code == 303
+    assert embedded_space.headers["location"].startswith("/campaigns?flash_error=")
+
+    too_long = _attempt("x" * 51)
+    assert too_long.status_code == 303
+    assert too_long.headers["location"].startswith("/campaigns?flash_error=")

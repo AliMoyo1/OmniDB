@@ -714,3 +714,46 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
   not just the high-risk ones. `transfer` and `target_assignments` are the
   only pieces of the original seven-type staffing scope left, both
   deliberately deferred for reasons documented above, not forgotten.
+- 2026-09-02: code review response. A structured review of the shipped
+  4B work found 4 high-priority findings and 5 additional ones, with an
+  explicit "would not enable in production until fixed" gate. All nine
+  fixed; full account in `BUILD-LOG.md`'s matching entry. Summary:
+  - **Object-level authorization** (new): `can_access_job` /
+    `_assert_job_accessible` / `visible_jobs` in `service.py`, wired into
+    `record_decision`, `commit_job`, `reverse_job` directly - closes the
+    gap where any capability holder, regardless of scope, could view or
+    commit *any* job and collect its activation tokens. This is a
+    genuinely new authority layer, distinct from the per-row authority
+    fix earlier in this file: that one governs which *rows* a decision
+    can touch, this one governs who may even open, decide on, or commit
+    the *job* at all.
+  - **Blocking errors now actually block approval** - `record_decision`
+    refuses while any row has a blocking error, and refuses an
+    unacknowledged warning-only file, closing the gap between the
+    plan's own step 7 ("uploader resolves all blocking errors... before
+    decision") and what the code actually enforced.
+  - **Decision-version race closed** - `record_decision` locks the job
+    row before incrementing; `workforce_import_decisions.(import_job_id,
+    decision_version)` is now a real unique constraint (migration
+    `0014_decision_version_unique`), not just a lookup index.
+  - **Reversal conflict detection fixed** for `role_assignments` and
+    `team_memberships` `end` rows - both now check for *any* live
+    matching grant, not just the one dead row the job itself touched, so
+    a legitimate re-grant after the end-import committed is reported as
+    a conflict instead of being silently overwritten.
+  - Plus the five additional findings: unknown-column rejection
+    (`ALLOWED_COLUMNS`), live team/supervisor revalidation at commit,
+    campaign-code validation (`normalize_campaign_code`, both the web
+    form and JSON API paths), per-row audit events carrying
+    `import_job_id`, and removal of a stray empty directory.
+
+  Verified against real Postgres 16 + Redis 7 locally (Docker started
+  specifically for this round - no live database had been available for
+  any earlier 4B increment): migration 0014 applies, downgrades to base,
+  and re-applies cleanly; `pytest -m integration` (154 tests) and
+  `pytest -m "not integration and not performance"` (35 tests) both
+  green, matching CI's two jobs exactly; `docker build` succeeds; ruff
+  and mypy clean. 11 new tests, one per finding (two for the two
+  reversal-conflict instances, two for the blocking-errors/warnings
+  split), including a genuine multi-thread concurrency test for the
+  version race.

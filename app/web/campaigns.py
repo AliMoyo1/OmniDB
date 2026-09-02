@@ -36,6 +36,7 @@ from app.campaigns.service import (
     CampaignStateError,
     DispositionPolicyError,
     DuplicateCampaignCode,
+    InvalidCampaignCode,
 )
 from app.db import get_session
 from app.flags.service import FeatureDisabledError
@@ -190,7 +191,7 @@ def create_campaign(
             data_obtained_at=obtained_at,
             lawful_basis_or_consent_reference=lawful_basis_or_consent_reference.strip(),
         )
-    except DuplicateCampaignCode as exc:
+    except (DuplicateCampaignCode, InvalidCampaignCode) as exc:
         db.rollback()
         return _index_redirect(error=str(exc))
     db.commit()

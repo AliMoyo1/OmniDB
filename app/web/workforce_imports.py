@@ -30,7 +30,9 @@ from app.workforce_imports.service import (
     SelfApproval,
     StaleDecisionVersion,
     UnknownImportType,
+    UnresolvedBlockingErrors,
     UploadRejected,
+    WarningsNotAcknowledged,
 )
 from app.workforce_imports.tasks import parse_workforce_import_job_task
 
@@ -104,11 +106,7 @@ def imports_list(
 ):
     if not _any_appointment_capability(db, user):
         return RedirectResponse("/dashboard?flash_error=Not+authorized+for+workforce+imports.", 303)
-    jobs = list(
-        db.scalars(
-            select(WorkforceImportJob).order_by(WorkforceImportJob.created_at.desc()).limit(50)
-        )
-    )
+    jobs = import_service.visible_jobs(db, user.id)
     context = page_context(
         request, db, user,
         active_section="workforce_imports",
@@ -152,7 +150,9 @@ def import_detail(
     if not _any_appointment_capability(db, user):
         return RedirectResponse("/dashboard?flash_error=Not+authorized+for+workforce+imports.", 303)
     job = db.get(WorkforceImportJob, job_id)
-    if job is None:
+    if job is None or not import_service.can_access_job(db, user.id, job):
+        # Same message either way - a job outside the viewer's scope should not
+        # be distinguishable from one that doesn't exist (finding #1).
         return _index_redirect(error="Import job not found.")
     decisions = import_service.current_decisions(db, job)
     decider_ids = {d.decided_by for d in decisions.values() if d is not None}
@@ -181,23 +181,26 @@ def decide_workforce_import(
     decision: str = Form(...),
     decision_tier: str = Form(...),
     note: str = Form(""),
+    acknowledge_warnings: bool = Form(False),
 ):
     if not _any_appointment_capability(db, user):
         return _index_redirect(error="Not authorized for workforce imports.")
-    job = db.get(WorkforceImportJob, job_id)
-    if job is None:
-        return _index_redirect(error="Import job not found.")
     try:
         import_service.record_decision(
-            db, job, decided_by=user.id, decision=decision, decision_tier=decision_tier,
-            note=note.strip() or None,
+            db, job_id, decided_by=user.id, decision=decision, decision_tier=decision_tier,
+            note=note.strip() or None, acknowledge_warnings=acknowledge_warnings,
         )
+    except ImportNotReady:
+        return _index_redirect(error="Import job not found.")
     except SelfApproval:
         db.rollback()
         return _job_redirect(
             job_id, error="You uploaded this import; a different approver is required."
         )
     except InsufficientApprovalAuthority as exc:
+        db.rollback()
+        return _job_redirect(job_id, error=str(exc))
+    except (UnresolvedBlockingErrors, WarningsNotAcknowledged) as exc:
         db.rollback()
         return _job_redirect(job_id, error=str(exc))
     except ValueError as exc:
@@ -226,7 +229,12 @@ def commit_workforce_import(
             db, job.id, actor_id=user.id, decision_version=decision_version,
             idempotency_key=idempotency_key,
         )
-    except (ImportNotReady, StaleDecisionVersion, InsufficientApprovalAuthority) as exc:
+    except (
+        ImportNotReady,
+        StaleDecisionVersion,
+        InsufficientApprovalAuthority,
+        UnresolvedBlockingErrors,
+    ) as exc:
         db.rollback()
         return _job_redirect(job_id, error=str(exc))
     db.commit()

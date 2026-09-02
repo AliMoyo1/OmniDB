@@ -1469,3 +1469,150 @@ Next per the user's roadmap: 4C (targets and exemptions) - still carrying
 the open sequencing question against the master plan's own recommendation
 to defer it past the pilot - then the remaining operational workflows,
 then the pilot itself.
+
+## 2026-09-02: Phase 4B code review response - 4 high-priority + 5 additional findings fixed
+
+A structured review of the shipped Phase 4B work, delivered with an
+explicit gate: "I would not enable workforce imports in production until
+these are fixed." Four high-priority findings and five additional ones,
+all independently re-verified against the actual current source before
+any fix was written (not taken on faith), including tracing through exact
+state-transition scenarios to confirm each bug was real. All nine fixed.
+
+**#1 - import jobs lacked object-level authorization.** The browser listed
+every recent job to anyone holding any import-related capability,
+regardless of team or campaign scope, and the same coarse check let that
+person commit another operator's job and collect its one-time activation
+tokens - the review's own example: a Team Captain opening a Manager's
+approved user import and activating those accounts. Fixed with a real
+per-job accessibility check (`can_access_job`/`_assert_job_accessible` in
+`app/workforce_imports/service.py`): the uploader always can, anyone else
+needs the same per-row authority acting on the job would require, over
+*every* row it contains - the same bar the routine-authority fix earlier
+in Phase 4B already applies one row at a time, now applied to the job as
+a whole. Wired into `record_decision`, `commit_job`, and `reverse_job`
+directly (not just the HTTP layer, so nothing can bypass it by calling
+the service functions a different way), plus a new `visible_jobs` scoped
+list function replacing the unscoped query the imports list page used.
+Detail and preview views 404 rather than 403 for an inaccessible job -
+hiding existence, not just content, for a page that fully renders a
+job's rows.
+
+**#2 - blocking validation errors did not block commitment.** `commit_job`
+silently selected only valid rows and ignored invalid ones, with no gate
+anywhere despite the plan's own claim that the uploader resolves blocking
+errors before decision. A bulk deactivation or staffing operation could
+complete partially without the operator ever being told. Fixed with two
+new exceptions (`UnresolvedBlockingErrors`, `WarningsNotAcknowledged`),
+checked as the primary gate in `record_decision` (approval itself now
+refuses while `invalid_rows > 0`, and refuses an unacknowledged
+`warning_rows > 0` unless the caller explicitly sets
+`acknowledge_warnings`) and re-checked defensively in `commit_job` itself.
+The decision detail page now shows the blocking-error count instead of
+the approve button when there are any, and an explicit acknowledgment
+checkbox when there are only warnings.
+
+**#3 - concurrent decisions could share a version.** `record_decision`
+incremented an already-loaded, unlocked job object's `decision_version`
+and inserted a row claiming the new value; the supporting database index
+was not unique. Two simultaneous approve/reject calls could both read
+version 0 and both insert a row claiming version 1, leaving "the latest
+decision" nondeterministic. Fixed at both layers: `record_decision` now
+takes a job id and locks the row with `SELECT ... FOR UPDATE` before
+incrementing (migration `0014_decision_version_unique` also replaces the
+old non-unique index with a real `UniqueConstraint("import_job_id",
+"decision_version")`, so the race is rejected by Postgres even if the
+locking discipline above it is ever bypassed). Proven with a genuine
+concurrency test (`tests/concurrency/test_workforce_import_decision_
+concurrency.py`, mirroring the existing staffing-capacity/leasing
+concurrency tests): 12 threads, each its own DB session, racing
+`record_decision` against the same job - all 12 succeed with 12 distinct,
+sequential versions.
+
+**#4 - reversal could overwrite a newer grant.** Reversing an old `end`
+row checked only whether the *original* historical assignment row
+remained ended - always true, since nothing ever reactivates a specific
+dead row; a legitimate re-grant creates a brand new one. If a role or
+team membership was legitimately re-granted after the end-import
+committed, reversal called `assign_role`/re-added membership, silently
+ending the *newer* grant and creating yet another row, instead of
+reporting a conflict. `campaign_user_assignments` reversal was already
+safe (`assign_agent_to_campaign` has its own internal "any active
+primary" check), which is why only `role_assignments` and
+`team_memberships` needed the fix: both `_reverse_role_assignment_row`
+and `_reverse_team_membership_row` now run a live query for *any*
+currently-active grant matching the same user/role/scope (or
+user/team), not just a check on the one dead row job's own row pointed
+at, and report a conflict instead of touching anything if one exists.
+
+**A1 - unknown columns accepted.** The header check validated only
+missing required columns; an unrecognized column - the review's own
+example, an accidental `password` column - was accepted and stored in
+quarantine instead of being rejected. Fixed with a new `ALLOWED_COLUMNS`
+allow-list per import type, checked in `parse_job` alongside the existing
+missing-column check.
+
+**A2 - stale team/supervisor not revalidated at commit.** Preview
+validated that a target team or supervisor was active; commit never
+re-checked, so a team or user deactivated between preview and commit
+would still receive a fresh, silently-accepted row. Fixed with a live
+re-check in both `_commit_team_membership_row` (team must still be
+`active`) and `_commit_reporting_assignment_row` (supervisor must still
+be `active`), reporting a `skipped_conflict` outcome instead of
+proceeding.
+
+**A3 - campaign codes had no server-side validation.** `external_code`
+had zero constraints: no trimming, no non-empty check, no length bound,
+no whitespace rule. A whitespace-only or embedded-whitespace code could
+create a campaign the CSV importer's own exact-match lookup could never
+resolve. Fixed at both layers, since the browser form path has no
+Pydantic schema in front of it and would otherwise stay completely
+unguarded: a new `normalize_campaign_code` in `app/campaigns/service.py`
+(enforced regardless of caller - web form, dashboard form, or JSON API)
+and a matching `field_validator` on `CampaignCreateRequest.external_code`
+for the JSON API specifically. The new `InvalidCampaignCode` exception is
+now caught at all three campaign-creation HTTP call sites.
+
+**A4 - audit events did not link to the import job.** Mutation audit
+events stayed generic (`workforce.user.disable`, etc.) with no
+`import_job_id` anywhere in the audit stream itself - reconstructable
+from the import tables, but not directly from the audit trail. Fixed
+with new per-row `workforce_import.row_commit` / `workforce_import.
+row_reverse` audit events, each carrying `import_job_id`, `import_type`,
+`row_number`, and the outcome.
+
+**A5 - stray empty directory.** An untracked, empty `appworkforce_
+imports` directory at repository root, left over from what was almost
+certainly a typo'd path during earlier work. Removed; nothing referenced
+it.
+
+**Incidental finding, fixed in the same file:** verifying the new
+`workforce_import_decisions` unique constraint's DDL (compiling
+`CreateTable` against the Postgres dialect for every table, the same
+offline technique used earlier this phase for FK-length checks) surfaced
+a pre-existing, latent mismatch: `WorkforceImportDecision.import_job_id`'s
+`ForeignKey` had no explicit name, so the ORM's naming convention computes
+a 65-character name - over Postgres's 63-character limit - while migration
+0011 had already hand-shortened the real constraint name in the database.
+Nothing breaks today (SQLAlchemy silently truncates-and-hashes at DDL
+compile time), but `alembic revision --autogenerate` would see this as a
+rename every time. Fixed by giving the model's `ForeignKey` the same
+explicit name the migration already uses. The same class of mismatch
+exists on three unrelated, pre-existing foreign keys in `work_items` and
+`call_attempts` (from earlier phases, nothing to do with workforce
+imports) - flagged as a separate follow-up rather than fixed here, to
+keep this change scoped to what the review actually asked for.
+
+Verification: ruff and mypy clean repo-wide. Docker Desktop started
+locally specifically for this round (none of the earlier Phase 4B
+increments had a live database available) - real Postgres 16 and Redis 7
+containers matching CI's own images exactly. Migration 0014 applies,
+downgrades to base, and re-applies cleanly. Full suite green against real
+Postgres: 189 tests (`pytest -m "not performance"`), and separately the
+exact `pytest -m integration` CI runs (154 tests) and `pytest -m "not
+integration and not performance"` (35 tests). `docker build` of the full
+application image also succeeds. 11 new tests prove the nine findings
+concretely, including the object-level-authorization bypass, the
+blocking-errors and warnings gates, the live concurrency race, and both
+reversal-conflict-detection instances. Local containers torn down after
+verification; nothing left running.

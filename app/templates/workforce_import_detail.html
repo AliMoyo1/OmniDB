@@ -51,12 +51,20 @@
       {% if decisions.standard %}{{ decisions.standard.decision }} by {{ deciders.get(decisions.standard.decided_by).display_name if deciders.get(decisions.standard.decided_by) else "unknown" }}{% else %}Not yet decided{% endif %}
     </span>
   </div>
+  {% if job.invalid_rows > 0 %}
+  <p class="flash error">{{ job.invalid_rows }} row(s) have blocking errors. Fix and re-upload before this import can be approved.</p>
+  {% endif %}
   <form method="post" action="/workforce/imports/{{ job.id }}/decisions" class="campaign-create-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="decision_tier" value="standard">
     <label>Note (optional)<input name="note" maxlength="500"></label>
+    {% if job.warning_rows > 0 and job.invalid_rows == 0 %}
+    <label><input type="checkbox" name="acknowledge_warnings" value="true"> Acknowledge {{ job.warning_rows }} row(s) with warnings and proceed</label>
+    {% endif %}
     <div class="wide create-submit">
+      {% if job.invalid_rows == 0 %}
       <button type="submit" name="decision" value="approve">Approve routine rows</button>
+      {% endif %}
       <button type="submit" name="decision" value="reject" class="secondary">Reject</button>
     </div>
   </form>
@@ -70,12 +78,20 @@
     </span>
   </div>
   <p>High-risk rows (deactivations, or role grants) need approval from someone with authority over every affected row, who is not the uploader.</p>
+  {% if job.invalid_rows > 0 %}
+  <p class="flash error">{{ job.invalid_rows }} row(s) have blocking errors. Fix and re-upload before this import can be approved.</p>
+  {% endif %}
   <form method="post" action="/workforce/imports/{{ job.id }}/decisions" class="campaign-create-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="decision_tier" value="high_risk">
     <label>Note (optional)<input name="note" maxlength="500"></label>
+    {% if job.warning_rows > 0 and job.invalid_rows == 0 %}
+    <label><input type="checkbox" name="acknowledge_warnings" value="true"> Acknowledge {{ job.warning_rows }} row(s) with warnings and proceed</label>
+    {% endif %}
     <div class="wide create-submit">
+      {% if job.invalid_rows == 0 %}
       <button type="submit" name="decision" value="approve">Approve high-risk rows</button>
+      {% endif %}
       <button type="submit" name="decision" value="reject" class="secondary">Reject</button>
     </div>
   </form>

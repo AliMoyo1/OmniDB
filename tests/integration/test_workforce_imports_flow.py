@@ -734,3 +734,328 @@ def test_campaign_assignment_requires_campaign_scoped_authority():
     commit = _commit(uploader, headers, job, v)
     assert commit.status_code == 200, commit.text
     assert commit.json()["outcomes"] == [{"row_number": 1, "outcome": "assigned"}]
+
+
+def test_out_of_scope_operator_cannot_view_or_commit_anothers_job():
+    """Review finding #1: import jobs lacked object-level authorization. A Team
+    Leader scoped to a different team holds the same blanket workforce-import
+    capability as one scoped to the right team, but must not be able to view,
+    preview, or commit a job whose rows are entirely outside their own scope -
+    that gap previously let any capability holder commit someone else's already-
+    approved job and collect its one-time activation tokens."""
+    uploader, _ = _manager(prefix="wfiobjupload")
+    headers = csrf_headers(uploader)
+    team_a_id, team_a_code = _make_team(prefix="wfiobja")
+    team_b_id, _ = _make_team(prefix="wfiobjb")
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    make_user(f"{wid}@example.com")
+
+    add_csv = f"action,external_workforce_id,team_code,reason_code\r\nadd,{wid},{team_a_code},\r\n"
+    job = _upload(uploader, headers, "team_memberships", add_csv).json()["id"]
+
+    outsider, _ = _team_leader(team_b_id, prefix="wfiobjoutsider")
+    outsider_headers = csrf_headers(outsider)
+
+    get_denied = outsider.get(f"/api/v1/workforce/imports/{job}")
+    assert get_denied.status_code == 404, get_denied.text
+    preview_denied = outsider.get(f"/api/v1/workforce/imports/{job}/preview")
+    assert preview_denied.status_code == 404, preview_denied.text
+
+    insider, _ = _team_leader(team_a_id, prefix="wfiobjinsider")
+    insider_headers = csrf_headers(insider)
+    get_ok = insider.get(f"/api/v1/workforce/imports/{job}")
+    assert get_ok.status_code == 200, get_ok.text
+
+    approve = _decide(insider, insider_headers, job, tier="standard")
+    assert approve.status_code == 200, approve.text
+    version = approve.json()["decision_version"]
+
+    # The outsider still cannot commit even a fully-approved job, and does not
+    # receive its activation tokens.
+    commit_denied = _commit(outsider, outsider_headers, job, version)
+    assert commit_denied.status_code == 409, commit_denied.text
+    assert commit_denied.json()["detail"]["code"] == "approval_authority_changed"
+
+    commit_ok = _commit(uploader, headers, job, version)
+    assert commit_ok.status_code == 200, commit_ok.text
+
+
+def test_blocking_errors_prevent_approval_not_just_commit():
+    """Review finding #2: commit_job silently excluded invalid rows from its own
+    row query with no gate anywhere - the UI could still offer approval and
+    claimed the transaction "cannot be partially applied" even though invalid
+    rows were quietly dropped. Approval itself must now refuse outright while
+    any row in the job has a blocking error."""
+    client, _ = _manager(prefix="wfiblocking")
+    headers = csrf_headers(client)
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    csv_text = (
+        "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
+        f"deactivate,{wid},{wid}@example.com,Name,,\r\n"
+        f"create,{wid},{wid}@example.com,Name,,\r\n"
+        f"create,{wid},{wid}@example.com,Name,,\r\n"
+    )
+    job_id = _upload(client, headers, "users", csv_text).json()["id"]
+    status = client.get(f"/api/v1/workforce/imports/{job_id}").json()
+    assert status["invalid_rows"] == 2, status
+
+    denied = _decide(client, headers, job_id, tier="standard")
+    assert denied.status_code == 409, denied.text
+
+
+def test_warnings_must_be_explicitly_acknowledged_to_approve():
+    """Review finding #2 (second half): plan 11.2's "uploader explicitly accepts
+    warnings" was previously UI copy only, backed by nothing server-side.
+    Approval must now refuse a warning-only file until acknowledge_warnings is
+    set, then succeed once it is."""
+    client, _ = _manager(prefix="wfiwarn")
+    headers = csrf_headers(client)
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    create_csv = (
+        "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
+        f"create,{wid},{wid}@example.com,Name,,\r\n"
+    )
+    job1 = _upload(client, headers, "users", create_csv).json()["id"]
+    v1 = _decide(client, headers, job1, tier="standard").json()["decision_version"]
+    assert _commit(client, headers, job1, v1).status_code == 200
+
+    # Reactivating an already-active user is a warning, not a blocking error.
+    reactivate_csv = (
+        "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
+        f"reactivate,{wid},,,,\r\n"
+    )
+    job2 = _upload(client, headers, "users", reactivate_csv).json()["id"]
+    status2 = client.get(f"/api/v1/workforce/imports/{job2}").json()
+    assert status2["warning_rows"] == 1, status2
+    assert status2["invalid_rows"] == 0, status2
+
+    unacknowledged = client.patch(
+        f"/api/v1/workforce/imports/{job2}/decisions",
+        json={"decision": "approve", "decision_tier": "standard"},
+        headers=headers,
+    )
+    assert unacknowledged.status_code == 409, unacknowledged.text
+
+    acknowledged = client.patch(
+        f"/api/v1/workforce/imports/{job2}/decisions",
+        json={
+            "decision": "approve", "decision_tier": "standard", "acknowledge_warnings": True,
+        },
+        headers=headers,
+    )
+    assert acknowledged.status_code == 200, acknowledged.text
+
+
+def test_role_assignment_end_reversal_does_not_overwrite_a_newer_grant():
+    """Review finding #4: reversing an old "end" row checked only whether the
+    original historical assignment row remained ended - always true, since a
+    re-grant creates a brand new row rather than reactivating the old one. If
+    the role was legitimately re-granted after the end-import committed,
+    reversal must report a conflict instead of calling assign_role and ending
+    the newer grant."""
+    manager, manager_id = _manager(prefix="wfirolereversal")
+    headers = csrf_headers(manager)
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    target_id = make_user(f"{wid}@example.com")
+
+    from app.workforce import service as workforce_service
+
+    with SessionLocal() as db:
+        workforce_service.assign_role(
+            db, target_user_id=target_id, role_code="agent", scope_type="organization",
+            scope_id=None, appointed_by=uuid.UUID(manager_id), reason_code="test_setup",
+        )
+        db.commit()
+    assert _has_active_role(target_id, "agent", "organization", None) is True
+
+    end_csv = (
+        "action,external_workforce_id,role_code,scope_type,scope_code,reason_code\r\n"
+        f"end,{wid},agent,organization,,offboarding\r\n"
+    )
+    job = _upload(manager, headers, "role_assignments", end_csv).json()["id"]
+    v = _decide(manager, headers, job, tier="standard").json()["decision_version"]
+    commit = _commit(manager, headers, job, v)
+    assert commit.status_code == 200, commit.text
+    assert _has_active_role(target_id, "agent", "organization", None) is False
+
+    # Re-granted by something else entirely - not job's own reversal.
+    with SessionLocal() as db:
+        workforce_service.assign_role(
+            db, target_user_id=target_id, role_code="agent", scope_type="organization",
+            scope_id=None, appointed_by=uuid.UUID(manager_id), reason_code="re_grant",
+        )
+        db.commit()
+    assert _has_active_role(target_id, "agent", "organization", None) is True
+
+    reverse = manager.post(f"/api/v1/workforce/imports/{job}/reverse", headers=headers)
+    assert reverse.status_code == 200, reverse.text
+    assert reverse.json()["reversed"] == []
+    assert len(reverse.json()["skipped"]) == 1
+    assert reverse.json()["skipped"][0]["row_number"] == 1
+    assert _has_active_role(target_id, "agent", "organization", None) is True
+
+
+def test_team_membership_end_reversal_does_not_overwrite_a_newer_membership():
+    """Review finding #4 (team-membership instance of the same bug): see
+    test_role_assignment_end_reversal_does_not_overwrite_a_newer_grant - the old
+    check only looked at whether the specific dead membership row itself was
+    still ended, which is always true once a row is ended. Reversing an old
+    "end" row must not blindly re-add membership that was legitimately re-added
+    by something else since."""
+    manager, _ = _manager(prefix="wfitmreversal")
+    headers = csrf_headers(manager)
+    team_id, team_code = _make_team(prefix="wfitmrev")
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    target_id = make_user(f"{wid}@example.com")
+
+    add_csv = f"action,external_workforce_id,team_code,reason_code\r\nadd,{wid},{team_code},\r\n"
+    job1 = _upload(manager, headers, "team_memberships", add_csv).json()["id"]
+    v1 = _decide(manager, headers, job1, tier="standard").json()["decision_version"]
+    assert _commit(manager, headers, job1, v1).status_code == 200
+    assert _has_active_membership(target_id, team_id) is True
+
+    end_csv = (
+        f"action,external_workforce_id,team_code,reason_code\r\nend,{wid},{team_code},offboard\r\n"
+    )
+    job2 = _upload(manager, headers, "team_memberships", end_csv).json()["id"]
+    v2 = _decide(manager, headers, job2, tier="standard").json()["decision_version"]
+    assert _commit(manager, headers, job2, v2).status_code == 200
+    assert _has_active_membership(target_id, team_id) is False
+
+    # Re-added by something else entirely - not job2's own reversal.
+    job3 = _upload(manager, headers, "team_memberships", add_csv).json()["id"]
+    v3 = _decide(manager, headers, job3, tier="standard").json()["decision_version"]
+    assert _commit(manager, headers, job3, v3).status_code == 200
+    assert _has_active_membership(target_id, team_id) is True
+
+    reverse2 = manager.post(f"/api/v1/workforce/imports/{job2}/reverse", headers=headers)
+    assert reverse2.status_code == 200, reverse2.text
+    assert reverse2.json()["reversed"] == []
+    assert len(reverse2.json()["skipped"]) == 1
+    assert reverse2.json()["skipped"][0]["row_number"] == 1
+    assert _has_active_membership(target_id, team_id) is True
+
+
+def test_unknown_column_in_header_fails_parse_cleanly():
+    """Review finding A1: the header check previously validated only missing
+    required columns - an unrecognized column (the review's own example: an
+    accidental "password" column) was accepted and stored in quarantine
+    instead of being rejected."""
+    client, _ = _manager(prefix="wfiunknowncol")
+    headers = csrf_headers(client)
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    # The header check only runs once parsing reaches a first data row (an
+    # empty file, header-only, never even reads the header itself), so this
+    # needs a row shaped to match the bad header, not just the header alone.
+    bad_csv = (
+        "action,external_workforce_id,login_identifier,display_name,start_date,end_date,"
+        "password\r\n"
+        f"create,{wid},{wid}@example.com,Name,,,badpassword123\r\n"
+    )
+    upload = _upload(client, headers, "users", bad_csv)
+    job_id = upload.json()["id"]
+    status = client.get(f"/api/v1/workforce/imports/{job_id}").json()
+    assert status["state"] == "failed"
+
+
+def test_team_deactivated_after_preview_is_revalidated_at_commit():
+    """Review finding A2: an active team was validated at preview time but
+    never re-checked at commit - a team deactivated in between would previously
+    still receive a fresh, silently-accepted membership row."""
+    from app.models.identity import Team
+
+    manager, _ = _manager(prefix="wfistaleteam")
+    headers = csrf_headers(manager)
+    team_id, team_code = _make_team(prefix="wfistale")
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    make_user(f"{wid}@example.com")
+
+    add_csv = f"action,external_workforce_id,team_code,reason_code\r\nadd,{wid},{team_code},\r\n"
+    job = _upload(manager, headers, "team_memberships", add_csv).json()["id"]
+    version = _decide(manager, headers, job, tier="standard").json()["decision_version"]
+
+    with SessionLocal() as db:
+        team = db.get(Team, team_id)
+        assert team is not None
+        team.status = "inactive"
+        db.commit()
+
+    commit = _commit(manager, headers, job, version)
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["outcomes"] == [{"row_number": 1, "outcome": "skipped_conflict"}]
+
+    target = _user_row(wid)
+    assert target is not None
+    assert _has_active_membership(target.id, team_id) is False
+
+
+def test_supervisor_deactivated_after_preview_is_revalidated_at_commit():
+    """Review finding A2 (reporting-assignment instance): same gap as
+    test_team_deactivated_after_preview_is_revalidated_at_commit, for a
+    supervisor deactivated after preview but before commit."""
+    manager, _ = _manager(prefix="wfistalesup")
+    headers = csrf_headers(manager)
+    sub_wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    sup_wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    sub_id = make_user(f"{sub_wid}@example.com")
+    sup_id = make_user(f"{sup_wid}@example.com")
+
+    csv_text = (
+        f"external_workforce_id,supervisor_workforce_id,reason_code\r\n{sub_wid},{sup_wid},\r\n"
+    )
+    job = _upload(manager, headers, "reporting_assignments", csv_text).json()["id"]
+    version = _decide(manager, headers, job, tier="standard").json()["decision_version"]
+
+    with SessionLocal() as db:
+        supervisor = db.get(User, sup_id)
+        assert supervisor is not None
+        supervisor.active = False
+        db.commit()
+
+    commit = _commit(manager, headers, job, version)
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["outcomes"] == [{"row_number": 1, "outcome": "skipped_conflict"}]
+    assert _current_supervisor(sub_id) is None
+
+
+def test_commit_and_reverse_emit_row_level_audit_events_linked_to_the_job():
+    """Review finding A4: mutation audit events previously stayed generic (e.g.
+    workforce.user.disable) with no import_job_id anywhere in the audit stream
+    itself - the relationship was reconstructable from import tables, but not
+    directly from the audit trail."""
+    from app.models.audit import AuditEvent
+
+    manager, _ = _manager(prefix="wfiaudit")
+    headers = csrf_headers(manager)
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    csv_text = (
+        "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
+        f"create,{wid},{wid}@example.com,Name,,\r\n"
+    )
+    job_id = _upload(manager, headers, "users", csv_text).json()["id"]
+    version = _decide(manager, headers, job_id, tier="standard").json()["decision_version"]
+    commit = _commit(manager, headers, job_id, version)
+    assert commit.status_code == 200, commit.text
+
+    with SessionLocal() as db:
+        commit_events = list(
+            db.scalars(select(AuditEvent).where(AuditEvent.action == "workforce_import.row_commit"))
+        )
+    matching = [e for e in commit_events if e.event_metadata.get("import_job_id") == job_id]
+    assert len(matching) == 1, matching
+    assert matching[0].event_metadata["row_number"] == 1
+    assert matching[0].event_metadata["import_type"] == "users"
+
+    reverse = manager.post(f"/api/v1/workforce/imports/{job_id}/reverse", headers=headers)
+    assert reverse.status_code == 200, reverse.text
+
+    with SessionLocal() as db:
+        reverse_events = list(
+            db.scalars(
+                select(AuditEvent).where(AuditEvent.action == "workforce_import.row_reverse")
+            )
+        )
+    matching_reverse = [
+        e for e in reverse_events if e.event_metadata.get("import_job_id") == job_id
+    ]
+    assert len(matching_reverse) == 1, matching_reverse

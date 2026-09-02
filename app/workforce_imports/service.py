@@ -60,6 +60,21 @@ REQUIRED_COLUMNS = {
     "reporting_assignments": {"external_workforce_id", "supervisor_workforce_id"},
     "campaign_user_assignments": {"action", "external_workforce_id", "campaign_code"},
 }
+# Required plus optional columns each classifier actually reads. Anything in a
+# header beyond this set is rejected at parse time, not silently ignored - an
+# unrecognized column (a stray "password" pasted in from a different export,
+# for one) has no business sitting in quarantine storage even briefly, and a
+# typo'd column name should fail loudly rather than be read as blank forever.
+ALLOWED_COLUMNS = {
+    "users": REQUIRED_COLUMNS["users"] | {"start_date", "end_date"},
+    "explicit_deactivations": REQUIRED_COLUMNS["explicit_deactivations"],
+    "team_memberships": REQUIRED_COLUMNS["team_memberships"] | {"reason_code"},
+    "role_assignments": REQUIRED_COLUMNS["role_assignments"] | {"scope_code"},
+    "reporting_assignments": REQUIRED_COLUMNS["reporting_assignments"] | {"reason_code", "action"},
+    "campaign_user_assignments": (
+        REQUIRED_COLUMNS["campaign_user_assignments"] | {"team_code", "reason_code"}
+    ),
+}
 _CLASSIFIERS = {
     "users": classify.classify_users_row,
     "explicit_deactivations": classify.classify_deactivation_row,
@@ -103,6 +118,14 @@ class SelfApproval(WorkforceImportError):
 
 
 class InsufficientApprovalAuthority(WorkforceImportError):
+    pass
+
+
+class UnresolvedBlockingErrors(WorkforceImportError):
+    pass
+
+
+class WarningsNotAcknowledged(WorkforceImportError):
     pass
 
 
@@ -182,10 +205,17 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
         rows_iter = parse_file(path, ext)
         first_row = next(rows_iter, None)
         if first_row is not None:
-            missing = REQUIRED_COLUMNS[job.import_type] - set(first_row.values)
+            header = set(first_row.values)
+            missing = REQUIRED_COLUMNS[job.import_type] - header
             if missing:
                 raise ParseLimitExceeded(
                     f"file header is missing required column(s): {', '.join(sorted(missing))} "
+                    "- download the current template"
+                )
+            unknown = header - ALLOWED_COLUMNS[job.import_type]
+            if unknown:
+                raise ParseLimitExceeded(
+                    f"file header has unrecognized column(s): {', '.join(sorted(unknown))} "
                     "- download the current template"
                 )
         all_rows = itertools.chain([first_row], rows_iter) if first_row is not None else ()
@@ -332,6 +362,57 @@ def _assert_rows_authorized(
             )
 
 
+def can_access_job(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob) -> bool:
+    """Whether this actor has any legitimate reach into this specific job at all -
+    not just "holds some import-related capability somewhere." Without this, any
+    holder of any import capability could open, decide, commit, or reverse *any*
+    job regardless of scope, including committing someone else's already-approved
+    job to collect its one-time activation tokens. The uploader always can;
+    anyone else needs the same per-row authority acting on the job would require,
+    over *every* row it contains - not only the currently-valid ones, since an
+    invalid or warning row can still name a real team, role, or campaign, and
+    merely viewing that should require the same authority acting on it would.
+    An unparsed job (no rows yet) has nothing to scope-check, so the caller's own
+    blanket capability gate is all there is at that point."""
+    if actor_id == job.uploader_id:
+        return True
+    rows = list(
+        db.scalars(select(WorkforceImportRow).where(WorkforceImportRow.import_job_id == job.id))
+    )
+    if not rows:
+        return True
+    return all(_row_authority_ok(db, actor_id, job, row) for row in rows)
+
+
+def _assert_job_accessible(db: Session, job: WorkforceImportJob, actor_id: uuid.UUID) -> None:
+    if not can_access_job(db, actor_id, job):
+        raise InsufficientApprovalAuthority("not authorized for this import job")
+
+
+def visible_jobs(
+    db: Session, actor_id: uuid.UUID, *, limit: int = 50, candidate_limit: int = 200
+) -> list[WorkforceImportJob]:
+    """The list view's job set, scoped to what this actor can actually reach -
+    checked with the same per-job authority commit/decide/reverse require, not
+    just the blanket "holds some import capability" gate. Fetches a larger
+    candidate batch and filters in Python (can_access_job needs each job's own
+    rows, which isn't expressible as a single SQL WHERE clause here) - fine at
+    this build's real scale (a pilot-sized workforce), worth revisiting only if
+    job volume grows enough for it to matter."""
+    candidates = db.scalars(
+        select(WorkforceImportJob)
+        .order_by(WorkforceImportJob.created_at.desc())
+        .limit(candidate_limit)
+    )
+    visible: list[WorkforceImportJob] = []
+    for job in candidates:
+        if can_access_job(db, actor_id, job):
+            visible.append(job)
+            if len(visible) >= limit:
+                break
+    return visible
+
+
 def _assert_qualified_high_risk_approver(
     db: Session, job: WorkforceImportJob, approver_id: uuid.UUID
 ) -> None:
@@ -345,13 +426,24 @@ def _assert_qualified_high_risk_approver(
 
 def record_decision(
     db: Session,
-    job: WorkforceImportJob,
+    job_id: uuid.UUID,
     *,
     decided_by: uuid.UUID,
     decision: str,
     decision_tier: str,
     note: str | None,
+    acknowledge_warnings: bool = False,
 ) -> WorkforceImportDecision:
+    # Locked here, not trusted from an already-loaded object a caller passed in -
+    # two concurrent decision calls on the same job must not both read the same
+    # job.decision_version and both write a row claiming it (the same shape of
+    # race staffing-capacity and leasing already close elsewhere in this build).
+    job = db.execute(
+        select(WorkforceImportJob).where(WorkforceImportJob.id == job_id).with_for_update()
+    ).scalar_one_or_none()
+    if job is None:
+        raise ImportNotReady("import job not found")
+    _assert_job_accessible(db, job, decided_by)
     if decision not in ("approve", "reject", "cancel"):
         raise ValueError("decision must be approve, reject, or cancel")
     if decision_tier not in ("standard", "high_risk"):
@@ -366,6 +458,23 @@ def record_decision(
         # they just don't also need a second, non-uploader approver the way
         # high-risk rows do.
         _assert_rows_authorized(db, job, decided_by, risk_level="routine")
+
+    if decision == "approve":
+        # "Uploader resolves all blocking errors and explicitly accepts warnings"
+        # (plan 11.2 step 7) was previously only UI copy - nothing backend-side
+        # actually stopped an approval, and commit_job silently excludes invalid
+        # rows from its own row query, so approving a file with unresolved errors
+        # would quietly commit only the rows that happened to be valid.
+        if job.invalid_rows > 0:
+            raise UnresolvedBlockingErrors(
+                f"{job.invalid_rows} row(s) have blocking errors - fix and re-upload "
+                "before this import can be approved"
+            )
+        if job.warning_rows > 0 and not acknowledge_warnings:
+            raise WarningsNotAcknowledged(
+                f"{job.warning_rows} row(s) have warnings that must be explicitly "
+                "acknowledged before approval"
+            )
 
     job.decision_version += 1
     row = WorkforceImportDecision(
@@ -530,6 +639,11 @@ def _commit_team_membership_row(
     ).scalar_one_or_none()
 
     if row.action == "add":
+        # Re-validated at commit time, not trusted from preview: the team could
+        # have been deactivated since parse.
+        if team.status != "active":
+            row.conflict_type = "unknown_team"
+            return _RowOutcome(row.row_number, "skipped_conflict")
         if current is not None:
             row.conflict_type = "already_member"
             return _RowOutcome(row.row_number, "skipped_conflict")
@@ -608,6 +722,12 @@ def _commit_reporting_assignment_row(
         return None
     values = row.parsed_values or {}
     supervisor_id = uuid.UUID(values["supervisor_user_id"])
+    # Re-validated at commit time, not trusted from preview: the supervisor
+    # could have been deactivated since parse.
+    supervisor_active = db.scalar(select(User.active).where(User.id == supervisor_id))
+    if not supervisor_active:
+        row.conflict_type = "unknown_supervisor"
+        return _RowOutcome(row.row_number, "skipped_conflict")
     prior_supervisor_id = db.scalar(
         select(ReportingAssignment.supervisor_user_id).where(
             ReportingAssignment.subordinate_user_id == row.normalized_identity,
@@ -711,6 +831,11 @@ def commit_job(
     ).scalar_one_or_none()
     if job is None:
         raise ImportNotReady("import job not found")
+    # Checked against the actual caller here, not only against whoever recorded
+    # the standard decision below - without this, any holder of any import
+    # capability could commit someone else's already-approved job and collect
+    # its one-time activation tokens, regardless of their own scope.
+    _assert_job_accessible(db, job, actor_id)
 
     if job.state == "committed":
         if job.idempotency_key == idempotency_key:
@@ -723,6 +848,12 @@ def commit_job(
         raise ImportNotReady(f"import job is not ready to commit (state={job.state})")
     if job.decision_version != decision_version:
         raise StaleDecisionVersion("decision version is stale; re-review the preview")
+    if job.invalid_rows > 0:
+        # Re-verified, not just trusted from decision time - defense in depth
+        # matching every other "commit re-checks live state" rule in this file.
+        raise UnresolvedBlockingErrors(
+            f"{job.invalid_rows} row(s) still have blocking errors"
+        )
 
     standard = _latest_decision(db, job, tier="standard")
     if standard is None or standard.decision != "approve":
@@ -761,6 +892,23 @@ def commit_job(
             outcomes.append({"row_number": outcome.row_number, "outcome": outcome.outcome})
             if outcome.activation_token and row.external_workforce_id:
                 activations[row.external_workforce_id] = outcome.activation_token
+            if row.committed_entity_id is not None:
+                # The entity's own audit event (workforce.user.disable, etc.) has no
+                # idea it was called from inside a bulk import - this is the direct
+                # link from the affected record back to the import job and the
+                # approver whose authority actually caused it, promised by plan
+                # 11.2's "audit trace from every affected record to import,
+                # uploader, and approver" and previously only reconstructable via
+                # the import tables, not from the audit stream itself.
+                record_audit(
+                    db, action="workforce_import.row_commit", result="success",
+                    actor_user_id=row_actor, target_type=row.committed_entity_type,
+                    target_id=row.committed_entity_id,
+                    event_metadata={
+                        "import_job_id": str(job.id), "import_type": job.import_type,
+                        "row_number": row.row_number, "outcome": outcome.outcome,
+                    },
+                )
         db.flush()
 
     # Only the outcome list is persisted (committed_result backs idempotent replay -
@@ -830,16 +978,30 @@ def _reverse_team_membership_row(
         select(TeamMembership).where(TeamMembership.id == row.committed_entity_id)
         .with_for_update()
     ).scalar_one()
-    currently_active = membership.membership_status == "active" and membership.effective_to is None
     if row.action == "add":
+        currently_active = (
+            membership.membership_status == "active" and membership.effective_to is None
+        )
         if not currently_active:
             return None
         workforce_service.end_team_membership(
             db, membership, ended_by=actor_id, reason_code="import_reversal"
         )
         return "ended"
-    # end
-    if currently_active:
+    # end: this specific (now-ended) membership row can never become active
+    # again on its own - it isn't proof nothing else has since re-added the
+    # user. Check live state for the (team, user) pair instead, or reversal
+    # would blindly re-add someone who was already legitimately re-added
+    # through some other action since.
+    still_a_member = db.scalar(
+        select(TeamMembership.id).where(
+            TeamMembership.team_id == membership.team_id,
+            TeamMembership.user_id == membership.user_id,
+            TeamMembership.membership_status == "active",
+            TeamMembership.effective_to.is_(None),
+        )
+    )
+    if still_a_member is not None:
         return None
     # A real membership's team_id, never hard-deleted - guaranteed to exist.
     team = db.execute(select(Team).where(Team.id == membership.team_id)).scalar_one()
@@ -854,16 +1016,31 @@ def _reverse_role_assignment_row(
         select(RoleAssignment).where(RoleAssignment.id == row.committed_entity_id)
         .with_for_update()
     ).scalar_one()
-    currently_active = assignment.status == "active" and assignment.effective_to is None
     if row.action == "assign":
+        currently_active = assignment.status == "active" and assignment.effective_to is None
         if not currently_active:
             return None
         workforce_service.end_role_assignment(
             db, assignment, ended_by=actor_id, reason_code="import_reversal"
         )
         return "ended"
-    # end
-    if currently_active:
+    # end: this specific (now-ended) assignment can never become active again
+    # on its own - it isn't proof nothing has since re-granted the same role
+    # at the same scope. Check live state for (user, role, scope) instead, or
+    # reversal would call assign_role regardless, which ends any current grant
+    # (assign_role's own supersede rule) and silently clobbers a legitimate
+    # newer one with a reversal-created replacement.
+    still_active_elsewhere = db.scalar(
+        select(RoleAssignment.id).where(
+            RoleAssignment.user_id == assignment.user_id,
+            RoleAssignment.role_code == assignment.role_code,
+            RoleAssignment.scope_type == assignment.scope_type,
+            RoleAssignment.scope_id == assignment.scope_id,
+            RoleAssignment.status == "active",
+            RoleAssignment.effective_to.is_(None),
+        )
+    )
+    if still_active_elsewhere is not None:
         return None
     workforce_service.assign_role(
         db, target_user_id=assignment.user_id, role_code=assignment.role_code,
@@ -944,6 +1121,7 @@ def reverse_job(db: Session, job_id: uuid.UUID, *, actor_id: uuid.UUID) -> dict:
     ).scalar_one_or_none()
     if job is None:
         raise ImportNotReady("import job not found")
+    _assert_job_accessible(db, job, actor_id)
     if job.state != "committed":
         raise ImportNotReady("only a committed import can be reversed")
     if job.reversed_at is not None:
@@ -973,6 +1151,16 @@ def reverse_job(db: Session, job_id: uuid.UUID, *, actor_id: uuid.UUID) -> dict:
             continue
         row.reversed_at = now
         reversed_rows.append({"row_number": row.row_number, "outcome": outcome})
+        if row.committed_entity_id is not None:
+            record_audit(
+                db, action="workforce_import.row_reverse", result="success",
+                actor_user_id=actor_id, target_type=entity_type,
+                target_id=row.committed_entity_id,
+                event_metadata={
+                    "import_job_id": str(job.id), "import_type": job.import_type,
+                    "row_number": row.row_number, "outcome": outcome,
+                },
+            )
         db.flush()
 
     job.reversed_at = now

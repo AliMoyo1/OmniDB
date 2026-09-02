@@ -32,7 +32,11 @@ from app.authz.capabilities import (
     VIEW_CAMPAIGN_REPORTS,
 )
 from app.campaigns import service as campaign_service
-from app.campaigns.service import CampaignAssignmentError, DuplicateCampaignCode
+from app.campaigns.service import (
+    CampaignAssignmentError,
+    DuplicateCampaignCode,
+    InvalidCampaignCode,
+)
 from app.db import get_session
 from app.models.campaign import Campaign
 from app.models.identity import Team, User
@@ -176,7 +180,7 @@ def create_campaign_action(
             purpose=purpose, data_source=data_source, data_obtained_at=parsed_date,
             lawful_basis_or_consent_reference=lawful_basis_or_consent_reference,
         )
-    except DuplicateCampaignCode as exc:
+    except (DuplicateCampaignCode, InvalidCampaignCode) as exc:
         db.rollback()
         return _redirect(error=str(exc))
     db.commit()

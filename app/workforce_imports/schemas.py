@@ -38,6 +38,7 @@ class WorkforceImportDecisionRequest(BaseModel):
     decision: str  # "approve" | "reject" | "cancel"
     decision_tier: str  # "standard" | "high_risk"
     note: str | None = None
+    acknowledge_warnings: bool = False
 
 
 class WorkforceImportDecisionOut(BaseModel):
