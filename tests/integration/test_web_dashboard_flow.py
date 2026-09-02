@@ -201,7 +201,12 @@ def test_agent_dashboard_redirects_to_workbench():
 def test_create_campaign_via_form():
     client, _ = _manager()
     resp = client.post(
-        "/dashboard/campaigns", data={"csrf_token": _csrf(client), **_PROVENANCE_FORM}
+        "/dashboard/campaigns",
+        data={
+            "csrf_token": _csrf(client),
+            "external_code": f"c-{uuid.uuid4().hex[:8]}",
+            **_PROVENANCE_FORM,
+        },
     )
     assert resp.status_code == 303
     assert resp.headers["location"].startswith("/dashboard?flash_success=")
@@ -216,7 +221,10 @@ def test_create_campaign_with_bad_csrf_token_is_rejected():
     # no per-test rollback, so reusing the same name as the positive creation test
     # could pass this assertion for the wrong reason (seeing that other campaign)
     # regardless of whether this CSRF check actually did its job.
-    payload = {**_PROVENANCE_FORM, "name": "Should Never Exist Campaign"}
+    payload = {
+        **_PROVENANCE_FORM, "name": "Should Never Exist Campaign",
+        "external_code": f"c-{uuid.uuid4().hex[:8]}",
+    }
     resp = client.post(
         "/dashboard/campaigns", data={"csrf_token": "not-a-real-token", **payload}
     )

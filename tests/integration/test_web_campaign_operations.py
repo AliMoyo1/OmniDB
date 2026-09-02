@@ -37,6 +37,7 @@ def _create_via_form(client: TestClient) -> str:
         "/campaigns",
         data={
             "csrf_token": _csrf(client),
+            "external_code": f"c-{uuid.uuid4().hex[:8]}",
             "name": f"Browser campaign {uuid.uuid4().hex[:8]}",
             "purpose": "Customer outreach",
             "data_source": "Approved CRM export",
@@ -179,6 +180,7 @@ def test_campaign_form_csrf_returns_to_campaign_area(manager_client):
         "/campaigns",
         data={
             "csrf_token": "invalid",
+            "external_code": f"c-{uuid.uuid4().hex[:8]}",
             "name": "Should not exist",
             "purpose": "Test",
             "data_source": "Test",

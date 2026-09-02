@@ -189,7 +189,8 @@ def test_viewer_can_view_campaign_and_stats_but_nothing_else(manager_client):
     denied_create = viewer.post(
         "/api/v1/campaigns",
         json={
-            "name": "x", "owning_scope_type": "organization", "default_region": "ZW",
+            "external_code": f"c-{uuid.uuid4().hex[:8]}", "name": "x",
+            "owning_scope_type": "organization", "default_region": "ZW",
             "timezone": "Africa/Harare", **_DEFAULT_PROVENANCE,
         },
         headers=csrf_headers(viewer),

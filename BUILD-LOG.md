@@ -1351,3 +1351,23 @@ through the real Jinja2 loader, migration 0013 confirmed chained as head,
 full non-integration suite passing locally (35/35). No live database this
 session - pushing for CI to confirm the backfill actually runs cleanly
 against real data before building the actual 4B-3 import type on top of it.
+
+CI: migration and backfill both ran cleanly against real Postgres on the
+first try - no issue there. But integration tests found 8 more call sites
+this session's own grep had missed, across 5 test files not touched in the
+first pass (`test_campaign_scope.py`, `test_web_campaign_operations.py`,
+`test_web_dashboard_flow.py`, `test_workforce_flow.py`, plus two more sites
+inside two already-partially-fixed files). The original search
+(`grep create_campaign(\|Campaign(`) missed every test that instead POSTs
+a raw JSON/form payload straight to the HTTP endpoint - a materially
+different, much more common pattern in this suite than calling the service
+function directly, and one a purely name-based search doesn't reliably
+catch. Several of the newly-found sites were authorization-boundary tests
+(agent/viewer/cross-team attempts expecting 403) that started failing with
+422 instead - Pydantic body validation runs before the route handler's own
+authorization check, so a payload missing a newly-required field masks the
+very failure the test exists to prove. Re-verified this time with a
+URL-string search (`"/api/v1/campaigns"` etc.) instead of a name-based one,
+independently confirmed against a manual read of every match. ruff/mypy
+clean, full test suite (176 tests, all files) collects without error.
+Re-pushed.

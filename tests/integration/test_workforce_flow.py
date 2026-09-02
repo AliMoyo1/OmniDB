@@ -221,6 +221,7 @@ def test_disable_user_reclaims_active_lease(manager_client, agent_client):
     campaign = manager_client.post(
         "/api/v1/campaigns",
         json={
+            "external_code": f"c-{uuid.uuid4().hex[:8]}",
             "name": f"Disable test {uuid.uuid4().hex[:6]}", "owning_scope_type": "organization",
             "default_region": "ZW", "timezone": "Africa/Harare",
             "purpose": "Customer outreach", "data_source": "CRM export",

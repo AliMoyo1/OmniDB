@@ -16,6 +16,7 @@ pytestmark = pytest.mark.integration
 
 def _campaign_payload(name: str, team_id: uuid.UUID) -> dict[str, str]:
     return {
+        "external_code": f"c-{uuid.uuid4().hex[:8]}",
         "name": name,
         "owning_scope_type": "team",
         "owning_scope_id": str(team_id),
@@ -92,6 +93,7 @@ def test_team_scoped_leader_cannot_cross_campaign_boundaries(manager_client: Tes
         organization_create = leader_client.post(
             "/api/v1/campaigns",
             json={
+                "external_code": f"c-{uuid.uuid4().hex[:8]}",
                 "name": "Forbidden organization campaign",
                 "owning_scope_type": "organization",
                 "owning_scope_id": str(organization_id),

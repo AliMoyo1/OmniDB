@@ -318,7 +318,10 @@ def test_agent_cannot_create_campaign(agent_client):
     client = agent_client
     resp = client.post(
         "/api/v1/campaigns",
-        json={"name": "x", "default_region": "ZW", "timezone": "Africa/Harare"},
+        json={
+            "external_code": f"c-{uuid.uuid4().hex[:8]}", "name": "x",
+            "default_region": "ZW", "timezone": "Africa/Harare",
+        },
         headers=csrf_headers(client),
     )
     assert resp.status_code == 403
