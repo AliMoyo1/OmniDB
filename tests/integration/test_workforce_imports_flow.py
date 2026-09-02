@@ -568,3 +568,40 @@ def test_reporting_assignment_set_and_reversal():
     assert len(reverse1.json()["skipped"]) == 1
     assert reverse1.json()["skipped"][0]["row_number"] == 1
     assert _current_supervisor(sub_id) == sup1_id
+
+
+def test_routine_rows_still_need_real_per_row_authority_not_just_the_blanket_gate():
+    """A routine (non-high-risk) row was previously only gated by "holds any
+    appointment capability at all" - the same blanket bar create_user's own manual
+    screen uses. That's the right bar for users/create, but team_memberships,
+    role_assignments/end, users/reactivate, and reporting_assignments all have a
+    real manual-screen equivalent that checks a specific scope or target, and bulk
+    import must not be a looser path to the same effect. Team membership is the
+    clearest case to prove: a Team Leader scoped to team B holds every blanket
+    appointment capability a Team Leader gets, but has no authority over team A at
+    all - the standard decision must still be refused."""
+    uploader, _ = _manager(prefix="wfiscopeuploader")
+    headers = csrf_headers(uploader)
+    team_a_id, team_a_code = _make_team(prefix="wfiscopea")
+    team_b_id, _ = _make_team(prefix="wfiscopeb")
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    make_user(f"{wid}@example.com")
+
+    add_csv = (
+        f"action,external_workforce_id,team_code,reason_code\r\nadd,{wid},{team_a_code},\r\n"
+    )
+    job = _upload(uploader, headers, "team_memberships", add_csv).json()["id"]
+
+    wrong_team, _ = _team_leader(team_b_id, prefix="wfiscopewrong")
+    wrong_team_headers = csrf_headers(wrong_team)
+    denied = _decide(wrong_team, wrong_team_headers, job, tier="standard")
+    assert denied.status_code == 403, denied.text
+
+    right_team, _ = _team_leader(team_a_id, prefix="wfiscoperight")
+    right_team_headers = csrf_headers(right_team)
+    approved = _decide(right_team, right_team_headers, job, tier="standard")
+    assert approved.status_code == 200, approved.text
+    v = approved.json()["decision_version"]
+
+    commit = _commit(uploader, headers, job, v)
+    assert commit.status_code == 200, commit.text

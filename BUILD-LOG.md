@@ -1370,4 +1370,46 @@ very failure the test exists to prove. Re-verified this time with a
 URL-string search (`"/api/v1/campaigns"` etc.) instead of a name-based one,
 independently confirmed against a manual read of every match. ruff/mypy
 clean, full test suite (176 tests, all files) collects without error.
-Re-pushed.
+Re-pushed. CI came back green - migration and backfill both fine.
+
+## 2026-09-02: Fix a real per-row authority gap in 4B-1/4B-2 (found before 4B-3)
+
+Designing 4B-3's authority check surfaced a gap in code that had already
+shipped and passed CI twice, not something to get right going forward.
+Every manual, one-row-at-a-time screen in this build checks real per-target
+or per-scope authority before acting - `can_manage_user` for
+reactivating/deactivating a user or setting a reporting line,
+`has_scope_capability` against the specific team or role scope for team
+membership and ending a role assignment. Bulk import's commit path only
+ever enforced that bar for the two actions already wired into the
+high-risk tier (deactivation, role grant) - every routine row
+(`users`/reactivate, both `team_memberships` actions,
+`role_assignments`/end, `reporting_assignments`) was gated by nothing more
+than "holds some appointment capability, anywhere." Concretely: a Team
+Leader scoped to one team could bulk-add or remove members of a team they
+have no authority over, something the manual one-row screen would
+correctly refuse. A real instance of 11.2's own safeguard, "a file cannot
+grant the uploader more authority," not holding for those five action
+types.
+
+Fixed by generalizing the per-row authority dispatch that already existed
+for the two high-risk actions to cover every action, and applying it to
+every *routine* row too - checked when the standard decision is recorded,
+re-verified live again at commit and at reversal, the same shape the
+high-risk tier already had. No self-approval requirement on the routine
+path - that stays specific to high-risk, matching how the manual screens
+never needed a second approver for ordinary actions either. Full design
+and reasoning in `PHASE-4B-PLAN.md`. New integration test proves the
+concrete case: a Team Leader scoped to team B can no longer approve a
+`team_memberships` file touching team A.
+
+Recorded here plainly rather than folded quietly into the next commit,
+since it changes behavior in code CI had already passed twice - a reminder
+that green CI confirms the code does what it was built to do, not that the
+design itself was complete. This one wasn't findable by any test that
+existed at the time; it took re-deriving the authority model from scratch
+while designing the next import type to notice the asymmetry.
+
+ruff/mypy clean, full non-integration suite green locally (35/35), full
+suite (177 tests) collects without error. No live database this session -
+pushing for CI.

@@ -552,3 +552,46 @@ line`'s implicit supersede. Same shape as its two siblings.
 - 2026-09-02: CI green on the first push - build, security, quality,
   integration (migrate up, migration reversibility, 140/140 tests) all
   passed on `9782c92`. 4B-2 done.
+- 2026-09-02: while designing 4B-3's authority check (`campaign_user_
+  assignments` needs `has_campaign_capability(ASSIGN_CAMPAIGN_AGENT, ...)`),
+  found a real gap in already-shipped 4B-1/4B-2 code, not just something to
+  design correctly going forward. Every *manual*, one-row-at-a-time screen
+  this build has checks a real per-target or per-scope authority before
+  acting - `can_manage_user` for reactivating/deactivating a user or setting
+  a reporting line, `has_scope_capability(APPOINT_TEAM_CAPTAIN, "team",
+  team_id)` for team membership, `has_scope_capability(ROLE_APPOINTMENT_
+  CAPABILITY[role], scope_type, scope_id)` for ending a role assignment.
+  The bulk-import commit path only ever checked that bar for the two
+  actions already wired into the high-risk tier (deactivation, role grant)
+  - every *routine* row (`users`/reactivate, `team_memberships` both
+  actions, `role_assignments`/end, `reporting_assignments`) was gated by
+  nothing more than "holds any appointment capability at all," the same
+  blanket bar that's correctly the *only* bar for `users`/create (which has
+  no manual scope check either). That's a real instance of "a file cannot
+  grant the uploader more authority" (11.2's own safeguard) being violated
+  for those five action types: someone with any appointment capability
+  anywhere could bulk-add or remove team members for a team they have no
+  authority over, or reactivate a user they could never touch through the
+  one-row screen.
+
+  Fixed by generalizing the per-row authority dispatch
+  (`_row_authority_ok`) that already existed for the two high-risk actions
+  to cover every action across every type, and applying it uniformly: a
+  `standard` decision now requires the decider to pass this check for every
+  *routine* row, re-verified again at commit and at reversal - the exact
+  same "check at decision, re-verify live at commit and reverse" shape the
+  high-risk tier already had, just extended to the tier that had been
+  skipping it. No self-approval requirement on the routine path (that stays
+  high-risk-only; a single sufficiently-authorized person completing a
+  routine bulk action alone matches the manual screens exactly, which never
+  needed a second approver either). One new integration test proves the
+  fix concretely with the clearest case: a Team Leader scoped to team B
+  cannot approve a `team_memberships` file adding someone to team A, where
+  before this fix they could.
+
+  This is disclosed here rather than fixed silently because it changes
+  behavior in code that already shipped and passed CI twice (4B-1, 4B-2) -
+  worth being explicit that "CI green" proved the code did what it was
+  designed to do, not that the design itself was complete; this gap was
+  only found by re-deriving the authority model from scratch while
+  designing the next type, not by anything CI could have caught.

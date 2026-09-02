@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
 from app.authz import service as authz
+from app.authz.capabilities import APPOINT_TEAM_CAPTAIN
 from app.config import get_settings
 from app.flags import service as flags
 from app.imports import storage, validators
@@ -250,30 +251,44 @@ def get_preview(db: Session, job: WorkforceImportJob) -> list[WorkforceImportRow
     )
 
 
-def _high_risk_rows(db: Session, job: WorkforceImportJob) -> list[WorkforceImportRow]:
-    return list(
-        db.scalars(
-            select(WorkforceImportRow).where(
-                WorkforceImportRow.import_job_id == job.id,
-                WorkforceImportRow.risk_level == "high_risk",
-                WorkforceImportRow.validation_result == "valid",
-            )
-        )
-    )
+def _committable_rows(
+    db: Session, job: WorkforceImportJob, *, risk_level: str | None = None
+) -> list[WorkforceImportRow]:
+    conditions = [
+        WorkforceImportRow.import_job_id == job.id,
+        WorkforceImportRow.validation_result == "valid",
+    ]
+    if risk_level is not None:
+        conditions.append(WorkforceImportRow.risk_level == risk_level)
+    return list(db.scalars(select(WorkforceImportRow).where(*conditions)))
 
 
-def _row_authority_ok(db: Session, approver_id: uuid.UUID, job: WorkforceImportJob,
+def _row_authority_ok(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob,
                        row: WorkforceImportRow) -> bool:
-    """The precise authority bar for one high-risk row's specific effect - not the
-    same check for every import type, since "may disable this user" and "may grant
-    this exact role at this exact scope" are different questions with different
-    existing answers elsewhere in this codebase."""
-    if job.import_type == "explicit_deactivations":
+    """The precise authority bar for one row's specific effect - not the same check
+    for every import type, since "may disable this user," "may grant this exact role
+    at this exact scope," and "may manage this exact team's roster" are different
+    questions with different existing answers elsewhere in this codebase (the manual,
+    one-row-at-a-time screens each already enforce their own version of this; bulk
+    import must not be a looser path to the same effect - plan 11.2's "a file cannot
+    grant the uploader more authority")."""
+    values = row.parsed_values or {}
+    if job.import_type in ("explicit_deactivations", "reporting_assignments"):
         if row.normalized_identity is None:
             return True
-        return workforce_service.can_manage_user(db, approver_id, row.normalized_identity)
-    if job.import_type == "role_assignments" and row.action == "assign":
-        values = row.parsed_values or {}
+        return workforce_service.can_manage_user(db, actor_id, row.normalized_identity)
+    if job.import_type == "users":
+        if row.action not in ("update", "reactivate") or row.normalized_identity is None:
+            return True  # create matches create_user's own blanket bar
+        return workforce_service.can_manage_user(db, actor_id, row.normalized_identity)
+    if job.import_type == "team_memberships":
+        team_id = values.get("team_id")
+        if team_id is None:
+            return True
+        return authz.has_scope_capability(
+            db, actor_id, APPOINT_TEAM_CAPTAIN, scope_type="team", scope_id=uuid.UUID(team_id)
+        )
+    if job.import_type == "role_assignments":
         role_code = values.get("role_code")
         scope_type = values.get("scope_type")
         scope_id = uuid.UUID(values["scope_id"]) if values.get("scope_id") else None
@@ -281,9 +296,19 @@ def _row_authority_ok(db: Session, approver_id: uuid.UUID, job: WorkforceImportJ
         if capability is None or scope_type is None:
             return False
         return authz.has_scope_capability(
-            db, approver_id, capability, scope_type=scope_type, scope_id=scope_id
+            db, actor_id, capability, scope_type=scope_type, scope_id=scope_id
         )
     return True
+
+
+def _assert_rows_authorized(
+    db: Session, job: WorkforceImportJob, actor_id: uuid.UUID, *, risk_level: str
+) -> None:
+    for row in _committable_rows(db, job, risk_level=risk_level):
+        if not _row_authority_ok(db, actor_id, job, row):
+            raise InsufficientApprovalAuthority(
+                f"not authorized for the effect of row {row.row_number}"
+            )
 
 
 def _assert_qualified_high_risk_approver(
@@ -294,11 +319,7 @@ def _assert_qualified_high_risk_approver(
     after the decision was recorded, against whatever authority exists then)."""
     if approver_id == job.uploader_id:
         raise SelfApproval("the uploader cannot also approve a high-risk import")
-    for row in _high_risk_rows(db, job):
-        if not _row_authority_ok(db, approver_id, job, row):
-            raise InsufficientApprovalAuthority(
-                f"approver lacks authority over row {row.row_number}"
-            )
+    _assert_rows_authorized(db, job, approver_id, risk_level="high_risk")
 
 
 def record_decision(
@@ -319,6 +340,11 @@ def record_decision(
             raise ValueError("this import has no high-risk rows to approve")
         if decision == "approve":
             _assert_qualified_high_risk_approver(db, job, decided_by)
+    elif decision == "approve":
+        # Routine rows are not exempt from "a file cannot grant more authority" -
+        # they just don't also need a second, non-uploader approver the way
+        # high-risk rows do.
+        _assert_rows_authorized(db, job, decided_by, risk_level="routine")
 
     job.decision_version += 1
     row = WorkforceImportDecision(
@@ -631,6 +657,9 @@ def commit_job(
     standard = _latest_decision(db, job, tier="standard")
     if standard is None or standard.decision != "approve":
         raise ImportNotReady("import has not been approved for commit")
+    # Re-verify live, not the state at decision time - same principle as the
+    # high-risk re-check just below.
+    _assert_rows_authorized(db, job, standard.decided_by, risk_level="routine")
 
     high_risk_decision = None
     if job.high_risk_rows > 0:
@@ -820,6 +849,7 @@ def reverse_job(db: Session, job_id: uuid.UUID, *, actor_id: uuid.UUID) -> dict:
         raise ImportNotReady("import has already been reversed")
     if job.high_risk_rows > 0:
         _assert_qualified_high_risk_approver(db, job, actor_id)
+    _assert_rows_authorized(db, job, actor_id, risk_level="routine")
 
     reversed_rows: list[dict] = []
     skipped_rows: list[dict] = []
