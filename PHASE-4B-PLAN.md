@@ -337,3 +337,21 @@ since.
   a real database) and pre-existing, not introduced here. Left those two
   alone - out of scope, not something this change broke. Re-verified
   ruff/mypy/`alembic history`, re-pushed.
+- 2026-09-02: second CI run got past migration (confirming the fix) but
+  failed all 7 new integration tests at setup, with the rest of the suite
+  (129 pre-existing tests) unaffected - `ForeignKeyViolation` on
+  `feature_flags.updated_by`. The autouse fixture that turns the new
+  `workforce_import_enabled` flag on for every test called
+  `flags_service.set_flag(..., actor_id=uuid.uuid4())`: a fabricated UUID,
+  not a real user, and `updated_by` is a genuine foreign key to `users.id`.
+  One other test had the identical mistake in its own direct `set_flag`
+  call. This class of bug is a real, live-database-only check - unlike the
+  identifier-length issue, there's no way to catch a foreign-key violation
+  by inspecting schema or models offline; only an actual constrained insert
+  catches it, which is exactly what CI is for here. Fixed both call sites to
+  use a real user id (`make_user(...)` for the fixture; the test's own
+  manager for the direct call), grepped the whole file for every remaining
+  bare `uuid.uuid4()` to confirm nothing else feeds an FK-constrained
+  column (the two `team_a`/`team_b` scope IDs are safe - `RoleAssignment.
+  scope_id` carries no FK, confirmed against the model). Re-verified ruff,
+  mypy, and test collection; re-pushed.

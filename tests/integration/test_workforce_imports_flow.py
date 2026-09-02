@@ -15,15 +15,20 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.flags import service as flags_service
 from app.models.identity import User
-from tests.integration.conftest import csrf_headers, login, make_user_with_role
+from tests.integration.conftest import csrf_headers, login, make_user, make_user_with_role
 
 pytestmark = pytest.mark.integration
 
 
 def _enable_workforce_import() -> None:
+    # set_flag writes actor_id into FeatureFlag.updated_by, a real FK to users.id -
+    # needs an actual user row, not a bare uuid4() (caught by CI, not locally: no
+    # live Postgres this session to enforce the constraint against).
+    flag_toggler_id = make_user(f"wfi-flagtoggler-{uuid.uuid4().hex[:8]}@example.com")
     with SessionLocal() as db:
         flags_service.set_flag(
-            db, "workforce_import_enabled", True, actor_id=uuid.uuid4(), reason_code="test_setup"
+            db, "workforce_import_enabled", True, actor_id=flag_toggler_id,
+            reason_code="test_setup",
         )
         db.commit()
 
@@ -313,13 +318,14 @@ def test_reverse_restores_state_but_skips_conflicting_rows():
 
 
 def test_workforce_import_disabled_flag_blocks_new_uploads():
+    client, manager_id = _manager()
+    headers = csrf_headers(client)
     with SessionLocal() as db:
         flags_service.set_flag(
-            db, "workforce_import_enabled", False, actor_id=uuid.uuid4(), reason_code="test"
+            db, "workforce_import_enabled", False, actor_id=uuid.UUID(manager_id),
+            reason_code="test",
         )
         db.commit()
-    client, _ = _manager()
-    headers = csrf_headers(client)
     header_only = (
         "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
     )
