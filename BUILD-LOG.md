@@ -1981,3 +1981,8 @@ accessible jobs listed in under 15 queries, where an N+1 would be at least
 30. The round-3 high-cardinality test still passes: its ORM-built job has
 a NULL footprint, so it exercises the row-load fallback and still resolves
 under 15 queries.
+
+Confirmed green on `204f2c7`: build, security, quality, and integration
+all passed - the bulk `visible_jobs` resolution holds under CI's own fresh
+Postgres/Redis containers, matching local verification exactly. Five
+review rounds on this feature now closed.

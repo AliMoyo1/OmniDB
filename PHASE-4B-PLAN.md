@@ -906,3 +906,6 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
   round-trips cleanly, `docker build` succeeds, ruff/mypy clean. A genuine
   end-to-end visible_jobs query-count test (the one the reviewer asked
   for) lists 30 accessible jobs in under 15 queries.
+- 2026-09-02: CI green on `204f2c7` - build, security, quality, and
+  integration all passed, confirming local verification exactly. Five
+  review rounds on this feature now closed.
