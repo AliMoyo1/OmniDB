@@ -1,8 +1,8 @@
 # Phase 4B plan: staged bulk-workforce import
 
 Status: 4B-1 (users + explicit_deactivations) done, CI green on `97615bc`.
-4B-2 (team_memberships, role_assignments, reporting_assignments) built,
-pushed for CI (2026-09-02).
+4B-2 (team_memberships, role_assignments, reporting_assignments) done, CI
+green on the first push, `9782c92` (2026-09-02).
 
 ## Scope note: sequencing versus the master plan
 
@@ -549,3 +549,6 @@ line`'s implicit supersede. Same shape as its two siblings.
   4B-1's fix confirms no new violations, all 11 tests in the file collect,
   full non-integration suite green locally (35/35). No live database this
   session - pushing for CI to give the real answer.
+- 2026-09-02: CI green on the first push - build, security, quality,
+  integration (migrate up, migration reversibility, 140/140 tests) all
+  passed on `9782c92`. 4B-2 done.

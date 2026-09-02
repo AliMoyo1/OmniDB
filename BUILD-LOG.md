@@ -1305,3 +1305,10 @@ check built for 4B-1's CI fix re-run and confirms no new violations, all 11
 tests in the integration file collect, full non-integration suite passing
 locally (35/35, unaffected). No live database this session - pushing for CI
 to give the real answer.
+
+Confirmed green on `9782c92` - first push, no fix cycle needed this time:
+build, security, quality, integration (migrate up, migration reversibility,
+140/140 tests) all passed. 4B-2 done. One import type remains from the
+original seven before this phase moves to 4B-3
+(`campaign_user_assignments`, transfers, deferred pending the 4C sequencing
+question) - `target_assignments` stays blocked on 4C outright.
