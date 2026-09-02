@@ -1195,3 +1195,150 @@ def test_header_only_file_is_rejected_even_with_a_valid_header():
     status = client.get(f"/api/v1/workforce/imports/{job_id}").json()
     assert status["state"] == "failed"
     assert status["total_rows"] == 0
+
+
+def test_job_of_entirely_unresolvable_rows_is_not_accessible_to_non_uploader():
+    """Round-3 review finding #2: an unresolved identity/team previously made
+    _row_requirement return None ("no check needed"), so a job consisting
+    ENTIRELY of unresolvable rows - every external_workforce_id misspelled,
+    say - passed _bulk_authority_ok trivially, since a bulk check with
+    nothing but None requirements never rejects anything. That defeated
+    object-level authorization the same way the zero-rows case did, just
+    reached through invalid rows in an otherwise non-empty file instead of an
+    empty one."""
+    uploader, _ = _manager(prefix="wfiunresolved")
+    headers = csrf_headers(uploader)
+    bad_csv = (
+        "external_workforce_id,reason_code\r\n"
+        f"nonexistent-{uuid.uuid4().hex[:8]},performance_review\r\n"
+        f"nonexistent-{uuid.uuid4().hex[:8]},performance_review\r\n"
+    )
+    job_id = _upload(uploader, headers, "explicit_deactivations", bad_csv).json()["id"]
+    status = uploader.get(f"/api/v1/workforce/imports/{job_id}").json()
+    assert status["total_rows"] == 2, status
+    assert status["invalid_rows"] == 2, status
+
+    outsider, _ = _manager(prefix="wfiunresolvedoutsider")
+    get_denied = outsider.get(f"/api/v1/workforce/imports/{job_id}")
+    assert get_denied.status_code == 404, get_denied.text
+
+    get_by_uploader = uploader.get(f"/api/v1/workforce/imports/{job_id}")
+    assert get_by_uploader.status_code == 200, get_by_uploader.text
+
+
+def test_can_access_job_query_count_stays_bounded_at_high_distinct_cardinality():
+    """Round-3 review finding #3: round-2's fix reduced per-row queries down
+    to one per DISTINCT scope/target, but that is still O(distinct values) -
+    a file naming thousands of distinct teams (or targets) still issues
+    thousands of queries under that design, and an unchunked target_ids IN
+    (...) clause could exceed Postgres's ~65k bind-parameter limit outright
+    at the full 100,000-row import maximum. Round-2's own query-count test
+    only proved the repeated-scope case (120 rows, 3 teams); this proves the
+    actual high-cardinality case the review pointed out was still
+    unproven - 1,500 distinct target users, each holding a role at its own
+    distinct team (1,500 distinct teams too), which is enough to cross the
+    authorization module's 1,000-row bulk-query chunk size in both the
+    target-role fetch and the team-organization resolution it triggers."""
+    from sqlalchemy import event
+
+    from app.authz.capabilities import ROLE_AGENT
+    from app.db import engine
+    from app.models.authz import RoleAssignment
+    from app.models.base import utcnow
+    from app.models.identity import Organization, Team
+    from app.models.workforce_imports import WorkforceImportRow
+    from app.security.passwords import hash_password
+    from app.workforce_imports import service as import_service
+
+    target_count = 1500
+    with SessionLocal() as db:
+        org = Organization(name=f"HighCard org {uuid.uuid4().hex[:8]}", status="active")
+        db.add(org)
+        db.flush()
+
+        uploader = User(
+            workforce_id=f"hc-uploader-{uuid.uuid4().hex[:8]}",
+            email=f"hc-uploader-{uuid.uuid4().hex[:8]}@example.com",
+            display_name="High Card Uploader",
+            password_hash=hash_password("not-used-in-this-test"),
+        )
+        db.add(uploader)
+        db.flush()
+
+        teams = [
+            Team(
+                organization_id=org.id, external_code=f"hc-{uuid.uuid4().hex[:10]}",
+                name=f"HC Team {i}",
+            )
+            for i in range(target_count)
+        ]
+        targets = [
+            User(
+                workforce_id=f"hc-target-{i}-{uuid.uuid4().hex[:6]}",
+                email=f"hc-target-{i}-{uuid.uuid4().hex[:6]}@example.com",
+                display_name="HC Target", password_hash=hash_password("not-used-in-this-test"),
+            )
+            for i in range(target_count)
+        ]
+        db.add_all(teams)
+        db.add_all(targets)
+        db.flush()
+
+        now = utcnow()
+        db.add_all(
+            [
+                RoleAssignment(
+                    user_id=targets[i].id, role_code=ROLE_AGENT, scope_type="team",
+                    scope_id=teams[i].id, effective_from=now,
+                )
+                for i in range(target_count)
+            ]
+        )
+
+        job = WorkforceImportJob(
+            import_type="users", uploader_id=uploader.id,
+            source_filename_display="highcard.csv",
+            generated_storage_key=f"hc-{uuid.uuid4().hex}", file_hash="deadbeef", state="parsed",
+            total_rows=target_count, valid_rows=target_count, warning_rows=0, invalid_rows=0,
+            high_risk_rows=0,
+        )
+        db.add(job)
+        db.flush()
+        db.add_all(
+            [
+                WorkforceImportRow(
+                    import_job_id=job.id, row_number=i + 1, action="reactivate",
+                    external_workforce_id=targets[i].workforce_id,
+                    normalized_identity=targets[i].id, parsed_values={},
+                    validation_result="valid", risk_level="routine",
+                )
+                for i in range(target_count)
+            ]
+        )
+        db.commit()
+        job_id = job.id
+
+    approver, approver_id = _manager(prefix="wfihighcardapprover")
+
+    query_count = 0
+
+    def _count(*_args, **_kwargs):
+        nonlocal query_count
+        query_count += 1
+
+    with SessionLocal() as db:
+        job = db.get(WorkforceImportJob, job_id)
+        assert job is not None
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            result = import_service.can_access_job(db, uuid.UUID(approver_id), job)
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+
+    assert result is True
+    assert query_count < 15, (
+        f"can_access_job issued {query_count} queries for {target_count} "
+        "distinct targets across as many distinct teams (over the 1,000-row "
+        "chunk size) - should be bounded by a small, fixed number of chunked "
+        "round trips, not by distinct-target/scope count"
+    )

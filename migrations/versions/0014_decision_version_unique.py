@@ -14,14 +14,22 @@ Before creating that constraint, this also reconciles any duplicate pairs the
 pre-fix race may already have produced - a unique constraint cannot be created
 over data that already violates it, so without this step, upgrading a database
 that ever actually hit the race would fail outright. Every job's decisions are
-renumbered into a gapless, chronological sequence by (created_at, id): a
-decision's version has always equalled its chronological insertion rank (even
-under the buggy pre-fix code, since job.decision_version was only ever
-incremented, never assigned out of order) - so for any job the race never hit,
-this reproduces the exact version numbers already there, a no-op. For a job
-the race did hit, it collapses the duplicate into a valid sequence. No
-decision row is ever deleted or its content changed: these are audit-relevant
-records of who approved or rejected what, and when.
+renumbered by ordering on the EXISTING decision_version first, and only
+falling back to (created_at, id) to break a tie between rows that already
+share the same old version - not by discarding decision_version and ordering
+on timestamps alone. Timestamps are set in application code (utcnow() at
+flush time, not a single database clock), so they are not safe to trust as
+the primary order across rows written from different processes or hosts: two
+rows that already have distinct, correctly-ordered versions must stay in that
+order regardless of what their timestamps say, and only rows that already
+collide on the same version (the actual pre-fix race outcome) should ever
+have their relative order decided by timestamp. For any job the race never
+hit, every row already has a distinct version, so this reproduces the exact
+version numbers already there, a no-op. For a job the race did hit, it
+collapses the duplicate into a valid sequence without disturbing that job's
+other, already-distinct versions. No decision row is ever deleted or its
+content changed: these are audit-relevant records of who approved or
+rejected what, and when.
 
 Revision ID: 0014_decision_version_unique
 Revises: 0013_campaign_external_code
@@ -70,7 +78,8 @@ def upgrade() -> None:
                 SELECT
                     id,
                     ROW_NUMBER() OVER (
-                        PARTITION BY import_job_id ORDER BY created_at, id
+                        PARTITION BY import_job_id
+                        ORDER BY decision_version, created_at, id
                     ) AS new_version
                 FROM workforce_import_decisions
             )

@@ -811,3 +811,37 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
 - 2026-09-02: CI green on `6ec4f6b` - integration, quality, build, and
   security all passed, confirming the local Docker-based verification
   exactly under CI's own fresh containers. Round 2 closed.
+- 2026-09-02: code review response, round 3 - on round 2's fixes. 3
+  findings, all high-priority; full account in `BUILD-LOG.md`'s matching
+  entry. Summary:
+  - **Migration 0014's reconciliation now orders on the existing
+    decision_version first**, falling back to `(created_at, id)` only to
+    break ties within a genuinely duplicated version - not on timestamps
+    alone, which are application-clock-based and not safe to trust as the
+    primary order across processes/hosts. Verified against seeded data
+    with deliberately inverted timestamps.
+  - **Unresolved row targets now deny non-uploaders instead of skipping
+    the check** - `_row_requirement` returned `None` ("nothing to check")
+    for an unresolved identity/team, so a job made entirely of
+    unresolvable rows passed object-level authorization trivially. `None`
+    is now reserved for the one case where that is genuinely correct: a
+    plain user creation.
+  - **Bulk authorization is now actually bounded, not just deduplicated**
+    - round 2 cut per-row queries to one per distinct value, still
+      `O(distinct scopes/targets)`, and an unchunked target-id `IN (...)`
+      could exceed Postgres's 65,535 bind-parameter limit outright at the
+      documented 100,000-row maximum. New bulk primitives in
+      `app/authz/service.py` (`scope_capabilities_matched`,
+      `campaign_ids_with_capability`) resolve many scopes/campaigns in a
+      small, fixed number of chunked round trips, built on the same
+      decision logic `has_scope_capability`/`has_campaign_capability`
+      already use (refactored into a shared pure function, not
+      duplicated) - not reasoned about, verified: a new test proves 1,500
+      distinct targets across 1,500 distinct teams resolves access in
+      under 15 queries.
+
+  Verified against real Postgres 16 + Redis 7 locally: migration checked
+  against both duplicate-seeded data (round 2) and skewed-timestamp data
+  (round 3), `pytest -m integration` (161 tests, up from 158) and the unit
+  suite (35 tests) both green matching CI's two jobs, `docker build`
+  succeeds, ruff/mypy clean.

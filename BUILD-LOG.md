@@ -1747,3 +1747,96 @@ Confirmed green on `6ec4f6b`: integration, quality, build, and security
 all passed - migration 0014's reconciliation step and the bulk
 authorization rewrite both hold under CI's own fresh Postgres/Redis
 containers, matching local verification exactly.
+
+## 2026-09-02: Phase 4B code review response, round 3 - 3 findings on round 2's fixes
+
+A third review, on round 2's fixes. Three findings, all high-priority, all
+real. All three fixed.
+
+**#1 - migration 0014's reconciliation could reverse the effective latest
+decision.** The renumbering query ordered purely by `(created_at, id)`,
+discarding each row's existing `decision_version` entirely. `created_at`
+is set in application code (`utcnow()` at flush time), not by a single
+database clock - it is not safe to trust as the primary order across rows
+written from different processes or hosts. A genuinely later action (a
+reject) landing with an earlier timestamp than a genuinely earlier one (an
+approve) - ordinary clock skew, no race required - would have had the
+migration flip their relative order, making the approve look current
+again. Fixed by ordering on the existing `decision_version` first and
+falling back to `(created_at, id)` only to break a tie between rows that
+already share the same old version (the actual pre-fix race outcome, the
+only case where trusting a timestamp at all is appropriate). Verified
+against real seeded data with deliberately inverted timestamps (a version-1
+decision given a *later* timestamp than the version-2 decision that
+followed it, simulating skew): confirmed the old `(created_at, id)`-only
+order would have swapped them, then confirmed the fix preserves the
+original, correct order regardless.
+
+**#2 - invalid rows still made object-level authorization fail open.**
+`_row_requirement` returned `None` ("no check needed") whenever a
+deactivation, reporting-assignment, user-update/reactivate, or
+team-membership row's target could not be resolved - an unresolved target
+is not the same as nothing to check, since the row still named a real
+person or team the uploader was trying to act on. A `_bulk_authority_ok`
+call over a job consisting *entirely* of such rows (every
+`external_workforce_id` misspelled, say) trivially returned `True`, since a
+bulk check with nothing but `None` requirements never rejects anything -
+defeating object-level authorization the same way the zero-rows case did,
+just reached through invalid rows in a non-empty file instead of an empty
+one. Fixed by returning `("deny",)` instead for every unresolved-target
+case, keeping `None` only for the one case where no check is genuinely
+correct: a plain user *creation*, which matches `create_user`'s own
+blanket bar and names no existing target to protect. The function's final
+fallback (unreachable today, since all six import types are handled
+explicitly) was also changed from `None` to `("deny",)`, defaulting to
+deny rather than allow for whatever a future import type's unhandled case
+might be.
+
+**#3 - the round-2 performance fix stayed linear at high cardinality.**
+Round 2 deduplicated per-row authorization checks down to one query per
+*distinct* scope/target - correct for the common case (many rows sharing
+few teams/campaigns), but still `O(distinct values)`, not bounded. A file
+naming thousands of distinct teams, or (for `users`/
+`explicit_deactivations`/`reporting_assignments`) thousands of distinct
+target users, would still issue thousands of queries; `visible_jobs()`
+repeats this across up to 200 candidate jobs. Worse, the distinct-targets
+bulk fetch built one `IN (...)` clause from the *entire* target set with no
+chunking - at the documented 100,000-row import maximum, that clause could
+carry up to 100,000 bind parameters, over Postgres's hard 65,535-parameter
+protocol limit, which would have failed the query outright rather than
+merely run slowly. Fixed with two changes:
+  - `app/authz/service.py` gained real bulk-capable primitives:
+    `scope_capabilities_matched` (given many `(scope_type, scope_id)`
+    pairs for one capability, returns the authorized subset - resolves the
+    actor's own roles once and every referenced team's organization
+    ancestry in one chunked query, then decides every pair in memory) and
+    `campaign_ids_with_capability` (same idea, reusing the already-SQL-
+    composable `campaign_scope_filter`, chunked). Both are built on the
+    same decision logic `has_scope_capability`/`has_campaign_capability`
+    already use - `_scope_assignment_covers_target` was refactored (not
+    duplicated) into a thin single-value wrapper over a new pure
+    `_scope_covered_by_assignment` function, which both the original
+    per-call path and the new bulk path call, so there is exactly one
+    place "does X cover Y" is decided.
+  - `app/workforce_imports/service.py`'s `_bulk_authority_ok` now calls
+    these bulk primitives (grouped by capability for scope tuples) instead
+    of once-per-distinct-tuple, and its target-role bulk fetch is chunked
+    (`itertools.batched`, 1,000 per chunk - Python 3.12, no extra
+    dependency) instead of one unbounded `IN (...)`.
+
+  Verified at real high cardinality, not just reasoned about: a new test
+  builds 1,500 distinct target users, each holding a role at its own
+  distinct team (1,500 distinct teams too - deliberately over the 1,000-row
+  chunk boundary so chunking has to span more than one batch in both the
+  target-role fetch and the team-organization resolution it triggers), and
+  confirms `can_access_job` still resolves access in under 15 queries
+  total.
+
+Verification: ruff and mypy clean repo-wide. Full suite green against real
+Postgres: `pytest -m integration` (161 tests, up from 158) and the unit
+suite (35 tests) both pass, matching CI's two jobs. Migration
+applies/downgrades/reapplies cleanly, and separately verified against the
+seeded skewed-timestamp scenario above. `docker build` succeeds. 3 new
+tests: the skewed-timestamp migration check (scripted, not pytest - same
+reasoning as round 2's duplicate-data check), the entirely-unresolvable-
+rows access test, and the high-cardinality query-count test.

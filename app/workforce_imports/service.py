@@ -9,6 +9,7 @@ layer, so no caller can bypass it.
 
 from __future__ import annotations
 
+import itertools
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -41,6 +42,11 @@ from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY, DuplicateIdentity
 from app.workforce_imports import classify
 
 _PARSE_BATCH_SIZE = 500
+# Matches authz.service's own bulk-query chunk size, kept separate since that
+# one is a private module constant - this bounds the target_ids IN (...)
+# clause the same way, well under Postgres's ~65k bind-parameter limit even
+# at the full 100,000-row import maximum.
+_AUTHORITY_CHUNK_SIZE = 1000
 IMPORT_TYPES = (
     "users",
     "explicit_deactivations",
@@ -324,22 +330,36 @@ def _row_requirement(
     uploader more authority"). Returning a key rather than a bool lets the bulk
     check below collect every row's *distinct* requirement and resolve each one
     once, instead of re-deriving and re-querying it per row. None means the row
-    needs no check (a plain user creation, matching create_user's own blanket
-    bar); ("deny",) means it can never be authorized, independent of who's
-    asking (an unresolvable role/scope or campaign reference)."""
+    needs no check at all - reserved for the one case where that is actually
+    safe: a plain user creation, which matches create_user's own blanket bar
+    and names no existing target to protect. ("deny",) means the row can
+    never be authorized by a non-uploader, independent of who's asking - an
+    unresolvable role/scope/campaign reference, or (just as importantly) an
+    unresolved identity/team target. An unresolved target is NOT the same as
+    "nothing to check": the row still named a real person or team the
+    uploader was trying to act on, so a non-uploader with no relationship to
+    that row must not get a free pass on it just because it happens to be
+    invalid - a job consisting entirely of unresolvable rows would otherwise
+    pass every check trivially, the same fail-open shape the zero-rows fix
+    closed for an unparsed job, just reached through invalid rows instead of
+    an empty file."""
     values = row.parsed_values or {}
     if job.import_type in ("explicit_deactivations", "reporting_assignments"):
         if row.normalized_identity is None:
-            return None
+            return ("deny",)
         return ("user", row.normalized_identity)
     if job.import_type == "users":
-        if row.action not in ("update", "reactivate") or row.normalized_identity is None:
+        if row.action == "create":
             return None
-        return ("user", row.normalized_identity)
+        if row.action in ("update", "reactivate"):
+            if row.normalized_identity is None:
+                return ("deny",)
+            return ("user", row.normalized_identity)
+        return ("deny",)
     if job.import_type == "team_memberships":
         team_id = values.get("team_id")
         if team_id is None:
-            return None
+            return ("deny",)
         return ("scope", APPOINT_TEAM_CAPTAIN, "team", uuid.UUID(team_id))
     if job.import_type == "role_assignments":
         role_code = values.get("role_code")
@@ -354,21 +374,23 @@ def _row_requirement(
         if campaign_id is None:
             return ("deny",)
         return ("campaign", uuid.UUID(campaign_id))
-    return None
+    return ("deny",)
 
 
 def _bulk_authority_ok(
     db: Session, actor_id: uuid.UUID, job: WorkforceImportJob, rows: list[WorkforceImportRow]
 ) -> bool:
-    """Same policy _row_requirement/the old per-row check expressed, applied to
-    every row in `rows` with a query count bounded by the number of DISTINCT
-    targets/scopes referenced, not by row count - a 100,000-row job assigning
-    the same handful of teams costs a handful of queries, not 100,000. Every
-    actual authorization decision still goes through the same public, trusted
-    functions the manual one-row screens call (has_scope_capability,
-    has_campaign_capability, has_assigned_capability) - this only ever calls
-    them once per distinct requirement instead of once per row; it never
-    re-implements the decision they make."""
+    """Same policy _row_requirement expresses, applied to every row in `rows`
+    with a query count bounded by a small, fixed number of round trips - not
+    by row count, and not by how many DISTINCT targets/scopes are referenced
+    either: a 100,000-row job naming 100,000 distinct users still resolves in
+    a handful of chunked queries, not one per row and not one per target.
+    Every actual authorization decision still goes through the same trusted
+    logic the manual one-row screens ultimately rely on (authz.
+    scope_capabilities_matched / campaign_ids_with_capability, both built on
+    the same primitives has_scope_capability/has_campaign_capability use) -
+    this only ever changes how many round trips that takes, never what it
+    decides."""
     requirements = [_row_requirement(job, row) for row in rows]
     if any(req == ("deny",) for req in requirements):
         return False
@@ -379,36 +401,46 @@ def _bulk_authority_ok(
     }
     campaign_ids = {req[1] for req in requirements if req is not None and req[0] == "campaign"}
 
-    # One bulk fetch for every distinct target's own active roles, instead of one
-    # query per target (mirrors authz.effective_role_assignments's own filter -
-    # the actual authorization decision below still goes through has_scope_
-    # capability/has_assigned_capability unchanged, just fewer times).
+    # Bulk fetch every distinct target's own active roles, chunked so a
+    # single IN (...) clause never approaches Postgres's ~65k bind-parameter
+    # limit even at the full 100,000-row import size.
     now = utcnow()
     target_roles_by_id: dict[uuid.UUID, list[RoleAssignment]] = {tid: [] for tid in target_ids}
-    if target_ids:
+    for chunk in itertools.batched(target_ids, _AUTHORITY_CHUNK_SIZE):
         for assignment in db.scalars(
             select(RoleAssignment).where(
-                RoleAssignment.user_id.in_(target_ids),
+                RoleAssignment.user_id.in_(chunk),
                 RoleAssignment.status == "active",
                 RoleAssignment.effective_from <= now,
                 or_(RoleAssignment.effective_to.is_(None), RoleAssignment.effective_to > now),
             )
         ):
             target_roles_by_id[assignment.user_id].append(assignment)
-        for roles in target_roles_by_id.values():
-            for ra in roles:
-                capability = ROLE_APPOINTMENT_CAPABILITY.get(ra.role_code)
-                if capability is not None:
-                    scope_tuples.add((capability, ra.scope_type, ra.scope_id))
+    for roles in target_roles_by_id.values():
+        for ra in roles:
+            capability = ROLE_APPOINTMENT_CAPABILITY.get(ra.role_code)
+            if capability is not None:
+                scope_tuples.add((capability, ra.scope_type, ra.scope_id))
 
-    scope_ok = {
-        tup: authz.has_scope_capability(db, actor_id, tup[0], scope_type=tup[1], scope_id=tup[2])
-        for tup in scope_tuples
-    }
-    campaign_ok = {
-        cid: authz.has_campaign_capability(db, actor_id, ASSIGN_CAMPAIGN_AGENT, cid)
-        for cid in campaign_ids
-    }
+    # Grouped by capability, since scope_capabilities_matched answers "which
+    # of these (scope_type, scope_id) pairs does the actor cover for ONE
+    # capability" in a bounded number of round trips regardless of how many
+    # distinct pairs are asked - the capability itself is not part of what
+    # gets deduplicated at the database layer.
+    scope_ok: dict[tuple[str, str, uuid.UUID | None], bool] = {}
+    tuples_by_capability: dict[str, set[tuple[str, uuid.UUID | None]]] = {}
+    for capability, scope_type, scope_id in scope_tuples:
+        tuples_by_capability.setdefault(capability, set()).add((scope_type, scope_id))
+    for capability, scope_requests in tuples_by_capability.items():
+        matched = authz.scope_capabilities_matched(db, actor_id, capability, scope_requests)
+        for scope_type, scope_id in scope_requests:
+            scope_ok[(capability, scope_type, scope_id)] = (scope_type, scope_id) in matched
+
+    matched_campaigns = authz.campaign_ids_with_capability(
+        db, actor_id, ASSIGN_CAMPAIGN_AGENT, campaign_ids
+    )
+    campaign_ok = {cid: cid in matched_campaigns for cid in campaign_ids}
+
     no_role_fallback_ok = (
         any(
             authz.has_assigned_capability(db, actor_id, capability)
