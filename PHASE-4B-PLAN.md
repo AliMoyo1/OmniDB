@@ -1,12 +1,13 @@
 # Phase 4B plan: staged bulk-workforce import
 
-Status: 4B-1 (users + explicit_deactivations) done, CI green on `97615bc`.
-4B-2 (team_memberships, role_assignments, reporting_assignments) done, CI
-green on the first push, `9782c92`. 4B-3 (campaign_user_assignments:
-assign, end) built, pushed for CI (2026-09-02). Along the way: added
-`Campaign.external_code` (a real prerequisite gap) and fixed a real
-per-row authority gap in already-shipped 4B-1/4B-2 code - see the Log
-below for both.
+Status: **4B done** (2026-09-02). 4B-1 (users + explicit_deactivations) CI
+green on `97615bc`. 4B-2 (team_memberships, role_assignments,
+reporting_assignments) CI green on the first push, `9782c92`. 4B-3
+(campaign_user_assignments: assign, end) CI green on `6a0d0db`, 143/143
+tests. Along the way: added `Campaign.external_code` (a real prerequisite
+gap) and fixed a real per-row authority gap in already-shipped 4B-1/4B-2
+code - see the Log below for both. Remaining: `transfer` action (deferred,
+own increment) and `target_assignments` (blocked on 4C).
 
 ## Scope note: sequencing versus the master plan
 
@@ -704,3 +705,12 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
   This closes out all seven of the master plan's bulk-import types except
   `target_assignments` (blocked on 4C) - 4B-1 through 4B-3 complete, modulo
   CI confirming this last push and the deferred `transfer` action.
+- 2026-09-02: CI green on `6a0d0db` - build, security, quality, integration
+  (143/143 tests) all passed. Phase 4B done: six import types shipped
+  (`users`, `explicit_deactivations`, `team_memberships`,
+  `role_assignments`, `reporting_assignments`, `campaign_user_assignments`),
+  staged upload through commit and compensating reversal, two-person
+  high-risk approval, and a real per-row authority bar for every action,
+  not just the high-risk ones. `transfer` and `target_assignments` are the
+  only pieces of the original seven-type staffing scope left, both
+  deliberately deferred for reasons documented above, not forgotten.

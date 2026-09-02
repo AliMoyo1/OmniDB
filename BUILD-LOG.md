@@ -1451,3 +1451,21 @@ reversal path including the blocking-classify case for reassigning an
 already-assigned agent, and the same campaign-scoped-authority proof
 `team_memberships` established. No live database this session - pushing
 for CI.
+
+Confirmed green on `6a0d0db`: build, security, quality, integration
+(143/143 tests) all passed. **Phase 4B done.** Six import types shipped -
+`users`, `explicit_deactivations`, `team_memberships`, `role_assignments`,
+`reporting_assignments`, `campaign_user_assignments` - each staged through
+quarantine, validated preview, decision, atomic commit, and compensating
+reversal, with two-person approval for the genuinely high-risk actions
+(deactivation, role grants) and a real per-row authority check - matching
+whatever the equivalent manual one-row screen already enforces - for every
+action, not only the high-risk ones. `transfer` and `target_assignments`
+are the two pieces of the original seven-type staffing scope intentionally
+left for later, not overlooked: `transfer`'s reversal needs its own
+directional design (a new compensating transfer, not an end/re-create
+pair), and `target_assignments` has nothing to reference until 4C exists.
+Next per the user's roadmap: 4C (targets and exemptions) - still carrying
+the open sequencing question against the master plan's own recommendation
+to defer it past the pilot - then the remaining operational workflows,
+then the pilot itself.
