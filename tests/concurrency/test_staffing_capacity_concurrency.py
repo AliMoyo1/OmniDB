@@ -45,6 +45,7 @@ def _setup() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, list[uuid.UUID]]:
 
         campaign = Campaign(
             owning_scope_type="organization",
+            external_code=f"c-{uuid.uuid4().hex[:8]}",
             name=f"Staffing race campaign {uuid.uuid4().hex[:6]}",
             default_region="ZW",
             timezone="Africa/Harare",

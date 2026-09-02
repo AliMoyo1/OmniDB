@@ -17,6 +17,9 @@ class Campaign(UUIDMixin, TimestampMixin, Base):
     owning_scope_type: Mapped[str] = mapped_column(String(30))
     owning_scope_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     owner_manager_role_assignment_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # Stable operator-chosen identifier (mirrors Team.external_code) - bulk-import
+    # templates reference a campaign by this, never by raw id.
+    external_code: Mapped[str] = mapped_column(String(50), unique=True)
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
 

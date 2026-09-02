@@ -91,6 +91,7 @@ def _setup_lease_race() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
         agent = _new_user(db, "lease-agent")
         campaign = Campaign(
             owning_scope_type="organization",
+            external_code=f"c-{uuid.uuid4().hex[:8]}",
             name=f"Lease suppression race {uuid.uuid4().hex[:8]}",
             default_region="ZW",
             timezone="Africa/Harare",
@@ -190,6 +191,7 @@ def _setup_import_race() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
         )
         campaign = Campaign(
             owning_scope_type="organization",
+            external_code=f"c-{uuid.uuid4().hex[:8]}",
             name=f"Import suppression race {uuid.uuid4().hex[:8]}",
             default_region="ZW",
             timezone="Africa/Harare",

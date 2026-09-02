@@ -40,6 +40,7 @@ from app.campaigns.service import (
     CampaignAssignmentError,
     CampaignStateError,
     DispositionPolicyError,
+    DuplicateCampaignCode,
 )
 from app.db import get_session
 from app.flags.service import FeatureDisabledError
@@ -88,7 +89,8 @@ def _require_campaign_capability(
 
 def _campaign_out(c: Campaign) -> CampaignOut:
     return CampaignOut(
-        id=str(c.id), name=c.name, description=c.description, status=c.status,
+        id=str(c.id), external_code=c.external_code, name=c.name,
+        description=c.description, status=c.status,
         default_region=c.default_region, timezone=c.timezone, purpose=c.purpose,
         data_source=c.data_source, data_obtained_at=c.data_obtained_at,
         lawful_basis_or_consent_reference=c.lawful_basis_or_consent_reference,
@@ -130,14 +132,17 @@ def create_campaign(
         organization = db.get(Organization, owning_scope_id)
         if organization is None or organization.status != "active":
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid owning organization")
-    campaign = campaign_service.create_campaign(
-        db, created_by=user.id, name=payload.name, description=payload.description,
-        owning_scope_type=payload.owning_scope_type, owning_scope_id=owning_scope_id,
-        default_region=payload.default_region, timezone=payload.timezone,
-        purpose=payload.purpose, data_source=payload.data_source,
-        data_obtained_at=payload.data_obtained_at,
-        lawful_basis_or_consent_reference=payload.lawful_basis_or_consent_reference,
-    )
+    try:
+        campaign = campaign_service.create_campaign(
+            db, created_by=user.id, external_code=payload.external_code, name=payload.name,
+            description=payload.description, owning_scope_type=payload.owning_scope_type,
+            owning_scope_id=owning_scope_id, default_region=payload.default_region,
+            timezone=payload.timezone, purpose=payload.purpose, data_source=payload.data_source,
+            data_obtained_at=payload.data_obtained_at,
+            lawful_basis_or_consent_reference=payload.lawful_basis_or_consent_reference,
+        )
+    except DuplicateCampaignCode as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()
     return _campaign_out(campaign)
 

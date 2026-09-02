@@ -10,6 +10,7 @@ from pydantic import BaseModel, model_validator
 
 
 class CampaignCreateRequest(BaseModel):
+    external_code: str
     name: str
     description: str | None = None
     owning_scope_type: Literal["organization", "team"] = "organization"
@@ -41,6 +42,7 @@ class CampaignUpdateRequest(BaseModel):
 
 class CampaignOut(BaseModel):
     id: str
+    external_code: str
     name: str
     description: str | None
     status: str

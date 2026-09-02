@@ -32,7 +32,7 @@ from app.authz.capabilities import (
     VIEW_CAMPAIGN_REPORTS,
 )
 from app.campaigns import service as campaign_service
-from app.campaigns.service import CampaignAssignmentError
+from app.campaigns.service import CampaignAssignmentError, DuplicateCampaignCode
 from app.db import get_session
 from app.models.campaign import Campaign
 from app.models.identity import Team, User
@@ -152,6 +152,7 @@ def dashboard(
 def create_campaign_action(
     db: Session = Depends(get_session),
     user: User = Depends(require_page_user),
+    external_code: str = Form(...),
     name: str = Form(...),
     purpose: str = Form(...),
     data_source: str = Form(...),
@@ -166,14 +167,18 @@ def create_campaign_action(
         parsed_date = date.fromisoformat(data_obtained_at)
     except ValueError:
         return _redirect(error="Data-obtained date must be a valid date.")
-    campaign_service.create_campaign(
-        db, created_by=user.id, name=name, description=None,
-        owning_scope_type="organization", owning_scope_id=None,
-        default_region=_DEFAULT_PROVENANCE_HINT["default_region"],
-        timezone=_DEFAULT_PROVENANCE_HINT["timezone"],
-        purpose=purpose, data_source=data_source, data_obtained_at=parsed_date,
-        lawful_basis_or_consent_reference=lawful_basis_or_consent_reference,
-    )
+    try:
+        campaign_service.create_campaign(
+            db, created_by=user.id, external_code=external_code.strip(), name=name,
+            description=None, owning_scope_type="organization", owning_scope_id=None,
+            default_region=_DEFAULT_PROVENANCE_HINT["default_region"],
+            timezone=_DEFAULT_PROVENANCE_HINT["timezone"],
+            purpose=purpose, data_source=data_source, data_obtained_at=parsed_date,
+            lawful_basis_or_consent_reference=lawful_basis_or_consent_reference,
+        )
+    except DuplicateCampaignCode as exc:
+        db.rollback()
+        return _redirect(error=str(exc))
     db.commit()
     return _redirect(success=f'Campaign "{name}" created.')
 

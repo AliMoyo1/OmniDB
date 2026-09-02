@@ -78,6 +78,7 @@
   {% if can_create_campaign %}
   <form method="post" action="/dashboard/campaigns" class="inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Code<input type="text" name="external_code" maxlength="50" required></label>
     <label>Name<input type="text" name="name" required></label>
     <label>Purpose<input type="text" name="purpose" required></label>
     <label>Data source<input type="text" name="data_source" required></label>

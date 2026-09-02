@@ -2,7 +2,7 @@
 {% block title %}{{ campaign.name }} | CipherContact{% endblock %}
 {% block content %}
 <div class="campaign-detail-head">
-  <div><a class="back-link" href="/campaigns">← All campaigns</a><p class="eyebrow">Campaign control room</p><h1>{{ campaign.name }}</h1><p>{{ campaign.description or campaign.purpose }}</p></div>
+  <div><a class="back-link" href="/campaigns">← All campaigns</a><p class="eyebrow">Campaign control room · {{ campaign.external_code }}</p><h1>{{ campaign.name }}</h1><p>{{ campaign.description or campaign.purpose }}</p></div>
   <div class="lifecycle-stack"><span class="status-chip status-{{ campaign.status }}">{{ campaign.status }}</span>
     {% if can_launch_campaign and campaign.status == "draft" %}<form method="post" action="/campaigns/{{ campaign.id }}/lifecycle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="launch"><button type="submit">Launch campaign</button></form>{% endif %}
     {% if can_pause_campaign and campaign.status == "active" %}<form method="post" action="/campaigns/{{ campaign.id }}/lifecycle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="pause"><button type="submit" class="secondary">Pause</button></form>{% endif %}

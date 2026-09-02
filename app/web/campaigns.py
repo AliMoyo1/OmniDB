@@ -35,6 +35,7 @@ from app.campaigns.service import (
     CampaignAssignmentError,
     CampaignStateError,
     DispositionPolicyError,
+    DuplicateCampaignCode,
 )
 from app.db import get_session
 from app.flags.service import FeatureDisabledError
@@ -157,6 +158,7 @@ def campaign_list(
 def create_campaign(
     db: Session = Depends(get_session),
     user: User = Depends(require_page_user),
+    external_code: str = Form(...),
     name: str = Form(...),
     purpose: str = Form(...),
     data_source: str = Form(...),
@@ -172,20 +174,25 @@ def create_campaign(
         obtained_at = date.fromisoformat(data_obtained_at)
     except ValueError:
         return _index_redirect(error="Data-obtained date must be a valid date.")
-    campaign = campaign_service.create_campaign(
-        db,
-        created_by=user.id,
-        name=name.strip(),
-        description=description.strip() or None,
-        owning_scope_type="organization",
-        owning_scope_id=None,
-        default_region=_DEFAULT_PROVENANCE["default_region"],
-        timezone=_DEFAULT_PROVENANCE["timezone"],
-        purpose=purpose.strip(),
-        data_source=data_source.strip(),
-        data_obtained_at=obtained_at,
-        lawful_basis_or_consent_reference=lawful_basis_or_consent_reference.strip(),
-    )
+    try:
+        campaign = campaign_service.create_campaign(
+            db,
+            created_by=user.id,
+            external_code=external_code.strip(),
+            name=name.strip(),
+            description=description.strip() or None,
+            owning_scope_type="organization",
+            owning_scope_id=None,
+            default_region=_DEFAULT_PROVENANCE["default_region"],
+            timezone=_DEFAULT_PROVENANCE["timezone"],
+            purpose=purpose.strip(),
+            data_source=data_source.strip(),
+            data_obtained_at=obtained_at,
+            lawful_basis_or_consent_reference=lawful_basis_or_consent_reference.strip(),
+        )
+    except DuplicateCampaignCode as exc:
+        db.rollback()
+        return _index_redirect(error=str(exc))
     db.commit()
     return _campaign_redirect(
         campaign.id, success="Campaign created. Add and approve data before launch."

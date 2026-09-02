@@ -1312,3 +1312,42 @@ build, security, quality, integration (migrate up, migration reversibility,
 original seven before this phase moves to 4B-3
 (`campaign_user_assignments`, transfers, deferred pending the 4C sequencing
 question) - `target_assignments` stays blocked on 4C outright.
+
+## 2026-09-02: Add Campaign.external_code (prerequisite for 4B-3)
+
+Starting 4B-3 surfaced a real gap: `Campaign` had no stable, human-readable
+identifier, only a UUID and a non-unique `name`. Every other bulk-import
+template resolves its subject by a real code
+(`external_workforce_id`, `team_code`) - `campaign_user_assignments` would
+be the first to fall back to either a raw UUID (a copy-paste error into the
+wrong campaign is invisible to anyone reviewing the file) or a name-based
+lookup (names aren't unique or stable by design here). Asked the user how
+to resolve it rather than deciding unilaterally, since it's a permanent
+schema change to an existing, already-shipped entity, not an implementation
+detail internal to this phase. Chose to add `Campaign.external_code`,
+mirroring `Team.external_code` exactly.
+
+Migration 0013 adds the column nullable, backfills every existing campaign
+with a deterministic code derived from its name plus a slice of its own id
+(guaranteed unique even for two identically-named campaigns, not meant to
+be a *good* code - just a real one an operator can rename later), then
+makes it `NOT NULL` and unique. `create_campaign` now requires it and
+rejects a duplicate with a clear error (`DuplicateCampaignCode`) rather
+than a raw integrity-constraint failure.
+
+Updated every campaign-creation path to match, including one this session
+hadn't touched yet: `app/web/dashboard.py::create_campaign_action`, a
+second, older campaign-creation form embedded directly in the dashboard,
+parallel to the dedicated Campaign Control Room's own `/campaigns` route.
+mypy caught it directly - `create_campaign`'s now-required argument made
+every caller missing it a real type error, not something that needed
+grepping to find. Also updated nine test files (nine direct-construction or
+HTTP-helper call sites) to supply a unique code, mirroring how each already
+generates a unique campaign `name`.
+
+Verified everything not requiring a live database: ruff and mypy clean
+across all 92 `app/` source files, the three changed templates parse
+through the real Jinja2 loader, migration 0013 confirmed chained as head,
+full non-integration suite passing locally (35/35). No live database this
+session - pushing for CI to confirm the backfill actually runs cleanly
+against real data before building the actual 4B-3 import type on top of it.

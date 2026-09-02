@@ -18,6 +18,7 @@
     <a class="campaign-tile status-{{ row.campaign.status }}" data-glass-tilt href="/campaigns/{{ row.campaign.id }}">
       <div class="campaign-tile-top"><span class="status-chip">{{ row.campaign.status }}</span><span class="campaign-arrow">↗</span></div>
       <h2>{{ row.campaign.name }}</h2>
+      <p class="panel-note">{{ row.campaign.external_code }}</p>
       <p>{{ row.campaign.purpose or "Purpose still required" }}</p>
       {% if row.stats %}
       <div class="campaign-tile-stats"><span><strong>{{ row.stats.total_contacts }}</strong> contacts</span><span><strong>{{ row.stats.assigned_agents }}</strong> agents</span></div>
@@ -34,6 +35,7 @@
   <div class="form-intro"><p class="eyebrow">Start in draft</p><h2>Create a campaign</h2><p>Required provenance is captured before any data can be committed or released to agents.</p></div>
   <form method="post" action="/campaigns" class="campaign-create-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Campaign code <span class="field-hint">stable, used in bulk-import files</span><input name="external_code" maxlength="50" required></label>
     <label>Campaign name<input name="name" maxlength="200" required></label>
     <label>Purpose<input name="purpose" maxlength="500" required></label>
     <label>Data source<input name="data_source" maxlength="300" required></label>

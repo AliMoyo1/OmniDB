@@ -27,6 +27,7 @@ _DEFAULT_PROVENANCE = {
 
 def _create_campaign(client: TestClient, headers: dict, **overrides) -> str:
     payload = {
+        "external_code": f"c-{uuid.uuid4().hex[:8]}",
         "name": f"Reporting test {uuid.uuid4().hex[:6]}",
         "owning_scope_type": "organization",
         "default_region": "ZW",

@@ -40,6 +40,10 @@ class CampaignAssignmentError(Exception):
     pass
 
 
+class DuplicateCampaignCode(Exception):
+    pass
+
+
 def _check_staffing_capacity(
     db: Session, campaign_id: uuid.UUID, team_id: uuid.UUID | None
 ) -> None:
@@ -271,6 +275,7 @@ def create_campaign(
     db: Session,
     *,
     created_by: uuid.UUID,
+    external_code: str,
     name: str,
     description: str | None,
     owning_scope_type: str,
@@ -282,9 +287,12 @@ def create_campaign(
     data_obtained_at,
     lawful_basis_or_consent_reference: str | None,
 ) -> Campaign:
+    if db.scalar(select(Campaign.id).where(Campaign.external_code == external_code)) is not None:
+        raise DuplicateCampaignCode(f"a campaign with code '{external_code}' already exists")
     campaign = Campaign(
         owning_scope_type=owning_scope_type,
         owning_scope_id=owning_scope_id,
+        external_code=external_code,
         name=name,
         description=description,
         default_region=default_region,

@@ -72,6 +72,7 @@ def _draft_campaign(actor_id: uuid.UUID) -> uuid.UUID:
     with SessionLocal() as db:
         campaign = Campaign(
             owning_scope_type="organization",
+            external_code=f"c-{uuid.uuid4().hex[:8]}",
             name=f"Flags test {uuid.uuid4().hex[:6]}",
             default_region="ZW",
             timezone="Africa/Harare",
@@ -108,6 +109,7 @@ def _launched_campaign_with_work_item(actor_id: uuid.UUID) -> tuple[uuid.UUID, u
     with SessionLocal() as db:
         campaign = Campaign(
             owning_scope_type="organization",
+            external_code=f"c-{uuid.uuid4().hex[:8]}",
             name=f"Flags leasing test {uuid.uuid4().hex[:6]}",
             default_region="ZW",
             timezone="Africa/Harare",
