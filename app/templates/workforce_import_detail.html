@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Import {{ job.source_filename_display }} | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">{{ job.import_type.replace('_', ' ') }} import</p>
+      <h1>{{ job.source_filename_display }}</h1>
+      <p>Uploaded {{ job.created_at.strftime("%Y-%m-%d %H:%M") }}. State: <span class="badge">{{ job.state }}</span>{% if job.reversed_at %} <span class="badge muted">reversed {{ job.reversed_at.strftime("%Y-%m-%d %H:%M") }}</span>{% endif %}</p>
+    </div>
+    <a class="back-link" href="/workforce/imports">Back to imports</a>
+  </div>
+</div>
+
+{% if job.state in ("quarantined", "parsing") %}
+<section class="ops-panel"><p class="empty">Still validating this file. Refresh in a moment.</p></section>
+{% elif job.state == "failed" %}
+<section class="ops-panel"><p class="flash error">{{ job.error_summary }}</p></section>
+{% elif job.state == "expired" %}
+<section class="ops-panel"><p class="empty">This import expired before it was committed. Its staged file has been removed.</p></section>
+{% else %}
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Preview</p><h2>Row counts</h2></div></div>
+  <div class="mapping-grid">
+    <span>Total: {{ job.total_rows }}</span>
+    <span>Valid: {{ job.valid_rows }}</span>
+    <span>Warnings: {{ job.warning_rows }}</span>
+    <span>Invalid: {{ job.invalid_rows }}</span>
+    <span>High-risk: {{ job.high_risk_rows }}</span>
+  </div>
+  {% if invalid_examples %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Row</th><th>Problem</th><th>Type</th></tr></thead>
+      <tbody>
+        {% for row in invalid_examples %}
+        <tr><td>{{ row.row_number }}</td><td>{{ row.validation_detail }}</td><td>{{ row.conflict_type or "-" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if job.invalid_rows > invalid_examples|length %}<p class="panel-note">Showing the first {{ invalid_examples|length }} of {{ job.invalid_rows }} invalid rows. Fix and re-upload.</p>{% endif %}
+  {% endif %}
+</section>
+
+{% if job.state == "parsed" %}
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Approval</p><h2>Standard decision</h2></div>
+    <span class="panel-note">
+      {% if decisions.standard %}{{ decisions.standard.decision }} by {{ deciders.get(decisions.standard.decided_by).display_name if deciders.get(decisions.standard.decided_by) else "unknown" }}{% else %}Not yet decided{% endif %}
+    </span>
+  </div>
+  <form method="post" action="/workforce/imports/{{ job.id }}/decisions" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="decision_tier" value="standard">
+    <label>Note (optional)<input name="note" maxlength="500"></label>
+    <div class="wide create-submit">
+      <button type="submit" name="decision" value="approve">Approve routine rows</button>
+      <button type="submit" name="decision" value="reject" class="secondary">Reject</button>
+    </div>
+  </form>
+</section>
+
+{% if job.high_risk_rows > 0 %}
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Second approver required</p><h2>High-risk decision ({{ job.high_risk_rows }} row{{ '' if job.high_risk_rows == 1 else 's' }})</h2></div>
+    <span class="panel-note">
+      {% if decisions.high_risk %}{{ decisions.high_risk.decision }} by {{ deciders.get(decisions.high_risk.decided_by).display_name if deciders.get(decisions.high_risk.decided_by) else "unknown" }}{% else %}Not yet decided{% endif %}
+    </span>
+  </div>
+  <p>Deactivations need approval from someone with authority over every affected user, who is not the uploader.</p>
+  <form method="post" action="/workforce/imports/{{ job.id }}/decisions" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="decision_tier" value="high_risk">
+    <label>Note (optional)<input name="note" maxlength="500"></label>
+    <div class="wide create-submit">
+      <button type="submit" name="decision" value="approve">Approve high-risk rows</button>
+      <button type="submit" name="decision" value="reject" class="secondary">Reject</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+{% set ready_to_commit = decisions.standard and decisions.standard.decision == "approve" and (job.high_risk_rows == 0 or (decisions.high_risk and decisions.high_risk.decision == "approve")) %}
+{% if ready_to_commit %}
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Final step</p><h2>Commit</h2></div></div>
+  <p>This writes every valid row in one transaction and cannot be partially applied.</p>
+  <form method="post" action="/workforce/imports/{{ job.id }}/commit" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="decision_version" value="{{ job.decision_version }}">
+    <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+    <div class="wide create-submit"><button type="submit">Commit import</button></div>
+  </form>
+</section>
+{% endif %}
+{% endif %}
+
+{% if job.state == "committed" %}
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Committed</p><h2>{{ job.committed_at.strftime("%Y-%m-%d %H:%M") }}</h2></div></div>
+  {% if job.committed_result and job.committed_result.outcomes %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Row</th><th>Outcome</th></tr></thead>
+      <tbody>{% for o in job.committed_result.outcomes %}<tr><td>{{ o.row_number }}</td><td>{{ o.outcome }}</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if not job.reversed_at %}
+  <form method="post" action="/workforce/imports/{{ job.id }}/reverse" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="wide create-submit">
+      <p>Reversal restores each row's prior value, but only where nothing else has changed it since.</p>
+      <button type="submit" class="secondary">Reverse this import</button>
+    </div>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+{% endif %}
+{% endblock %}

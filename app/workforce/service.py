@@ -160,6 +160,32 @@ def create_user(
     return user, token
 
 
+_UPDATABLE_USER_FIELDS = {"display_name", "start_date", "end_date"}
+
+
+def update_user(
+    db: Session, target: User, *, changes: dict, actor_id: uuid.UUID, reason_code: str | None = None
+) -> User:
+    """Apply a bounded set of non-identity field changes (bulk-import commit path).
+
+    Deliberately excludes workforce_id, email, and workforce_status: the first two are
+    the immutable identity (ADR-005C), and workforce_status is only ever changed
+    together with `active` and session/lease revocation by disable_user/reactivate_user,
+    never as a bare field write.
+    """
+    unknown = set(changes) - _UPDATABLE_USER_FIELDS
+    if unknown:
+        raise ValueError(f"update_user cannot change: {', '.join(sorted(unknown))}")
+    for field, value in changes.items():
+        setattr(target, field, value)
+    record_audit(
+        db, action="workforce.user.update", result="success", actor_user_id=actor_id,
+        target_type="user", target_id=target.id, reason_code=reason_code,
+        event_metadata={"fields": sorted(changes)},
+    )
+    return target
+
+
 def disable_user(db: Session, target: User, *, actor_id: uuid.UUID, reason_code: str) -> User:
     """Plan 6.4: disabling a user immediately revokes active sessions and leases."""
     authz.assert_not_self(actor_id, target.id)

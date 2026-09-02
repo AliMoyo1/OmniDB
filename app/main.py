@@ -14,6 +14,7 @@ from app.api.campaigns import campaigns_router, imports_router
 from app.api.flags import router as flags_router
 from app.api.work import agent_router, work_router
 from app.api.workforce import router as workforce_router
+from app.api.workforce_imports import router as workforce_imports_router
 from app.auth.router import router as auth_router
 from app.config import get_settings
 from app.db import engine
@@ -28,6 +29,7 @@ from app.web.dependencies import InvalidFormCsrf, RedirectToLogin, RedirectToMfa
 from app.web.flags import router as web_flags_router
 from app.web.security import router as web_security_router
 from app.web.workforce import router as web_workforce_router
+from app.web.workforce_imports import router as web_workforce_imports_router
 
 configure_logging(get_settings().log_level)
 
@@ -64,6 +66,8 @@ async def _invalid_form_csrf(request: Request, exc: InvalidFormCsrf) -> Redirect
         target = "/agent/work"
     elif request.url.path.startswith("/security/mfa"):
         target = "/security/mfa"
+    elif request.url.path.startswith("/workforce/imports"):
+        target = "/workforce/imports"
     elif request.url.path.startswith("/campaigns"):
         target = "/campaigns"
     else:
@@ -81,11 +85,13 @@ app.include_router(imports_router)
 app.include_router(work_router)
 app.include_router(agent_router)
 app.include_router(workforce_router)
+app.include_router(workforce_imports_router)
 app.include_router(flags_router)
 app.include_router(web_auth_router)
 app.include_router(web_agent_work_router)
 app.include_router(web_campaigns_router)
 app.include_router(web_workforce_router)
+app.include_router(web_workforce_imports_router)
 app.include_router(web_audit_router)
 app.include_router(web_flags_router)
 app.include_router(web_security_router)

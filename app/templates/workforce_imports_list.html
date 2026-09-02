@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Workforce imports | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">Bulk workforce import</p>
+      <h1>Stage, review, and commit workforce changes.</h1>
+      <p>Every import is validated and previewed before anything changes. Deactivations and any row that elevates access need a second approver who isn't the uploader.</p>
+    </div>
+  </div>
+</div>
+
+<section class="ops-form-card">
+  <div class="form-intro"><p class="eyebrow">Start an import</p><h2>Upload a file</h2><p>Download the current template for the type you need, fill it in, then upload it here.</p></div>
+  <form method="post" action="/workforce/imports" enctype="multipart/form-data" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Import type
+      <select name="import_type" required>
+        {% for t in import_types %}<option value="{{ t }}">{{ t.replace('_', ' ') }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>File (.csv or .xlsx)<input type="file" name="file" accept=".csv,.xlsx" required></label>
+    <div class="wide create-submit">
+      <p>Templates: {% for t in import_types %}<a href="/workforce/imports/templates/{{ t }}.csv">{{ t.replace('_', ' ') }}</a>{{ ", " if not loop.last }}{% endfor %}</p>
+      <button type="submit">Upload</button>
+    </div>
+  </form>
+</section>
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">{{ import_jobs|length }} job{{ '' if import_jobs|length == 1 else 's' }}</p><h2>Recent imports</h2></div><span class="panel-note">Most recent 50.</span></div>
+  {% if import_jobs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When</th><th>Type</th><th>File</th><th>State</th><th>Rows</th><th>High-risk</th></tr></thead>
+      <tbody>
+        {% for job in import_jobs %}
+        <tr>
+          <td>{{ job.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td>{{ job.import_type.replace('_', ' ') }}</td>
+          <td><a href="/workforce/imports/{{ job.id }}">{{ job.source_filename_display }}</a></td>
+          <td><span class="badge {% if job.state in ('failed',) %}muted{% endif %}">{{ job.state }}{% if job.reversed_at %} (reversed){% endif %}</span></td>
+          <td>{{ job.valid_rows }}/{{ job.total_rows }}</td>
+          <td>{{ job.high_risk_rows if job.high_risk_rows else "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="empty">No workforce imports yet.</p>{% endif %}
+</section>
+{% endblock %}

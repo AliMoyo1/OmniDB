@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Import committed | CipherContact{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>Import committed</h2>
+  <p>{{ job.source_filename_display }} created {{ commit_result.activation_tokens|length }} new user{{ '' if commit_result.activation_tokens|length == 1 else 's' }} with no password yet.</p>
+  <p>Hand each one-time activation token to its user through an approved offline channel (D-23). They will not be shown again:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>External workforce ID</th><th>Activation token</th></tr></thead>
+      <tbody>
+        {% for workforce_id, token in commit_result.activation_tokens.items() %}
+        <tr><td><code>{{ workforce_id }}</code></td><td><code>{{ token }}</code></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p><a href="/workforce/imports/{{ job.id }}">Back to this import</a></p>
+</section>
+{% endblock %}

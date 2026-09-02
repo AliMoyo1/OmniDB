@@ -18,6 +18,11 @@ from app.models.identity import Organization, Team, TeamMembership, User
 from app.models.imports import ImportDecision, ImportJob, ImportRow
 from app.models.session import Session
 from app.models.work import Batch, CallAttempt, WorkItem
+from app.models.workforce_imports import (
+    WorkforceImportDecision,
+    WorkforceImportJob,
+    WorkforceImportRow,
+)
 
 __all__ = [
     "Base",
@@ -45,4 +50,7 @@ __all__ = [
     "ImportRow",
     "ImportDecision",
     "FeatureFlag",
+    "WorkforceImportJob",
+    "WorkforceImportRow",
+    "WorkforceImportDecision",
 ]

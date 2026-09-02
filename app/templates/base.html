@@ -36,6 +36,10 @@
       <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
       <span class="dock-item-label">Workforce</span>
     </a>
+    <a class="dock-item {% if active_section == 'workforce_imports' %}active{% endif %}" href="/workforce/imports" title="Bulk import">
+      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+      <span class="dock-item-label">Bulk import</span>
+    </a>
     {% endif %}
     {% if can_view_teams_nav %}
     <a class="dock-item {% if active_section == 'teams' %}active{% endif %}" href="/workforce#teams" title="Teams">
@@ -85,6 +89,10 @@
       <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/></svg>
       Workforce
       {% if workforce_users is defined %}<span class="count">{{ workforce_users|length }}</span>{% endif %}
+    </a>
+    <a href="/workforce/imports">
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+      Bulk import
     </a>
     {% endif %}
     {% if can_view_teams_nav %}

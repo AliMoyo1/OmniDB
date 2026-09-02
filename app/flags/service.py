@@ -32,6 +32,7 @@ KNOWN_FLAGS = (
     "retention_execution_enabled",
     "analytics_enabled",
     "ai_enabled",
+    "workforce_import_enabled",
 )
 
 

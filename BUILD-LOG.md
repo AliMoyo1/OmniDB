@@ -1112,3 +1112,96 @@ overwrite (not append) `X-Forwarded-For`/`X-Real-IP`, closing finding #3 from
 the 5B security review below - see that entry and PHASE-5-PLAN.md, updated
 to reflect it. Finding #2 from that same review (encryption key-rotation not
 wired up) is untouched by either PR and remains open.
+
+## 2026-09-02: Phase 4B-1 - staged bulk-workforce import (users + deactivations)
+
+The user handed over the remaining roadmap in one message: 4B (bulk
+workforce import), 4C (targets and exemptions), the remaining operational
+workflows, then the pilot. Full detail in `PHASE-4B-PLAN.md`. Started with
+4B since it's a prerequisite for a real pilot either way (bulk-onboarding
+10-20 pilot users by hand doesn't reflect real operating conditions), and
+scoped the first increment to two of the master plan's seven import types -
+`users` (create/update/reactivate) and `explicit_deactivations` - picked
+specifically because they're a matched pair: routine risk and high risk, so
+building both together proves out the phase's two defining mechanisms
+(staged approval and the two-person high-risk rule) rather than just the
+easy half.
+
+Mirrors the existing, already-proven campaign-contact import pipeline
+(`app/imports/*`) at the architecture level, not the code level: bounded
+CSV/XLSX parsing, upload quarantine, and file validation
+(`app/imports/{parser,storage,validators}.py`) are genuinely generic and
+reused unmodified. Everything campaign-shaped (phone fingerprints,
+suppression, `Contact`/`WorkItem`) is not, so classification, orchestration,
+models, and the HTTP surface are a new sibling package
+(`app/workforce_imports/`) rather than a shared one forced to branch on
+import type.
+
+Two things the campaign importer doesn't have, because nothing in this
+build needed them until now:
+
+**Two-person high-risk approval.** A job with any high-risk row (every
+`explicit_deactivations` row, by definition) needs a *second* decision, from
+someone who is not the uploader and who independently holds real authority
+over every affected user (`workforce_service.can_manage_user`, the same
+check the one-at-a-time disable screen already uses) - checked live at
+decision time, re-checked live again at commit time, and re-checked a third
+time at reversal, since authority that existed when a decision was recorded
+is not assumed to still hold whenever commit or reversal actually run.
+
+**Compensating reversal.** New `WorkforceImportRow.pre_commit_snapshot`
+captures the fields a row overwrote, immediately before it overwrites them.
+Reversing an `update` row restores that snapshot, but only if the field's
+current value still equals what the row itself produced - if anything else
+has touched it since, the row is left alone and reported as conflicting
+rather than guessed at. `create`/`reactivate`/`deactivate` rows don't need a
+snapshot at all: their reversal is just the natural inverse service call
+(deactivate undoes a create or a reactivate; reactivate undoes a
+deactivate), gated by the identical live-state check.
+
+New `workforce_import_enabled` rollout flag (migration 0012), seeded
+**false** - unlike every flag seeded in migration 0010, this gates a feature
+that doesn't exist anywhere yet, so there's nothing already-working to
+protect by defaulting it on. Checked once, in `create_import_job`, matching
+`campaign_import_enabled`'s own scope (blocks new uploads only; an
+already-parsed job can still be reviewed, committed, or reversed while the
+flag is off, same "pause new work, don't abandon what's in flight" shape).
+
+Activation tokens for newly-created users follow the same never-persisted,
+shown-once pattern as every other secret in this build: returned directly
+in the commit response and rendered once
+(`workforce_import_committed.html`, same reasoning as `user_created.html`),
+never written into `committed_result` (which persists indefinitely to back
+idempotent replay), and empty on a replayed commit rather than reissued.
+
+Caught three real bugs during self-review, before ever pushing: `high_risk_rows`
+was initially counting warning-tier rows (a no-op reactivate-already-active
+or deactivate-already-inactive) too, which would have forced an unneeded
+approval step on a job with nothing actually high-risk left to commit; two
+`scalar_one_or_none()` lookups against users (which are never hard-deleted,
+only deactivated) were defensively None-checked in a way that didn't match
+this codebase's own established "trust the internal invariant" convention
+used elsewhere (e.g. the campaign importer's own `commit_job`) - fixed to
+`scalar_one()`; and the commit result's activation tokens were, for one
+draft, reachable from the idempotent-replay code path, which would have
+reissued a one-time secret on a second call with the same idempotency key.
+
+Verified everything not requiring a live database: ruff and mypy clean
+across all 92 `app/` source files (matching what CI's quality job actually
+checks - confirmed the handful of pre-existing mypy gaps surfaced by
+checking `tests/` too belong to older, unrelated test files and are out of
+that scope, not something to fix here), every new template through the real
+Jinja2 loader, all 12 new routes (6 JSON API, 6 web) present in the
+generated OpenAPI schema, unauthenticated requests to the new web and API
+surfaces correctly redirect/401 without touching the database, migrations
+0011/0012 confirmed correctly chained as head via `alembic history`, and
+the full non-integration suite passing locally (35/35, unaffected). 7 new
+integration tests (`tests/integration/test_workforce_imports_flow.py`)
+cover the full create/update/reactivate flow with a real activation token,
+bad-action and duplicate-in-file rejection, a malformed template header
+failing parse cleanly, the complete high-risk path (self-approval rejected,
+wrong-scope approver rejected, premature commit rejected, right-scope
+approver succeeds), idempotent replay without reissuing tokens, and
+reversal (rejected for the uploader, succeeds for a qualified non-uploader,
+cannot be repeated). No live database this session, so these could only be
+collected, not run - pushing for CI to give the real answer.
