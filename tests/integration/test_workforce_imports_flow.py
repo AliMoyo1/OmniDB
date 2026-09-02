@@ -98,6 +98,63 @@ def _is_active(external_id: str) -> bool:
     return row.active
 
 
+def _make_team(prefix: str = "wfiteam") -> tuple[uuid.UUID, str]:
+    from app.workforce import service as workforce_service
+
+    creator_id = make_user(f"{prefix}-creator-{uuid.uuid4().hex[:8]}@example.com")
+    code = f"{prefix}-{uuid.uuid4().hex[:8]}"
+    with SessionLocal() as db:
+        team = workforce_service.create_team(
+            db, name=f"Team {code}", external_code=code, parent_team_id=None,
+            default_timezone="Africa/Harare", created_by=creator_id,
+        )
+        db.commit()
+        return team.id, code
+
+
+def _has_active_role(user_id: uuid.UUID, role_code: str, scope_type: str,
+                      scope_id: uuid.UUID | None) -> bool:
+    from app.models.authz import RoleAssignment
+
+    with SessionLocal() as db:
+        return db.scalar(
+            select(RoleAssignment.id).where(
+                RoleAssignment.user_id == user_id, RoleAssignment.role_code == role_code,
+                RoleAssignment.scope_type == scope_type, RoleAssignment.scope_id == scope_id,
+                RoleAssignment.status == "active", RoleAssignment.effective_to.is_(None),
+            )
+        ) is not None
+
+
+def _has_active_membership(user_id: uuid.UUID, team_id: uuid.UUID) -> bool:
+    from app.models.identity import TeamMembership
+
+    with SessionLocal() as db:
+        return db.scalar(
+            select(TeamMembership.id).where(
+                TeamMembership.team_id == team_id, TeamMembership.user_id == user_id,
+                TeamMembership.membership_status == "active",
+                TeamMembership.effective_to.is_(None),
+            )
+        ) is not None
+
+
+def _current_supervisor(subordinate_id: uuid.UUID) -> uuid.UUID | None:
+    from app.models.authz import ReportingAssignment
+
+    with SessionLocal() as db:
+        return db.scalar(
+            select(ReportingAssignment.supervisor_user_id).where(
+                ReportingAssignment.subordinate_user_id == subordinate_id,
+                ReportingAssignment.context_type == "organization",
+                ReportingAssignment.context_id.is_(None),
+                ReportingAssignment.assignment_type == "primary",
+                ReportingAssignment.status == "active",
+                ReportingAssignment.effective_to.is_(None),
+            )
+        )
+
+
 def test_users_create_update_reactivate_flow_end_to_end():
     client, _ = _manager()
     headers = csrf_headers(client)
@@ -339,3 +396,175 @@ def test_workforce_import_disabled_flag_blocks_new_uploads():
     )
     resp = _upload(client, headers, "users", header_only)
     assert resp.status_code == 409, resp.text
+
+
+def test_team_membership_add_end_and_reversal():
+    manager, _ = _manager()
+    headers = csrf_headers(manager)
+    team_id, team_code = _make_team()
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    make_user(f"{wid}@example.com")
+
+    add_csv = f"action,external_workforce_id,team_code,reason_code\r\nadd,{wid},{team_code},\r\n"
+    job1 = _upload(manager, headers, "team_memberships", add_csv).json()["id"]
+    status1 = manager.get(f"/api/v1/workforce/imports/{job1}").json()
+    assert status1["high_risk_rows"] == 0, status1
+    v1 = _decide(manager, headers, job1, tier="standard").json()["decision_version"]
+    commit1 = _commit(manager, headers, job1, v1)
+    assert commit1.status_code == 200, commit1.text
+    assert commit1.json()["outcomes"] == [{"row_number": 1, "outcome": "added"}]
+
+    target = _user_row(wid)
+    assert target is not None
+    assert _has_active_membership(target.id, team_id) is True
+
+    reverse1 = manager.post(f"/api/v1/workforce/imports/{job1}/reverse", headers=headers)
+    assert reverse1.status_code == 200, reverse1.text
+    assert reverse1.json()["reversed"] == [{"row_number": 1, "outcome": "ended"}]
+    assert _has_active_membership(target.id, team_id) is False
+
+    # Re-establish membership so an "end" row (and its own reversal) can be tested.
+    readd_csv = f"action,external_workforce_id,team_code,reason_code\r\nadd,{wid},{team_code},\r\n"
+    job2 = _upload(manager, headers, "team_memberships", readd_csv).json()["id"]
+    v2 = _decide(manager, headers, job2, tier="standard").json()["decision_version"]
+    assert _commit(manager, headers, job2, v2).status_code == 200
+    assert _has_active_membership(target.id, team_id) is True
+
+    end_csv = (
+        f"action,external_workforce_id,team_code,reason_code\r\nend,{wid},{team_code},offboard\r\n"
+    )
+    job3 = _upload(manager, headers, "team_memberships", end_csv).json()["id"]
+    v3 = _decide(manager, headers, job3, tier="standard").json()["decision_version"]
+    commit3 = _commit(manager, headers, job3, v3)
+    assert commit3.status_code == 200, commit3.text
+    assert commit3.json()["outcomes"] == [{"row_number": 1, "outcome": "ended"}]
+    assert _has_active_membership(target.id, team_id) is False
+
+    # Reversing an "end" row re-adds the membership.
+    reverse3 = manager.post(f"/api/v1/workforce/imports/{job3}/reverse", headers=headers)
+    assert reverse3.status_code == 200, reverse3.text
+    assert reverse3.json()["reversed"] == [{"row_number": 1, "outcome": "added"}]
+    assert _has_active_membership(target.id, team_id) is True
+
+
+def test_role_assignment_assign_is_high_risk_and_needs_qualified_approver():
+    uploader, _ = _manager(prefix="wfiroleuploader")
+    headers = csrf_headers(uploader)
+    team_id, _ = _make_team()
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    target_id = make_user(f"{wid}@example.com")
+
+    csv_text = (
+        "action,external_workforce_id,role_code,scope_type,scope_code,reason_code\r\n"
+        f"assign,{wid},agent,organization,,onboarding\r\n"
+    )
+    job = _upload(uploader, headers, "role_assignments", csv_text).json()["id"]
+    status = uploader.get(f"/api/v1/workforce/imports/{job}").json()
+    assert status["high_risk_rows"] == 1, status
+
+    v = _decide(uploader, headers, job, tier="standard").json()["decision_version"]
+
+    self_approve = _decide(uploader, headers, job, tier="high_risk")
+    assert self_approve.status_code == 403, self_approve.text
+
+    # A team leader scoped to one specific team lacks authority over an
+    # organization-scoped grant, regardless of which role it grants.
+    unqualified, _ = _team_leader(team_id, prefix="wfiroleunqual")
+    unqualified_headers = csrf_headers(unqualified)
+    bad_approve = _decide(unqualified, unqualified_headers, job, tier="high_risk")
+    assert bad_approve.status_code == 403, bad_approve.text
+
+    approver, _ = _manager(prefix="wfiroleapprover")
+    approver_headers = csrf_headers(approver)
+    good_approve = _decide(approver, approver_headers, job, tier="high_risk")
+    assert good_approve.status_code == 200, good_approve.text
+    v = good_approve.json()["decision_version"]
+
+    commit = _commit(uploader, headers, job, v)
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["outcomes"] == [{"row_number": 1, "outcome": "assigned"}]
+    assert _has_active_role(target_id, "agent", "organization", None) is True
+
+    reverse = uploader.post(f"/api/v1/workforce/imports/{job}/reverse", headers=headers)
+    # Reversal needs the same qualified, non-uploader approver bar as commit.
+    assert reverse.status_code == 403, reverse.text
+    reverse_ok = approver.post(f"/api/v1/workforce/imports/{job}/reverse", headers=approver_headers)
+    assert reverse_ok.status_code == 200, reverse_ok.text
+    assert reverse_ok.json()["reversed"] == [{"row_number": 1, "outcome": "ended"}]
+    assert _has_active_role(target_id, "agent", "organization", None) is False
+
+
+def test_role_assignment_end_is_routine_not_high_risk():
+    from app.workforce import service as workforce_service
+
+    manager, manager_id = _manager()
+    headers = csrf_headers(manager)
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    target_id = make_user(f"{wid}@example.com")
+    with SessionLocal() as db:
+        workforce_service.assign_role(
+            db, target_user_id=target_id, role_code="agent", scope_type="organization",
+            scope_id=None, appointed_by=uuid.UUID(manager_id), reason_code="test_setup",
+        )
+        db.commit()
+    assert _has_active_role(target_id, "agent", "organization", None) is True
+
+    csv_text = (
+        "action,external_workforce_id,role_code,scope_type,scope_code,reason_code\r\n"
+        f"end,{wid},agent,organization,,offboarding\r\n"
+    )
+    job = _upload(manager, headers, "role_assignments", csv_text).json()["id"]
+    status = manager.get(f"/api/v1/workforce/imports/{job}").json()
+    assert status["high_risk_rows"] == 0, status
+
+    v = _decide(manager, headers, job, tier="standard").json()["decision_version"]
+    commit = _commit(manager, headers, job, v)
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["outcomes"] == [{"row_number": 1, "outcome": "ended"}]
+    assert _has_active_role(target_id, "agent", "organization", None) is False
+
+
+def test_reporting_assignment_set_and_reversal():
+    manager, _ = _manager()
+    headers = csrf_headers(manager)
+    sub_wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    sup1_wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    sup2_wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    sub_id = make_user(f"{sub_wid}@example.com")
+    sup1_id = make_user(f"{sup1_wid}@example.com")
+    make_user(f"{sup2_wid}@example.com")
+
+    csv1 = f"external_workforce_id,supervisor_workforce_id,reason_code\r\n{sub_wid},{sup1_wid},\r\n"
+    job1 = _upload(manager, headers, "reporting_assignments", csv1).json()["id"]
+    status1 = manager.get(f"/api/v1/workforce/imports/{job1}").json()
+    assert status1["high_risk_rows"] == 0, status1
+    v1 = _decide(manager, headers, job1, tier="standard").json()["decision_version"]
+    commit1 = _commit(manager, headers, job1, v1)
+    assert commit1.status_code == 200, commit1.text
+    assert commit1.json()["outcomes"] == [{"row_number": 1, "outcome": "set"}]
+    assert _current_supervisor(sub_id) == sup1_id
+
+    csv2 = f"external_workforce_id,supervisor_workforce_id,reason_code\r\n{sub_wid},{sup2_wid},\r\n"
+    job2 = _upload(manager, headers, "reporting_assignments", csv2).json()["id"]
+    v2 = _decide(manager, headers, job2, tier="standard").json()["decision_version"]
+    commit2 = _commit(manager, headers, job2, v2)
+    assert commit2.status_code == 200, commit2.text
+    assert _current_supervisor(sub_id) != sup1_id
+
+    # Reversing the second import restores the prior supervisor (sup1), not a bare removal.
+    reverse2 = manager.post(f"/api/v1/workforce/imports/{job2}/reverse", headers=headers)
+    assert reverse2.status_code == 200, reverse2.text
+    assert reverse2.json()["reversed"] == [{"row_number": 1, "outcome": "restored"}]
+    assert _current_supervisor(sub_id) == sup1_id
+
+    # Reversing job1 now is correctly refused: job1's own reporting-assignment row
+    # was superseded by job2 and is no longer active - reversing job2 created a
+    # brand new row for sup1 rather than resurrecting job1's original one, so
+    # job1's row itself really has "changed since commit," even though the net
+    # effect coincidentally matches. History is never rewritten.
+    reverse1 = manager.post(f"/api/v1/workforce/imports/{job1}/reverse", headers=headers)
+    assert reverse1.status_code == 200, reverse1.text
+    assert reverse1.json()["reversed"] == []
+    assert len(reverse1.json()["skipped"]) == 1
+    assert reverse1.json()["skipped"][0]["row_number"] == 1
+    assert _current_supervisor(sub_id) == sup1_id

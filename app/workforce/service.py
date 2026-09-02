@@ -427,3 +427,22 @@ def set_reporting_line(
         event_metadata={"supervisor_user_id": str(supervisor_user_id)},
     )
     return line
+
+
+def end_reporting_line(
+    db: Session,
+    line: ReportingAssignment,
+    *,
+    ended_by: uuid.UUID,
+    reason_code: str | None = None,
+) -> ReportingAssignment:
+    now = utcnow()
+    line.status = "ended"
+    line.effective_to = now
+    line.ended_at = now
+    record_audit(
+        db, action="workforce.reporting_line.end", result="success", actor_user_id=ended_by,
+        target_type="user", target_id=line.subordinate_user_id, reason_code=reason_code,
+        event_metadata={"supervisor_user_id": str(line.supervisor_user_id)},
+    )
+    return line

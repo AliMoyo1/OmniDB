@@ -20,26 +20,46 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
+from app.authz import service as authz
 from app.config import get_settings
 from app.flags import service as flags
 from app.imports import storage, validators
 from app.imports.parser import ParseLimitExceeded, parse_file
+from app.models.authz import ReportingAssignment, RoleAssignment
 from app.models.base import utcnow
-from app.models.identity import User
+from app.models.identity import Team, TeamMembership, User
 from app.models.workforce_imports import (
     WorkforceImportDecision,
     WorkforceImportJob,
     WorkforceImportRow,
 )
 from app.workforce import service as workforce_service
-from app.workforce.service import DuplicateIdentity
+from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY, DuplicateIdentity
 from app.workforce_imports import classify
 
 _PARSE_BATCH_SIZE = 500
-IMPORT_TYPES = ("users", "explicit_deactivations")
+IMPORT_TYPES = (
+    "users",
+    "explicit_deactivations",
+    "team_memberships",
+    "role_assignments",
+    "reporting_assignments",
+)
 REQUIRED_COLUMNS = {
     "users": {"action", "external_workforce_id", "login_identifier", "display_name"},
     "explicit_deactivations": {"external_workforce_id", "reason_code"},
+    "team_memberships": {"action", "external_workforce_id", "team_code"},
+    "role_assignments": {
+        "action", "external_workforce_id", "role_code", "scope_type", "reason_code",
+    },
+    "reporting_assignments": {"external_workforce_id", "supervisor_workforce_id"},
+}
+_CLASSIFIERS = {
+    "users": classify.classify_users_row,
+    "explicit_deactivations": classify.classify_deactivation_row,
+    "team_memberships": classify.classify_team_membership_row,
+    "role_assignments": classify.classify_role_assignment_row,
+    "reporting_assignments": classify.classify_reporting_assignment_row,
 }
 
 
@@ -141,11 +161,7 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
     total = valid = warning = invalid = high_risk = 0
     seen_identities: set[str] = set()
     batch: list[WorkforceImportRow] = []
-    classifier = (
-        classify.classify_users_row
-        if job.import_type == "users"
-        else classify.classify_deactivation_row
-    )
+    classifier = _CLASSIFIERS[job.import_type]
 
     try:
         rows_iter = parse_file(path, ext)
@@ -246,6 +262,30 @@ def _high_risk_rows(db: Session, job: WorkforceImportJob) -> list[WorkforceImpor
     )
 
 
+def _row_authority_ok(db: Session, approver_id: uuid.UUID, job: WorkforceImportJob,
+                       row: WorkforceImportRow) -> bool:
+    """The precise authority bar for one high-risk row's specific effect - not the
+    same check for every import type, since "may disable this user" and "may grant
+    this exact role at this exact scope" are different questions with different
+    existing answers elsewhere in this codebase."""
+    if job.import_type == "explicit_deactivations":
+        if row.normalized_identity is None:
+            return True
+        return workforce_service.can_manage_user(db, approver_id, row.normalized_identity)
+    if job.import_type == "role_assignments" and row.action == "assign":
+        values = row.parsed_values or {}
+        role_code = values.get("role_code")
+        scope_type = values.get("scope_type")
+        scope_id = uuid.UUID(values["scope_id"]) if values.get("scope_id") else None
+        capability = ROLE_APPOINTMENT_CAPABILITY.get(role_code) if role_code else None
+        if capability is None or scope_type is None:
+            return False
+        return authz.has_scope_capability(
+            db, approver_id, capability, scope_type=scope_type, scope_id=scope_id
+        )
+    return True
+
+
 def _assert_qualified_high_risk_approver(
     db: Session, job: WorkforceImportJob, approver_id: uuid.UUID
 ) -> None:
@@ -255,11 +295,9 @@ def _assert_qualified_high_risk_approver(
     if approver_id == job.uploader_id:
         raise SelfApproval("the uploader cannot also approve a high-risk import")
     for row in _high_risk_rows(db, job):
-        if row.normalized_identity is None:
-            continue
-        if not workforce_service.can_manage_user(db, approver_id, row.normalized_identity):
+        if not _row_authority_ok(db, approver_id, job, row):
             raise InsufficientApprovalAuthority(
-                f"approver lacks authority over the user in row {row.row_number}"
+                f"approver lacks authority over row {row.row_number}"
             )
 
 
@@ -413,10 +451,155 @@ def _commit_deactivation_row(
         row.conflict_type = "already_inactive"
         return _RowOutcome(row.row_number, "skipped_conflict")
     reason_code = (row.parsed_values or {}).get("reason_code") or "bulk_import"
-    workforce_service.disable_user(db, target, actor_id=actor_id, reason_code=reason_code)
+    try:
+        workforce_service.disable_user(db, target, actor_id=actor_id, reason_code=reason_code)
+    except authz.SelfApprovalError:
+        # The approver's own identity is the row's target - a file cannot let the
+        # approver act on themselves any more than the manual disable screen would.
+        row.conflict_type = "self_target_not_allowed"
+        return _RowOutcome(row.row_number, "skipped_conflict")
     row.committed_entity_type = "user"
     row.committed_entity_id = target.id
     return _RowOutcome(row.row_number, "deactivated")
+
+
+def _commit_team_membership_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> _RowOutcome | None:
+    if row.normalized_identity is None:
+        return None
+    values = row.parsed_values or {}
+    team = db.get(Team, uuid.UUID(values["team_id"]))
+    if team is None:
+        row.conflict_type = "unknown_team"
+        return _RowOutcome(row.row_number, "skipped_conflict")
+    current = db.execute(
+        select(TeamMembership)
+        .where(
+            TeamMembership.team_id == team.id, TeamMembership.user_id == row.normalized_identity,
+            TeamMembership.membership_status == "active", TeamMembership.effective_to.is_(None),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+
+    if row.action == "add":
+        if current is not None:
+            row.conflict_type = "already_member"
+            return _RowOutcome(row.row_number, "skipped_conflict")
+        membership = workforce_service.add_team_membership(
+            db, team, user_id=row.normalized_identity, added_by=actor_id
+        )
+        outcome = "added"
+    else:  # end
+        if current is None:
+            row.conflict_type = "not_a_member"
+            return _RowOutcome(row.row_number, "skipped_conflict")
+        membership = workforce_service.end_team_membership(
+            db, current, ended_by=actor_id, reason_code=values.get("reason_code")
+        )
+        outcome = "ended"
+    row.committed_entity_type = "team_membership"
+    row.committed_entity_id = membership.id
+    return _RowOutcome(row.row_number, outcome)
+
+
+def _commit_role_assignment_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> _RowOutcome | None:
+    if row.normalized_identity is None:
+        return None
+    values = row.parsed_values or {}
+    role_code = values["role_code"]
+    scope_type = values["scope_type"]
+    scope_id = uuid.UUID(values["scope_id"]) if values.get("scope_id") else None
+    current = db.execute(
+        select(RoleAssignment)
+        .where(
+            RoleAssignment.user_id == row.normalized_identity,
+            RoleAssignment.role_code == role_code, RoleAssignment.scope_type == scope_type,
+            RoleAssignment.scope_id == scope_id, RoleAssignment.status == "active",
+            RoleAssignment.effective_to.is_(None),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+
+    if row.action == "assign":
+        if current is not None:
+            row.conflict_type = "already_granted"
+            return _RowOutcome(row.row_number, "skipped_conflict")
+        try:
+            assignment = workforce_service.assign_role(
+                db, target_user_id=row.normalized_identity, role_code=role_code,
+                scope_type=scope_type, scope_id=scope_id, appointed_by=actor_id,
+                reason_code=values["reason_code"],
+            )
+        except authz.SelfApprovalError:
+            row.conflict_type = "self_target_not_allowed"
+            return _RowOutcome(row.row_number, "skipped_conflict")
+        outcome = "assigned"
+    else:  # end
+        if current is None:
+            row.conflict_type = "not_assigned"
+            return _RowOutcome(row.row_number, "skipped_conflict")
+        try:
+            assignment = workforce_service.end_role_assignment(
+                db, current, ended_by=actor_id, reason_code=values["reason_code"]
+            )
+        except authz.SelfApprovalError:
+            row.conflict_type = "self_target_not_allowed"
+            return _RowOutcome(row.row_number, "skipped_conflict")
+        outcome = "ended"
+    row.committed_entity_type = "role_assignment"
+    row.committed_entity_id = assignment.id
+    return _RowOutcome(row.row_number, outcome)
+
+
+def _commit_reporting_assignment_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> _RowOutcome | None:
+    if row.normalized_identity is None:
+        return None
+    values = row.parsed_values or {}
+    supervisor_id = uuid.UUID(values["supervisor_user_id"])
+    prior_supervisor_id = db.scalar(
+        select(ReportingAssignment.supervisor_user_id).where(
+            ReportingAssignment.subordinate_user_id == row.normalized_identity,
+            ReportingAssignment.context_type == "organization",
+            ReportingAssignment.context_id.is_(None),
+            ReportingAssignment.assignment_type == "primary",
+            ReportingAssignment.status == "active",
+            ReportingAssignment.effective_to.is_(None),
+        )
+    )
+    if prior_supervisor_id == supervisor_id:
+        # Re-validated at commit time, not trusted from preview: someone else may
+        # have already set this exact supervisor since parse. A no-op, not a
+        # blocking conflict.
+        row.conflict_type = "already_set"
+        return _RowOutcome(row.row_number, "skipped_conflict")
+    try:
+        line = workforce_service.set_reporting_line(
+            db, subordinate_user_id=row.normalized_identity, supervisor_user_id=supervisor_id,
+            assigned_by=actor_id, reason_code=values.get("reason_code"),
+        )
+    except workforce_service.SelfSupervision:
+        row.conflict_type = "self_target_not_allowed"
+        return _RowOutcome(row.row_number, "skipped_conflict")
+    row.pre_commit_snapshot = {
+        "prior_supervisor_id": str(prior_supervisor_id) if prior_supervisor_id else None
+    }
+    row.committed_entity_type = "reporting_assignment"
+    row.committed_entity_id = line.id
+    return _RowOutcome(row.row_number, "set")
+
+
+_COMMIT_ROW_FUNCTIONS = {
+    "users": _commit_users_row,
+    "explicit_deactivations": _commit_deactivation_row,
+    "team_memberships": _commit_team_membership_row,
+    "role_assignments": _commit_role_assignment_row,
+    "reporting_assignments": _commit_reporting_assignment_row,
+}
 
 
 def commit_job(
@@ -474,10 +657,7 @@ def commit_job(
             if row.risk_level == "high_risk" and high_risk_decision is not None
             else standard.decided_by
         )
-        if job.import_type == "users":
-            outcome = _commit_users_row(db, row, actor_id=row_actor)
-        else:
-            outcome = _commit_deactivation_row(db, row, actor_id=row_actor)
+        outcome = _COMMIT_ROW_FUNCTIONS[job.import_type](db, row, actor_id=row_actor)
         if outcome is not None:
             outcomes.append({"row_number": outcome.row_number, "outcome": outcome.outcome})
             if outcome.activation_token and row.external_workforce_id:
@@ -501,8 +681,131 @@ def commit_job(
     return {**result, "activation_tokens": activations}
 
 
-_REVERSE_ACTION = {"create": "deactivated", "update": "restored", "reactivate": "deactivated",
-                    "deactivate": "reactivated"}
+def _reverse_user_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> str | None:
+    # committed_entity_id references a user, never hard-deleted - guaranteed to exist.
+    target = db.execute(
+        select(User).where(User.id == row.committed_entity_id).with_for_update()
+    ).scalar_one()
+
+    if row.action in ("create", "reactivate"):
+        conflicts = not target.active
+    elif row.action == "deactivate":
+        conflicts = target.active
+    else:  # update
+        values = row.parsed_values or {}
+        conflicts = any(
+            (getattr(target, field).isoformat() if field in ("start_date", "end_date")
+             and getattr(target, field) else getattr(target, field)) != value
+            for field, value in values.items()
+        )
+    if conflicts:
+        return None
+
+    if row.action in ("create", "reactivate"):
+        workforce_service.disable_user(db, target, actor_id=actor_id, reason_code="import_reversal")
+        return "deactivated"
+    if row.action == "deactivate":
+        workforce_service.reactivate_user(
+            db, target, actor_id=actor_id, reason_code="import_reversal"
+        )
+        return "reactivated"
+    # update
+    snapshot = row.pre_commit_snapshot or {}
+    changes = {
+        field: (date.fromisoformat(value) if field in ("start_date", "end_date") and value
+                else value)
+        for field, value in snapshot.items()
+    }
+    workforce_service.update_user(
+        db, target, changes=changes, actor_id=actor_id, reason_code="import_reversal"
+    )
+    return "restored"
+
+
+def _reverse_team_membership_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> str | None:
+    membership = db.execute(
+        select(TeamMembership).where(TeamMembership.id == row.committed_entity_id)
+        .with_for_update()
+    ).scalar_one()
+    currently_active = membership.membership_status == "active" and membership.effective_to is None
+    if row.action == "add":
+        if not currently_active:
+            return None
+        workforce_service.end_team_membership(
+            db, membership, ended_by=actor_id, reason_code="import_reversal"
+        )
+        return "ended"
+    # end
+    if currently_active:
+        return None
+    # A real membership's team_id, never hard-deleted - guaranteed to exist.
+    team = db.execute(select(Team).where(Team.id == membership.team_id)).scalar_one()
+    workforce_service.add_team_membership(db, team, user_id=membership.user_id, added_by=actor_id)
+    return "added"
+
+
+def _reverse_role_assignment_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> str | None:
+    assignment = db.execute(
+        select(RoleAssignment).where(RoleAssignment.id == row.committed_entity_id)
+        .with_for_update()
+    ).scalar_one()
+    currently_active = assignment.status == "active" and assignment.effective_to is None
+    if row.action == "assign":
+        if not currently_active:
+            return None
+        workforce_service.end_role_assignment(
+            db, assignment, ended_by=actor_id, reason_code="import_reversal"
+        )
+        return "ended"
+    # end
+    if currently_active:
+        return None
+    workforce_service.assign_role(
+        db, target_user_id=assignment.user_id, role_code=assignment.role_code,
+        scope_type=assignment.scope_type, scope_id=assignment.scope_id,
+        appointed_by=actor_id, reason_code="import_reversal",
+    )
+    return "assigned"
+
+
+def _reverse_reporting_assignment_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> str | None:
+    line = db.execute(
+        select(ReportingAssignment).where(ReportingAssignment.id == row.committed_entity_id)
+        .with_for_update()
+    ).scalar_one()
+    if not (line.status == "active" and line.effective_to is None):
+        return None
+    snapshot = row.pre_commit_snapshot or {}
+    prior_supervisor_id = snapshot.get("prior_supervisor_id")
+    if prior_supervisor_id:
+        # Restoring the prior supervisor naturally supersedes (ends) this line -
+        # set_reporting_line always ends whatever active primary line came before.
+        workforce_service.set_reporting_line(
+            db, subordinate_user_id=line.subordinate_user_id,
+            supervisor_user_id=uuid.UUID(prior_supervisor_id),
+            assigned_by=actor_id, reason_code="import_reversal",
+        )
+    else:
+        workforce_service.end_reporting_line(
+            db, line, ended_by=actor_id, reason_code="import_reversal"
+        )
+    return "restored"
+
+
+_REVERSE_ROW_FUNCTIONS = {
+    "user": _reverse_user_row,
+    "team_membership": _reverse_team_membership_row,
+    "role_assignment": _reverse_role_assignment_row,
+    "reporting_assignment": _reverse_reporting_assignment_row,
+}
 
 
 def reverse_job(db: Session, job_id: uuid.UUID, *, actor_id: uuid.UUID) -> dict:
@@ -529,53 +832,16 @@ def reverse_job(db: Session, job_id: uuid.UUID, *, actor_id: uuid.UUID) -> dict:
     )
     now = utcnow()
     for row in rows:
-        # committed_entity_id references a user, never hard-deleted - guaranteed to exist.
-        target = db.execute(
-            select(User).where(User.id == row.committed_entity_id).with_for_update()
-        ).scalar_one()
-
-        if row.action == "create":
-            conflicts = not target.active
-        elif row.action == "reactivate":
-            conflicts = not target.active
-        elif row.action == "deactivate":
-            conflicts = target.active
-        else:  # update
-            values = row.parsed_values or {}
-            conflicts = any(
-                (getattr(target, field).isoformat() if field in ("start_date", "end_date")
-                 and getattr(target, field) else getattr(target, field)) != value
-                for field, value in values.items()
-            )
-
-        if conflicts:
+        entity_type = row.committed_entity_type
+        if entity_type is None:
+            continue
+        outcome = _REVERSE_ROW_FUNCTIONS[entity_type](db, row, actor_id=actor_id)
+        if outcome is None:
             row.conflict_type = "reversal_conflict"
             skipped_rows.append({"row_number": row.row_number, "reason": "changed_since_commit"})
             continue
-
-        if row.action in ("create", "reactivate"):
-            workforce_service.disable_user(
-                db, target, actor_id=actor_id, reason_code="import_reversal"
-            )
-        elif row.action == "deactivate":
-            workforce_service.reactivate_user(
-                db, target, actor_id=actor_id, reason_code="import_reversal"
-            )
-        else:  # update
-            snapshot = row.pre_commit_snapshot or {}
-            changes = {
-                field: (date.fromisoformat(value) if field in ("start_date", "end_date") and value
-                        else value)
-                for field, value in snapshot.items()
-            }
-            workforce_service.update_user(
-                db, target, changes=changes, actor_id=actor_id, reason_code="import_reversal"
-            )
         row.reversed_at = now
-        # A committed row was classified valid, which always sets action.
-        row_action = row.action
-        outcome_label = _REVERSE_ACTION[row_action] if row_action is not None else "reverted"
-        reversed_rows.append({"row_number": row.row_number, "outcome": outcome_label})
+        reversed_rows.append({"row_number": row.row_number, "outcome": outcome})
         db.flush()
 
     job.reversed_at = now

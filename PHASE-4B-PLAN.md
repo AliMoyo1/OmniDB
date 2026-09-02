@@ -1,7 +1,8 @@
 # Phase 4B plan: staged bulk-workforce import
 
-Status: 4B-1 (users + explicit_deactivations) done (2026-09-02). CI green on
-`97615bc`.
+Status: 4B-1 (users + explicit_deactivations) done, CI green on `97615bc`.
+4B-2 (team_memberships, role_assignments, reporting_assignments) built,
+pushed for CI (2026-09-02).
 
 ## Scope note: sequencing versus the master plan
 
@@ -237,11 +238,121 @@ since.
   every commit/reverse row-level action is audited with `target_id` set to
   the affected user and `event_metadata` naming the import job.
 
+## 4B-2 design: team_memberships, role_assignments, reporting_assignments
+
+Extends the 4B-1 pipeline in place - same job/row/decision models, same
+parse -> preview -> decide -> commit -> reverse flow, same two-person
+high-risk rule. Nothing about the shared infrastructure changes; what's new
+is per-type classify/commit/reverse logic and generalizing two things that
+4B-1 left hardcoded to the `users`/`explicit_deactivations` shape.
+
+### Scope cuts (and why they're not really new limitations)
+
+- **No acting/time-limited appointments.** `workforce_service.assign_role`
+  only ever creates a permanent, immediately-effective grant - it has no
+  `effective_to`/expiry parameter, and no code anywhere in this build
+  expires one automatically. Master plan 11.2's "role assignments and
+  acting appointments" template nominally covers both, but building real
+  acting-appointment expiry here would mean building the user's own
+  separately-named roadmap item ("acting-role and delegation workflow")
+  as a side effect of bulk import, not as its own increment. `role_
+  assignments` in this pass creates permanent grants only.
+- **No future-dated effective_from.** Matches the *existing*, already-
+  shipped single-row flows exactly: `assign_role`, `add_team_membership`,
+  and `set_reporting_line` all hardcode `effective_from=utcnow()` today,
+  with no caller anywhere supplying a different one. Bulk import matching
+  that isn't a new gap, just consistency with what the rest of the app
+  already does.
+- **`reporting_assignments` supports `set` only**, not a bare "remove
+  supervisor, no replacement" action - the common case (replace or assign)
+  maps directly onto `set_reporting_line`'s own supersede behavior; removal
+  with no replacement is a rarer operation the master plan's field list
+  doesn't clearly call for (`supervisor workforce ID, when applicable`
+  reads as "who to set," not "whether to clear").
+
+### Template columns
+
+- `team_memberships`: `action` (`add` | `end`), `external_workforce_id`,
+  `team_code`, `reason_code` (optional - team movement is routine HR
+  housekeeping, not disruptive the way deactivation or role elevation is).
+- `role_assignments`: `action` (`assign` | `end`), `external_workforce_id`,
+  `role_code`, `scope_type` (`installation` | `organization` | `team`),
+  `scope_code` (a `Team.external_code`, required only when
+  `scope_type=team`), `reason_code` (**required** - matches
+  `explicit_deactivations`'s bar; role changes always need a documented
+  reason).
+- `reporting_assignments`: `action` (`set`), `external_workforce_id`
+  (subordinate), `supervisor_workforce_id`, `reason_code` (optional).
+
+`scope_code` resolves against `Team.external_code`, never a raw UUID - the
+file works in codes a human can type and audit, matching how
+`external_workforce_id` already avoids raw user IDs. Unknown team codes are
+a blocking error ("unknown supervisors, teams, campaigns, policies, or
+roles are blocking errors").
+
+### Risk tier
+
+- `role_assignments` / `assign` -> **high_risk**, always. Master plan 11.2
+  step 8 names "role elevations" explicitly; granting authority is the
+  direction that needs the second approver, not removing it.
+- `role_assignments` / `end`, `team_memberships` (both actions),
+  `reporting_assignments` -> routine. None of these grant new authority.
+
+### Generalizing the high-risk approver check
+
+4B-1's `_assert_qualified_high_risk_approver` always checked
+`can_manage_user` - the right bar for "may this approver act on this
+*user*," but wrong for "may this approver *grant this specific role at
+this specific scope*." A `role_assignments`/`assign` row needs the same
+check the existing single-row grant endpoint already uses:
+`authz.has_scope_capability(db, approver_id, ROLE_APPOINTMENT_CAPABILITY[role_code],
+scope_type=scope_type, scope_id=scope_id)` (`app/api/workforce.py::assign_role`).
+Generalized the approver check to dispatch on `job.import_type` /
+`row.action` rather than assuming `can_manage_user` universally; the
+resolved `scope_type`/`scope_id` are stored in the row's own
+`parsed_values` at classify time so the commit-time and reversal-time
+re-checks don't need to re-parse the raw `scope_code` string.
+
+### Reversal
+
+- `team_memberships`: no snapshot needed (pure boolean state, like 4B-1's
+  create/reactivate/deactivate). Reversing `add` -> `end_team_membership`
+  if still an active member, else conflict. Reversing `end` ->
+  `add_team_membership` if still not an active member, else conflict.
+- `role_assignments`: same shape. Reversing `assign` -> `end_role_
+  assignment` if the specific (user, role, scope) grant is still active,
+  else conflict. Reversing `end` -> `assign_role` again with the same
+  role/scope if it's still ended, else conflict.
+- `reporting_assignments`: needs a snapshot, like 4B-1's `users`/`update` -
+  before calling `set_reporting_line`, record the subordinate's current
+  active primary supervisor (or `None`) in `pre_commit_snapshot`. Reversing
+  `set`: if the subordinate's current active primary supervisor is still
+  the one this row set, restore the snapshot - call `set_reporting_line`
+  again with the prior supervisor if one existed (which naturally
+  supersedes the reversed line, matching how setting always supersedes),
+  or `end_reporting_line` (new function, same shape as `end_role_
+  assignment`/`end_team_membership`) if there wasn't one. Otherwise,
+  conflict.
+
+`reverse_job`'s entity lookup generalizes from a hardcoded `User` query to
+dispatching on `row.committed_entity_type` (`user` | `team_membership` |
+`role_assignment` | `reporting_assignment`).
+
+### New in `workforce_service`
+
+`end_reporting_line(db, line, *, ended_by, reason_code)` - the one gap in
+the existing service layer this needs: every other entity this phase
+touches already had a matching end-function (`end_role_assignment`,
+`end_team_membership`), but reporting lines only ever had `set_reporting_
+line`'s implicit supersede. Same shape as its two siblings.
+
 ## Out of scope for this pass
 
-- `team_memberships`, `role_assignments`, `reporting_assignments`,
-  `campaign_user_assignments`, `target_assignments` import types (4B-2/4B-3
-  per above).
+- `campaign_user_assignments` (4B-3 - transfers prorate targets per
+  11.4/11.6, depends on whatever the 4C decision turns out to be) and
+  `target_assignments` (blocked entirely on 4C).
+- Acting/time-limited role appointments (see scope cuts above - a
+  separately-named roadmap item, "acting-role and delegation workflow").
 - In-app notification of uploaders/approvers (separate roadmap item).
 - Multi-sheet single-workbook packaging (11.2 allows it; starting with one
   type per file, matching "prefer separate templates instead of one
@@ -396,3 +507,45 @@ since.
 - 2026-09-02: fourth CI run green - build, security, quality, integration
   (migrate up, migration reversibility, 136/136 tests) all passed on
   `97615bc`. 4B-1 done.
+- 2026-09-02: built 4B-2 (`team_memberships`, `role_assignments`,
+  `reporting_assignments`) - see the "4B-2 design" section above. No
+  migration needed; `action`/`committed_entity_type` were already
+  general-purpose string columns. Added `workforce_service.
+  end_reporting_line` (the one gap in the existing service layer - every
+  other entity this phase touches already had a matching end-function).
+  Generalized `_assert_qualified_high_risk_approver` to dispatch the
+  correct authority check per import type (`can_manage_user` for
+  deactivations, `has_scope_capability` against the exact role/scope for
+  role grants) and `reverse_job` to dispatch per `committed_entity_type`
+  instead of assuming every row is a user. Caught two real bugs during
+  self-review before pushing:
+  - `_REVERSE_ACTION`, a flat action-string-to-label lookup carried over
+    from 4B-1, collided: `"end"` means "re-add a team membership" for one
+    import type and "re-grant a role" for another, and a shared table keyed
+    on the bare action string can't tell them apart. Fixed by having each
+    `_reverse_*_row` function return its own outcome label directly (`str |
+    None` - `None` for conflict), matching how the commit-side functions
+    already work, and removed the shared table entirely.
+  - `disable_user`/`assign_role` both call `authz.assert_not_self`, and
+    nothing stopped a high-risk row's target from being the same person as
+    the approver reviewing it - a real, if narrow, gap that would have
+    surfaced as an unhandled 500 (aborting the whole commit) instead of a
+    clean per-row conflict. Retrofitted a catch onto `_commit_deactivation_
+    row` too, not just the new role-assignment path, since the same gap was
+    already live in already-shipped 4B-1 code.
+  Wrote 4 new integration tests covering the genuinely new mechanisms: team
+  membership add/end with both directions of reversal, role-grant high-risk
+  approval (self-approval rejected, wrong-scope approver rejected, right-
+  scope approver succeeds, reversal ends the grant), role-ending as routine
+  (not high-risk), and reporting-line set/reversal - including one case
+  caught by manually tracing the state transitions while writing the test:
+  reversing an *earlier* reporting-line import after a *later* one has
+  already been reversed is correctly refused (the earlier row's own entity
+  was superseded and never resurrected, even though the net effect
+  coincidentally matches what reversing it would have produced) - fixed the
+  test's own assertion to match that correct, conservative behavior rather
+  than assuming success. ruff/mypy clean repo-wide (92 files, matching
+  CI's `mypy app` scope), the same offline FK-identifier-length check as
+  4B-1's fix confirms no new violations, all 11 tests in the file collect,
+  full non-integration suite green locally (35/35). No live database this
+  session - pushing for CI to give the real answer.

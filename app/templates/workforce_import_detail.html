@@ -69,7 +69,7 @@
       {% if decisions.high_risk %}{{ decisions.high_risk.decision }} by {{ deciders.get(decisions.high_risk.decided_by).display_name if deciders.get(decisions.high_risk.decided_by) else "unknown" }}{% else %}Not yet decided{% endif %}
     </span>
   </div>
-  <p>Deactivations need approval from someone with authority over every affected user, who is not the uploader.</p>
+  <p>High-risk rows (deactivations, or role grants) need approval from someone with authority over every affected row, who is not the uploader.</p>
   <form method="post" action="/workforce/imports/{{ job.id }}/decisions" class="campaign-create-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="decision_tier" value="high_risk">

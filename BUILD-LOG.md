@@ -1244,3 +1244,64 @@ plan's seven import types remain (`team_memberships`, `role_assignments`,
 `reporting_assignments`, `campaign_user_assignments`), plus
 `target_assignments`, blocked on 4C - the next increments, per
 `PHASE-4B-PLAN.md`.
+
+## 2026-09-02: Phase 4B-2 - team memberships, role assignments, reporting lines
+
+Extended the same staged-import pipeline 4B-1 built with three more of the
+master plan's seven import types, in place - no new migration, since
+`action` and `committed_entity_type` were already generic string columns
+built for exactly this kind of extension. Added `workforce_service.
+end_reporting_line` (the one gap in the existing service layer: every other
+entity this phase touches already had a matching end-function). Full
+design in `PHASE-4B-PLAN.md`'s "4B-2 design" section.
+
+The one new mechanism worth naming: `role_assignments`/`assign` is the
+second type (after deactivation) to produce high-risk rows, but "may
+disable this user" and "may grant this exact role at this exact scope" are
+different questions - generalized the two-person approval's per-row
+authority check to dispatch by import type, reusing the identical
+`authz.has_scope_capability` bar the existing single-row grant endpoint
+already enforces, rather than assuming `can_manage_user` universally.
+`reverse_job` similarly generalized from a hardcoded `User` lookup to
+dispatching on each row's own `committed_entity_type`.
+
+Caught two real bugs during self-review, before ever pushing:
+
+1. A flat action-string-to-outcome-label table carried over from 4B-1
+   collided the moment a second type existed: `"end"` means "re-add a team
+   membership" for one import type and "re-grant a role" for another, and
+   nothing about the string itself says which. Fixed by having each
+   reversal function return its own outcome label directly instead of
+   looking one up from a shared table - the same shape the commit-side
+   functions already used, just not consistently applied to reversal yet.
+2. `disable_user` and `assign_role` both refuse to let someone act on their
+   own identity, but nothing stopped a high-risk row's target from
+   literally being the approver reviewing it - that would have surfaced as
+   an unhandled exception aborting the whole commit instead of a clean
+   per-row conflict. This gap was already live in 4B-1's shipped
+   deactivation path, not just the new role-assignment one; retrofitted the
+   fix onto both.
+
+4 new integration tests, chosen to cover the genuinely new mechanisms
+rather than duplicate 4B-1's already-proven shape: team membership add/end
+with reversal in both directions, the full role-grant high-risk path
+(self-approval rejected, wrong-scope approver rejected, right-scope
+approver succeeds, reversal ends the grant), role-ending correctly treated
+as routine rather than high-risk, and reporting-line set/reversal. Writing
+the last of these surfaced a genuine subtlety worth recording: reversing an
+*earlier* reporting-line change after a *later* one has already been
+reversed is correctly refused, because the earlier row's own database
+record was superseded and never resurrected - a brand new record was
+created instead, matching "reversal creates compensating events, never
+rewrites history." The net effect happened to coincidentally match what
+reversing the earlier row would have produced, which is exactly the kind of
+thing that could tempt a looser check into approving it; traced the actual
+state transitions by hand to confirm the stricter, conflict-reporting
+behavior was correct, then fixed the test's own assertion to match.
+
+Verified everything not requiring a live database: ruff and mypy clean
+across all 92 `app/` source files, the same offline FK-identifier-length
+check built for 4B-1's CI fix re-run and confirms no new violations, all 11
+tests in the integration file collect, full non-integration suite passing
+locally (35/35, unaffected). No live database this session - pushing for CI
+to give the real answer.

@@ -43,6 +43,11 @@ _TEMPLATES: dict[str, str] = {
         "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
     ),
     "explicit_deactivations": "external_workforce_id,reason_code\r\n",
+    "team_memberships": "action,external_workforce_id,team_code,reason_code\r\n",
+    "role_assignments": (
+        "action,external_workforce_id,role_code,scope_type,scope_code,reason_code\r\n"
+    ),
+    "reporting_assignments": "external_workforce_id,supervisor_workforce_id,reason_code\r\n",
 }
 
 
