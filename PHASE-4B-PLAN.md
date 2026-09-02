@@ -880,3 +880,29 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
 - 2026-09-02: CI green on `c6f7eae` - build, quality, security, and
   integration all passed, confirming local verification exactly. Four
   review rounds on this feature now closed.
+- 2026-09-02: code review response, round 5 - on round 4's fixes. 2
+  findings (1 P1, 1 P2), both tracing to round 4's own over_cap-skip and
+  per-candidate list resolution. Full account in `BUILD-LOG.md`. Summary:
+  - **Over_cap jobs no longer disappear from the approver list** - round
+    4 skipped >1,000-requirement jobs in the list for every non-uploader,
+    so a large import vanished from the only approver-discovery screen
+    (weakening the two-person workflow). The skip and the `for_listing`
+    param are gone: an over_cap job now resolves its access from rows
+    (never hidden). The cap was raised 1,000 -> 10,000 and re-cast as a
+    pure storage safety valve, so the reviewer's 1,001-user example stays
+    in the cheap stored path.
+  - **visible_jobs now resolves authorization in one bulk pass** - it
+    called can_access_job per candidate (≤200), an N+1 the round-4 test
+    missed by checking a single job. It now unions every candidate's
+    distinct requirements and resolves the actor's authority once, then
+    decides each job from the result. The resolution core was split into
+    `_satisfied_authority` (bulk: which distinct targets/scopes/campaigns
+    the actor covers) + `_requirements_satisfied` (per-job check), shared
+    by both can_access_job and visible_jobs so they can't disagree.
+
+  Verified against real Postgres 16 + Redis 7 locally: `pytest -m
+  integration` (166 tests) and the unit suite (35 tests) both green
+  matching CI's two jobs, migration 0015 (unchanged - behavior-only fix)
+  round-trips cleanly, `docker build` succeeds, ruff/mypy clean. A genuine
+  end-to-end visible_jobs query-count test (the one the reviewer asked
+  for) lists 30 accessible jobs in under 15 queries.

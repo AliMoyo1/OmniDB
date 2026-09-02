@@ -1398,23 +1398,14 @@ def test_valid_create_only_job_is_still_accessible_to_a_capability_holder():
 
 
 def test_list_access_check_resolves_from_footprint_without_loading_rows():
-    """Round-4 review finding #2: visible_jobs called can_access_job per
-    candidate job (up to 200), and each call loaded every WorkforceImportRow
+    """Round-4 review finding #2: can_access_job loaded every WorkforceImportRow
     of its job as an ORM object - at the 100,000-row maximum, one list request
-    could scan millions of rows. Now each job's authorization requirements are
-    summarized once at parse time onto the job row itself, so the per-candidate
-    access check (can_access_job with for_listing=True, exactly what
-    visible_jobs calls) reads that summary and never touches
+    (200 candidates) could scan millions of rows. Each job's authorization
+    requirements are now summarized once at parse time onto the job row itself,
+    so the access check reads that summary and never touches
     workforce_import_rows. Proven directly: an authorized non-uploader resolves
     access to a genuinely non-empty job while not one executed statement
-    references the workforce_import_rows table.
-
-    Checks can_access_job(for_listing=True) directly rather than visible_jobs
-    end-to-end, because visible_jobs scans the 200 most recent jobs globally -
-    which in a shared test database includes other tests' jobs, some built
-    directly via the ORM with no footprint, which legitimately fall back to a
-    row load. The per-candidate check on a normally-parsed job is the unit the
-    fix actually changed."""
+    references the workforce_import_rows table."""
     from sqlalchemy import event
 
     from app.db import engine
@@ -1446,30 +1437,28 @@ def test_list_access_check_resolves_from_footprint_without_loading_rows():
         assert job.authorization_footprint is not None, "parse should store a footprint"
         event.listen(engine, "before_cursor_execute", _capture)
         try:
-            allowed = import_service.can_access_job(
-                db, uuid.UUID(leader_id), job, for_listing=True
-            )
+            allowed = import_service.can_access_job(db, uuid.UUID(leader_id), job)
         finally:
             event.remove(engine, "before_cursor_execute", _capture)
 
     assert allowed is True, "the scoped Team Leader should reach this job"
     assert not row_table_hits, (
-        "the list access check queried workforce_import_rows - it must resolve "
+        "the access check queried workforce_import_rows - it must resolve "
         f"from the stored footprint only. Offending SQL: {row_table_hits[:1]}"
     )
 
 
-def test_over_cap_job_is_skipped_in_list_but_reachable_for_a_qualified_approver():
-    """Round-4 finding #2, the over-cap branch: a job whose distinct
-    authorization footprint was too large to store in full is marked over_cap.
-    The list view (for_listing=True) skips it rather than triggering a full row
-    scan for every such job on every list request - but a single-job action
-    (detail/decision/commit, for_listing=False) still falls back to the live
-    row check, so a qualified non-uploader (e.g. a high-risk approver) can
-    still reach it. The two-person rule must not become unenforceable just
-    because a job is large. Building 1,000+ distinct requirements to trip the
-    real cap would be slow, so the over_cap footprint is set directly and the
-    row that backs the fallback is inserted alongside it."""
+def test_over_cap_job_stays_visible_to_a_qualified_approver():
+    """Round-5 review finding #1: round 4 marked a job with too many distinct
+    requirements over_cap and SKIPPED it in the list for every non-uploader -
+    so a large import (the reviewer's example: a 1,001-user deactivation)
+    vanished from the only approver-discovery screen, reachable only if someone
+    hand-shared its opaque UUID, weakening the required two-person workflow. An
+    over_cap job is now resolved from its rows (never skipped): a qualified
+    non-uploader still reaches it through can_access_job AND finds it in
+    visible_jobs, while an unrelated user still cannot. Building 10,000+ real
+    distinct requirements to trip the cap would be far too slow, so the
+    over_cap footprint is set directly with a row that backs the resolution."""
     from app.models.workforce_imports import WorkforceImportJob, WorkforceImportRow
     from app.workforce_imports import service as import_service
 
@@ -1477,6 +1466,8 @@ def test_over_cap_job_is_skipped_in_list_but_reachable_for_a_qualified_approver(
     team_id, _team_code = _make_team(prefix="wfiovercapteam")
     target_id = make_user(f"wfiovercap-target-{uuid.uuid4().hex[:8]}@example.com")
     _leader_client, leader_id = _team_leader(team_id, prefix="wfiovercapleader")
+    # A plain user with no roles - genuinely unauthorized (an org-level manager
+    # would legitimately cover any team, so would not be an "outsider" here).
     outsider_id = make_user(f"wfiovercap-outsider-{uuid.uuid4().hex[:8]}@example.com")
 
     with SessionLocal() as db:
@@ -1504,11 +1495,77 @@ def test_over_cap_job_is_skipped_in_list_but_reachable_for_a_qualified_approver(
     with SessionLocal() as db:
         job = db.get(WorkforceImportJob, job_id)
         assert job is not None
-        # List view: skipped for a non-uploader regardless of their authority.
-        assert import_service.can_access_job(db, leader_id, job, for_listing=True) is False
-        # Single-job action: the scoped Team Leader reaches it via the fallback.
-        assert import_service.can_access_job(db, leader_id, job, for_listing=False) is True
-        # An unrelated user still cannot, even through the fallback.
-        assert import_service.can_access_job(db, outsider_id, job, for_listing=False) is False
+        # The scoped Team Leader reaches it (resolved from rows, not skipped)...
+        assert import_service.can_access_job(db, uuid.UUID(leader_id), job) is True
+        # ...and it actually appears in their discovery list.
+        listed = import_service.visible_jobs(db, uuid.UUID(leader_id))
+        assert any(j.id == job_id for j in listed), (
+            "an over_cap job must still surface in a qualified approver's list"
+        )
+        # An unrelated user still cannot reach it, in either path.
+        assert import_service.can_access_job(db, outsider_id, job) is False
+        listed_outsider = import_service.visible_jobs(db, outsider_id)
+        assert not any(j.id == job_id for j in listed_outsider)
         # The uploader always can.
-        assert import_service.can_access_job(db, uploader_id, job, for_listing=True) is True
+        assert import_service.can_access_job(db, uploader_id, job) is True
+
+
+def test_visible_jobs_resolves_authorization_in_bulk_not_per_job():
+    """Round-5 review finding #2: visible_jobs resolved authorization once per
+    candidate job (up to 200), so a full list issued hundreds of repeated role/
+    team/campaign queries - an N+1 the round-4 test missed by checking a single
+    job rather than the list operation. visible_jobs now unions every
+    candidate's distinct requirements and resolves the actor's authority over
+    them in ONE bulk pass, deciding each job from the result. Proven end to end:
+    many accessible jobs, and the whole list resolves in a small fixed number
+    of queries - not one (or several) per job."""
+    from sqlalchemy import event
+
+    from app.db import engine
+    from app.workforce_imports import service as import_service
+
+    job_count = 30
+    uploader, _ = _manager(prefix="wfibulkupload")
+    headers = csrf_headers(uploader)
+    team_id, team_code = _make_team(prefix="wfibulkteam")
+    # All jobs target the SAME team, so the union of their distinct requirements
+    # is a single scope - the point is that the query count tracks distinct
+    # requirements (here one), never the job count.
+    for _i in range(job_count):
+        wid = f"wfibulk-{uuid.uuid4().hex[:8]}"
+        make_user(f"{wid}@example.com")
+        add_csv = (
+            f"action,external_workforce_id,team_code,reason_code\r\nadd,{wid},{team_code},\r\n"
+        )
+        assert _upload(uploader, headers, "team_memberships", add_csv).status_code == 200
+
+    # A Team Leader scoped to the team can access every one of those jobs.
+    _leader_client, leader_id = _team_leader(team_id, prefix="wfibulkleader")
+
+    query_count = 0
+
+    def _count(*_args, **_kwargs):
+        nonlocal query_count
+        query_count += 1
+
+    with SessionLocal() as db:
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            # A tight candidate window keeps the assertion about THIS test's jobs
+            # rather than every job every other test left in the table.
+            visible = import_service.visible_jobs(
+                db, uuid.UUID(leader_id), limit=job_count + 5, candidate_limit=job_count + 5
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+
+    mine = [j for j in visible if j.import_type == "team_memberships"]
+    assert len(mine) >= job_count, (
+        f"expected all {job_count} of the leader's accessible jobs to be listed, "
+        f"got {len(mine)}"
+    )
+    assert query_count < 15, (
+        f"visible_jobs issued {query_count} queries to list {job_count}+ "
+        "accessible jobs - a per-job (N+1) resolution would be at least "
+        f"{job_count}; the count must track distinct requirements, not job count"
+    )

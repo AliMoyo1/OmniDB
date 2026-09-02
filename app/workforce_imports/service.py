@@ -406,13 +406,16 @@ def _row_requirement(
     return ("deny",)
 
 
-# Above this many DISTINCT requirements, a job's footprint is not stored in
-# full - it is marked over_cap and the (rare, large) job falls back to a
-# single-job row scan when actually opened, rather than bloating every list
-# request that reads its summary. Distinct requirements for a normal import
-# are small (a handful of teams/campaigns); only a mega-import touching
-# thousands of distinct users/scopes approaches this.
-_REQUIREMENTS_CAP = 1000
+# A pure safety valve on the stored footprint's size. Above this many DISTINCT
+# requirements a job is marked over_cap and its requirements are re-derived from
+# rows when its access is resolved (still resolved - never skipped or hidden),
+# rather than storing an unbounded JSONB blob. Set well above any realistic
+# distinct count: a normal import references a handful of teams/campaigns, and
+# even a bulk user operation is bounded by the actual workforce size, so the
+# reviewer's 1,001-user example stays comfortably in the cheap stored path -
+# only a genuinely pathological import (tens of thousands of distinct real
+# targets) ever trips this.
+_REQUIREMENTS_CAP = 10_000
 
 
 def _serialize_requirement(req: tuple) -> list:
@@ -436,35 +439,35 @@ def _deserialize_requirement(entry: list) -> tuple:
     raise ValueError(f"unrecognized stored requirement: {entry!r}")
 
 
-def _authority_over_requirements(
-    db: Session, actor_id: uuid.UUID, requirements: Sequence[tuple | None]
-) -> bool:
-    """Whether `actor_id` is authorized for every requirement in the list -
-    the resolution core shared by the live per-row check (_assert_rows_
-    authorized, fed a job's committable rows) and the stored-footprint access
-    check (can_access_job, fed a job's precomputed distinct requirement set).
-    A query count bounded by a small, fixed number of round trips - not by
-    how many requirements are passed, and not by how many DISTINCT targets/
-    scopes they reference either: 100,000 distinct users still resolve in a
-    handful of chunked queries. Every actual authorization decision still
-    goes through the same trusted logic the manual one-row screens rely on
-    (authz.scope_capabilities_matched / campaign_ids_with_capability, built
-    on the same primitives has_scope_capability/has_campaign_capability use) -
-    this only ever changes how many round trips that takes, never what it
-    decides. A None requirement is a row that needs no check (a valid user
-    creation) and contributes nothing."""
-    if any(req == ("deny",) for req in requirements):
-        return False
+@dataclass
+class _SatisfiedAuthority:
+    """Which of a set of distinct requirement components an actor is authorized
+    for - the resolved lookup a per-job (or per-list) decision reads from."""
 
-    target_ids = {req[1] for req in requirements if req is not None and req[0] == "user"}
-    scope_tuples: set[tuple[str, str, uuid.UUID | None]] = {
-        req[1:] for req in requirements if req is not None and req[0] == "scope"
-    }
-    campaign_ids = {req[1] for req in requirements if req is not None and req[0] == "campaign"}
+    targets: set[uuid.UUID]
+    scopes: set[tuple[str, str, uuid.UUID | None]]
+    campaigns: set[uuid.UUID]
 
-    # Bulk fetch every distinct target's own active roles, chunked so a
-    # single IN (...) clause never approaches Postgres's ~65k bind-parameter
-    # limit even at the full 100,000-row import size.
+
+def _satisfied_authority(
+    db: Session,
+    actor_id: uuid.UUID,
+    *,
+    target_ids: set[uuid.UUID],
+    scope_tuples: set[tuple[str, str, uuid.UUID | None]],
+    campaign_ids: set[uuid.UUID],
+) -> _SatisfiedAuthority:
+    """Resolve, in a query count bounded by a small fixed number of round trips
+    (NOT by how many distinct values are passed), exactly which of the given
+    target users / (capability, scope_type, scope_id) tuples / campaigns the
+    actor is authorized for. This is the shared bulk core: one job's access
+    check passes its own distinct requirements; the list view passes the UNION
+    across every candidate job and resolves them all at once, so 200 jobs cost
+    one resolution, not 200. Every decision still goes through the same trusted
+    authz primitives the manual one-row screens rely on."""
+    # Bulk fetch every distinct target's own active roles, chunked so a single
+    # IN (...) clause never approaches Postgres's ~65k bind-parameter limit
+    # even at the full 100,000-row import size.
     now = utcnow()
     target_roles_by_id: dict[uuid.UUID, list[RoleAssignment]] = {tid: [] for tid in target_ids}
     for chunk in itertools.batched(target_ids, _AUTHORITY_CHUNK_SIZE):
@@ -477,20 +480,24 @@ def _authority_over_requirements(
             )
         ):
             target_roles_by_id[assignment.user_id].append(assignment)
+
+    # The scopes actually needing resolution are the direct scope requirements
+    # plus the scopes each target's own appointment roles occupy (a target is
+    # reachable if the actor covers any one of them).
+    all_scope_tuples = set(scope_tuples)
     for roles in target_roles_by_id.values():
         for ra in roles:
             capability = ROLE_APPOINTMENT_CAPABILITY.get(ra.role_code)
             if capability is not None:
-                scope_tuples.add((capability, ra.scope_type, ra.scope_id))
+                all_scope_tuples.add((capability, ra.scope_type, ra.scope_id))
 
-    # Grouped by capability, since scope_capabilities_matched answers "which
-    # of these (scope_type, scope_id) pairs does the actor cover for ONE
+    # Grouped by capability, since scope_capabilities_matched answers "which of
+    # these (scope_type, scope_id) pairs does the actor cover for ONE
     # capability" in a bounded number of round trips regardless of how many
-    # distinct pairs are asked - the capability itself is not part of what
-    # gets deduplicated at the database layer.
+    # distinct pairs are asked.
     scope_ok: dict[tuple[str, str, uuid.UUID | None], bool] = {}
     tuples_by_capability: dict[str, set[tuple[str, uuid.UUID | None]]] = {}
-    for capability, scope_type, scope_id in scope_tuples:
+    for capability, scope_type, scope_id in all_scope_tuples:
         tuples_by_capability.setdefault(capability, set()).add((scope_type, scope_id))
     for capability, scope_requests in tuples_by_capability.items():
         matched = authz.scope_capabilities_matched(db, actor_id, capability, scope_requests)
@@ -500,7 +507,6 @@ def _authority_over_requirements(
     matched_campaigns = authz.campaign_ids_with_capability(
         db, actor_id, ASSIGN_CAMPAIGN_AGENT, campaign_ids
     )
-    campaign_ok = {cid: cid in matched_campaigns for cid in campaign_ids}
 
     no_role_fallback_ok = (
         any(
@@ -523,20 +529,63 @@ def _authority_over_requirements(
             if ra.role_code in ROLE_APPOINTMENT_CAPABILITY
         )
 
+    return _SatisfiedAuthority(
+        targets={tid for tid in target_ids if _target_ok(tid)},
+        scopes={tup for tup in scope_tuples if scope_ok.get(tup, False)},
+        campaigns=matched_campaigns & campaign_ids,
+    )
+
+
+def _distinct_requirement_sets(
+    requirements: Iterable[tuple | None],
+) -> tuple[set[uuid.UUID], set[tuple[str, str, uuid.UUID | None]], set[uuid.UUID]]:
+    """The distinct target ids / scope tuples / campaign ids a requirement list
+    references, for feeding _satisfied_authority."""
+    target_ids = {req[1] for req in requirements if req is not None and req[0] == "user"}
+    scope_tuples: set[tuple[str, str, uuid.UUID | None]] = {
+        req[1:] for req in requirements if req is not None and req[0] == "scope"
+    }
+    campaign_ids = {req[1] for req in requirements if req is not None and req[0] == "campaign"}
+    return target_ids, scope_tuples, campaign_ids
+
+
+def _requirements_satisfied(
+    requirements: Iterable[tuple | None], satisfied: _SatisfiedAuthority
+) -> bool:
+    """Whether every requirement is met by an already-resolved authority set -
+    a deny anywhere fails outright; every user/scope/campaign requirement must
+    appear in the satisfied lookup; a None requirement (a valid user creation)
+    contributes nothing."""
     for req in requirements:
         if req is None:
             continue
         kind = req[0]
-        if kind == "user":
-            if not _target_ok(req[1]):
-                return False
-        elif kind == "scope":
-            if not scope_ok.get(req[1:], False):
-                return False
-        elif kind == "campaign":
-            if not campaign_ok.get(req[1], False):
-                return False
+        if kind == "deny":
+            return False
+        if kind == "user" and req[1] not in satisfied.targets:
+            return False
+        if kind == "scope" and req[1:] not in satisfied.scopes:
+            return False
+        if kind == "campaign" and req[1] not in satisfied.campaigns:
+            return False
     return True
+
+
+def _authority_over_requirements(
+    db: Session, actor_id: uuid.UUID, requirements: Sequence[tuple | None]
+) -> bool:
+    """Whether `actor_id` is authorized for every requirement in the list - the
+    single-set resolution used by the live per-row check (_assert_rows_
+    authorized) and the single-job access check (can_access_job). The list view
+    resolves the UNION across candidates instead (see visible_jobs), so this is
+    not called once per candidate there."""
+    if any(req == ("deny",) for req in requirements):
+        return False
+    target_ids, scope_tuples, campaign_ids = _distinct_requirement_sets(requirements)
+    satisfied = _satisfied_authority(
+        db, actor_id, target_ids=target_ids, scope_tuples=scope_tuples, campaign_ids=campaign_ids
+    )
+    return _requirements_satisfied(requirements, satisfied)
 
 
 def _assert_rows_authorized(
@@ -556,23 +605,31 @@ def _assert_rows_authorized(
         )
 
 
-def _authority_over_all_rows(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob) -> bool:
-    """The fallback access resolution that materializes every row - used only
-    when a stored footprint is unavailable (a job parsed before the footprint
-    column existed) or when the footprint said the distinct requirement set
-    was too large to store and a single-job full check is warranted anyway.
-    Never reached from the list view for a summarized job."""
+def _job_access_requirements(
+    db: Session, job: WorkforceImportJob
+) -> list[tuple | None] | None:
+    """The distinct requirement list to resolve a non-uploader's access to this
+    job against, or None if the job is not accessible to a non-uploader at all
+    (still parsing, failed to parse, or successfully parsed but empty). Cheap
+    from the stored footprint in the normal case; a job whose footprint is
+    absent (parsed before the column existed) or was too large to store in full
+    (over_cap) falls back to deriving requirements from its rows - correct, and
+    rare, but no longer a *skip*: a large job must still be reachable by a
+    qualified approver, not hidden from the only discovery screen."""
+    footprint = job.authorization_footprint
+    if footprint is not None and not footprint.get("over_cap"):
+        return [_deserialize_requirement(entry) for entry in footprint.get("requirements", [])]
+    if job.state != "parsed":
+        return None
     rows = list(
         db.scalars(select(WorkforceImportRow).where(WorkforceImportRow.import_job_id == job.id))
     )
     if not rows:
-        return False
-    return _authority_over_requirements(db, actor_id, [_row_requirement(job, row) for row in rows])
+        return None
+    return [_row_requirement(job, row) for row in rows]
 
 
-def can_access_job(
-    db: Session, actor_id: uuid.UUID, job: WorkforceImportJob, *, for_listing: bool = False
-) -> bool:
+def can_access_job(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob) -> bool:
     """Whether this actor has any legitimate reach into this specific job at all -
     not just "holds some import-related capability somewhere." Without this, any
     holder of any import capability could open, decide, commit, or reverse *any*
@@ -584,35 +641,18 @@ def can_access_job(
     merely viewing that should require the same authority acting on it would.
 
     Resolved against the job's stored authorization_footprint (computed once at
-    parse time) rather than by re-loading every row on each call - so the list
-    view can check up to 200 candidate jobs without ever materializing their
-    rows. `for_listing` distinguishes the two callers: the list view passes it
-    so an over-cap job (one whose distinct requirement set was too large to
-    summarize) is simply skipped rather than triggering a full row scan; every
-    other caller acts on a single already-chosen job and leaves it False, so a
-    qualified non-uploader (e.g. a high-risk approver) can still reach even an
-    over-cap job through the detail/decision path - the two-person rule must
-    not become unenforceable just because a job is large.
-
-    A NULL footprint means "not computed": a job still quarantined/parsing, one
-    that failed to parse, or one that predates the footprint column. The first
-    two are uploader-only (nothing to scope-check yet, and a fail-open default
-    here would let any capability holder read a job the parser never finished);
-    a legacy parsed job falls back to loading its rows, correct if no longer
-    cheap - only jobs from before this column ever hit that path."""
+    parse time), or - for a job whose footprint is absent (parsed before the
+    column) or over_cap (too many distinct requirements to store in full) - from
+    its rows. A job is never hidden from a qualified approver just because it is
+    large: over_cap resolves the same access, only more expensively for that one
+    job. A NULL footprint on a job that never finished parsing is uploader-only,
+    since there is nothing yet to scope-check and a fail-open default would let
+    any capability holder read a job the parser never finished."""
     if actor_id == job.uploader_id:
         return True
-
-    footprint = job.authorization_footprint
-    if footprint is None:
-        if job.state != "parsed":
-            return False
-        return _authority_over_all_rows(db, actor_id, job)
-    if footprint.get("over_cap"):
-        if for_listing:
-            return False
-        return _authority_over_all_rows(db, actor_id, job)
-    requirements = [_deserialize_requirement(entry) for entry in footprint.get("requirements", [])]
+    requirements = _job_access_requirements(db, job)
+    if requirements is None:
+        return False
     return _authority_over_requirements(db, actor_id, requirements)
 
 
@@ -625,20 +665,56 @@ def visible_jobs(
     db: Session, actor_id: uuid.UUID, *, limit: int = 50, candidate_limit: int = 200
 ) -> list[WorkforceImportJob]:
     """The list view's job set, scoped to what this actor can actually reach -
-    checked with the same per-job authority commit/decide/reverse require, not
-    just the blanket "holds some import capability" gate. Each candidate is
-    resolved against its stored authorization_footprint (for_listing=True), so
-    this filters up to `candidate_limit` jobs without ever loading their rows -
-    an out-of-scope reviewer's list request no longer scans every row of every
-    candidate."""
-    candidates = db.scalars(
-        select(WorkforceImportJob)
-        .order_by(WorkforceImportJob.created_at.desc())
-        .limit(candidate_limit)
+    the same per-job authority commit/decide/reverse require, not the blanket
+    "holds some import capability" gate. Resolves authorization for the WHOLE
+    candidate batch in one bulk pass rather than once per job: it gathers every
+    non-uploader candidate's distinct requirements (from each job's stored
+    footprint - no row load in the normal case), unions them, resolves the
+    actor's authority over that union a single time, then decides each job from
+    the resolved lookup. So a 200-job list costs one authorization resolution,
+    not 200, and no job is skipped merely for being large - a qualified approver
+    still finds every import they may act on."""
+    candidates = list(
+        db.scalars(
+            select(WorkforceImportJob)
+            .order_by(WorkforceImportJob.created_at.desc())
+            .limit(candidate_limit)
+        )
     )
+
+    # Gather each non-uploader candidate's requirements once, and union their
+    # distinct components for a single bulk resolution.
+    requirements_by_job: dict[uuid.UUID, list[tuple | None]] = {}
+    union_targets: set[uuid.UUID] = set()
+    union_scopes: set[tuple[str, str, uuid.UUID | None]] = set()
+    union_campaigns: set[uuid.UUID] = set()
+    for job in candidates:
+        if job.uploader_id == actor_id:
+            continue
+        requirements = _job_access_requirements(db, job)
+        if requirements is None:
+            continue
+        requirements_by_job[job.id] = requirements
+        targets, scopes, campaigns = _distinct_requirement_sets(requirements)
+        union_targets |= targets
+        union_scopes |= scopes
+        union_campaigns |= campaigns
+
+    satisfied = _satisfied_authority(
+        db, actor_id, target_ids=union_targets, scope_tuples=union_scopes,
+        campaign_ids=union_campaigns,
+    )
+
     visible: list[WorkforceImportJob] = []
     for job in candidates:
-        if can_access_job(db, actor_id, job, for_listing=True):
+        if job.uploader_id == actor_id:
+            accessible = True
+        else:
+            requirements = requirements_by_job.get(job.id)
+            accessible = requirements is not None and _requirements_satisfied(
+                requirements, satisfied
+            )
+        if accessible:
             visible.append(job)
             if len(visible) >= limit:
                 break

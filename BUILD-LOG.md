@@ -1924,3 +1924,60 @@ Confirmed green on `c6f7eae`: build, quality, security, and integration
 all passed - the parse-time footprint computation and the migration both
 hold under CI's own fresh Postgres/Redis containers, matching local
 verification exactly. Four review rounds on this feature now closed.
+
+## 2026-09-02: Phase 4B code review response, round 5 - 2 findings on round 4's fixes
+
+A fifth review, on round 4's fixes - and both findings trace to the same
+two decisions I made in round 4: the over_cap *skip* and the still-
+per-candidate `visible_jobs`. Fixed together as one redesign.
+
+**#1 (P1) - large imports disappeared from the second approver's list.**
+Round 4 marked any job with more than 1,000 distinct requirements
+over_cap and had the list access check (`for_listing=True`) return False
+for it - so an over_cap job was skipped in `visible_jobs` for every
+non-uploader. The reviewer's example: a 1,001-user deactivation import
+vanishes from the only approver-discovery screen and is reachable only if
+someone separately hand-shares its opaque UUID - directly weakening the
+two-person workflow that import is supposed to require. My round-4
+rationale ("a qualified approver can still reach it via the detail path")
+missed that the detail path needs the UUID, and the *list* is how an
+approver discovers the UUID in the first place. Fixed by removing the skip
+entirely: an over_cap job now resolves its access from its rows (the same
+result, just more expensively for that one job) and is never hidden. The
+`for_listing` parameter is gone. The cap itself was also raised from 1,000
+to 10,000 and re-cast as a pure storage safety valve - a 1,001-user
+import now stays comfortably in the cheap stored-footprint path, and only
+a genuinely pathological import (tens of thousands of distinct real
+targets, impossible at pilot workforce size) ever trips it.
+
+**#2 (P2) - the list still had an authorization N+1.** `visible_jobs`
+called `can_access_job` once per candidate job (up to 200), and each call
+resolved its own role/team/campaign queries - so a full list could issue
+hundreds of repeated authorization queries. Round 4's query-count test
+checked a single job, not the list operation, so it missed this. Fixed by
+having `visible_jobs` resolve the whole batch in one bulk pass: it gathers
+every non-uploader candidate's distinct requirements (from each job's
+stored footprint - no row load in the normal case), unions their distinct
+targets/scopes/campaigns, resolves the actor's authority over that union a
+single time, then decides each job from the resolved lookup. A 200-job
+list now costs one authorization resolution, not 200. The round-3/4
+resolution core was refactored into `_satisfied_authority` (returns which
+of a set of distinct targets/scopes/campaigns the actor is authorized for,
+in a bounded number of chunked queries) plus `_requirements_satisfied`
+(checks one job's requirements against an already-resolved set);
+`can_access_job` (single job) and `visible_jobs` (the union) now share
+exactly the same resolution, so they cannot disagree.
+
+Verification: ruff and mypy clean repo-wide. Full suite green against real
+Postgres 16 + Redis 7 locally: `pytest -m integration` (166 tests) and the
+unit suite (35 tests) both pass matching CI's two jobs, migration 0015
+(unchanged this round - the fix is behavior-only) still applies/downgrades/
+reapplies cleanly, `docker build` succeeds. New/updated tests: an over_cap
+job now stays visible to a qualified approver through both `can_access_job`
+and `visible_jobs` (and stays denied to an unrelated user) - the exact
+inverse of the round-4 skip test it replaces; and a genuine end-to-end
+`visible_jobs` query-count test (the one the reviewer asked for) - 30
+accessible jobs listed in under 15 queries, where an N+1 would be at least
+30. The round-3 high-cardinality test still passes: its ORM-built job has
+a NULL footprint, so it exercises the row-load fallback and still resolves
+under 15 queries.
