@@ -7,7 +7,6 @@ is idempotent on (uploader, idempotency_key) (invariant 6).
 
 from __future__ import annotations
 
-import itertools
 import uuid
 from collections.abc import Iterable
 from datetime import timedelta
@@ -149,13 +148,15 @@ def parse_job(
     batch: list[ImportRow] = []
 
     try:
-        rows_iter = parser.parse_file(path, ext)
-        first_row = next(rows_iter, None)
-        if first_row is not None and phone_column not in first_row.values:
+        # Read independently of the data-row loop below, not inferred from the
+        # first yielded row - a header-only file has zero data rows, so a
+        # header derived that way would silently skip this check and let the
+        # file become a "successfully parsed," zero-row job.
+        header = parser.read_header(path, ext)
+        if phone_column not in header:
             raise ParseLimitExceeded(f"phone column '{phone_column}' not found in file header")
-        all_rows = itertools.chain([first_row], rows_iter) if first_row is not None else ()
 
-        for row in all_rows:
+        for row in parser.parse_file(path, ext):
             total += 1
             result = classify.classify_row(
                 row,
@@ -198,12 +199,17 @@ def parse_job(
             db.add_all(batch)
             db.flush()
 
+        if total == 0:
+            raise ParseLimitExceeded("file has no data rows - upload a file with at least one row")
+
     except (ParseLimitExceeded, UnicodeDecodeError, ValueError) as exc:
         job.state = "failed"
         job.error_summary = str(exc)[:1000]
+        # AuditEvent.reason_code is String(50) - the full message is preserved above
+        # in error_summary (String(1000)); this is a short tag, not the detail.
         record_audit(
             db, action="import.parse", result="failure", actor_user_id=job.uploader_id,
-            target_type="import_job", target_id=job.id, reason_code=str(exc)[:100],
+            target_type="import_job", target_id=job.id, reason_code=str(exc)[:50],
         )
         return
 

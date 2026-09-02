@@ -265,6 +265,23 @@ def test_wrong_phone_column_fails_fast(manager_client):
     assert job["state"] == "failed"
 
 
+def test_header_only_file_fails_parse_cleanly(manager_client):
+    """The header was previously inferred from the first yielded data row, so a
+    header-only file (zero data rows) skipped the phone-column check entirely
+    and silently "succeeded" as a zero-row job, even though phone_column is
+    present in the header here. The header must be validated independent of
+    whether any data rows exist, and a zero-row job must fail outright.
+    """
+    client = manager_client
+    headers = csrf_headers(client)
+    campaign_id = _create_campaign(client, headers)
+    upload_resp = _upload(client, headers, campaign_id, "phone,name\n")
+    assert upload_resp.status_code == 200, upload_resp.text
+    job_id = upload_resp.json()["id"]
+    job = client.get(f"/api/v1/imports/{job_id}").json()
+    assert job["state"] == "failed"
+
+
 def test_disposition_cannot_claim_dnc_with_unapproved_code(manager_client):
     client = manager_client
     headers = csrf_headers(client)
