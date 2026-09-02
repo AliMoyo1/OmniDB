@@ -877,3 +877,6 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
   CI's two jobs, `docker build` succeeds, ruff/mypy clean. A test hooks
   every executed statement to prove the list-access check issues no query
   against workforce_import_rows.
+- 2026-09-02: CI green on `c6f7eae` - build, quality, security, and
+  integration all passed, confirming local verification exactly. Four
+  review rounds on this feature now closed.

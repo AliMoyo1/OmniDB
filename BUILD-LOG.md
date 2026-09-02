@@ -1919,3 +1919,8 @@ exercises the legacy row-load fallback and still resolves in under 15
 queries, confirming that path stays bounded too. 4 new tests: invalid-
 create-only inaccessible, valid-create-only still accessible, list-access
 resolves without loading rows, and the over_cap routing.
+
+Confirmed green on `c6f7eae`: build, quality, security, and integration
+all passed - the parse-time footprint computation and the migration both
+hold under CI's own fresh Postgres/Redis containers, matching local
+verification exactly. Four review rounds on this feature now closed.
