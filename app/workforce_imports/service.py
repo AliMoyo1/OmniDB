@@ -21,13 +21,16 @@ from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
 from app.authz import service as authz
-from app.authz.capabilities import APPOINT_TEAM_CAPTAIN
+from app.authz.capabilities import APPOINT_TEAM_CAPTAIN, ASSIGN_CAMPAIGN_AGENT
+from app.campaigns import service as campaign_service
+from app.campaigns.service import CampaignAssignmentError
 from app.config import get_settings
 from app.flags import service as flags
 from app.imports import storage, validators
 from app.imports.parser import ParseLimitExceeded, parse_file
 from app.models.authz import ReportingAssignment, RoleAssignment
 from app.models.base import utcnow
+from app.models.campaign import Campaign, CampaignUserAssignment
 from app.models.identity import Team, TeamMembership, User
 from app.models.workforce_imports import (
     WorkforceImportDecision,
@@ -45,6 +48,7 @@ IMPORT_TYPES = (
     "team_memberships",
     "role_assignments",
     "reporting_assignments",
+    "campaign_user_assignments",
 )
 REQUIRED_COLUMNS = {
     "users": {"action", "external_workforce_id", "login_identifier", "display_name"},
@@ -54,6 +58,7 @@ REQUIRED_COLUMNS = {
         "action", "external_workforce_id", "role_code", "scope_type", "reason_code",
     },
     "reporting_assignments": {"external_workforce_id", "supervisor_workforce_id"},
+    "campaign_user_assignments": {"action", "external_workforce_id", "campaign_code"},
 }
 _CLASSIFIERS = {
     "users": classify.classify_users_row,
@@ -61,7 +66,16 @@ _CLASSIFIERS = {
     "team_memberships": classify.classify_team_membership_row,
     "role_assignments": classify.classify_role_assignment_row,
     "reporting_assignments": classify.classify_reporting_assignment_row,
+    "campaign_user_assignments": classify.classify_campaign_assignment_row,
 }
+# The blanket, coarse "may even open this surface at all" gate the web and JSON
+# API layers both use. Every real authorization decision happens per-row in
+# _row_authority_ok; this is only a pre-filter, but it still needs to actually
+# include every capability a real import type's rows can require - not just
+# ROLE_APPOINTMENT_CAPABILITY's values, which would silently exclude a Team
+# Captain who holds ASSIGN_CAMPAIGN_AGENT but no workforce-appointment
+# capability from ever reaching campaign_user_assignments at all.
+UPLOAD_CAPABILITIES = frozenset(ROLE_APPOINTMENT_CAPABILITY.values()) | {ASSIGN_CAMPAIGN_AGENT}
 
 
 class WorkforceImportError(Exception):
@@ -297,6 +311,13 @@ def _row_authority_ok(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob,
             return False
         return authz.has_scope_capability(
             db, actor_id, capability, scope_type=scope_type, scope_id=scope_id
+        )
+    if job.import_type == "campaign_user_assignments":
+        campaign_id = values.get("campaign_id")
+        if campaign_id is None:
+            return False
+        return authz.has_campaign_capability(
+            db, actor_id, ASSIGN_CAMPAIGN_AGENT, uuid.UUID(campaign_id)
         )
     return True
 
@@ -619,12 +640,61 @@ def _commit_reporting_assignment_row(
     return _RowOutcome(row.row_number, "set")
 
 
+def _commit_campaign_assignment_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> _RowOutcome | None:
+    if row.normalized_identity is None:
+        return None
+    values = row.parsed_values or {}
+    # A real committed campaign, never hard-deleted - guaranteed to exist.
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == uuid.UUID(values["campaign_id"]))
+    ).scalar_one()
+    team_id = uuid.UUID(values["team_id"]) if values.get("team_id") else None
+
+    if row.action == "assign":
+        try:
+            assignment = campaign_service.assign_agent_to_campaign(
+                db, campaign, agent_id=row.normalized_identity, team_id=team_id,
+                actor_id=actor_id,
+            )
+        except CampaignAssignmentError:
+            row.conflict_type = "already_assigned"
+            return _RowOutcome(row.row_number, "skipped_conflict")
+        row.committed_entity_type = "campaign_user_assignment"
+        row.committed_entity_id = assignment.id
+        return _RowOutcome(row.row_number, "assigned")
+
+    # end
+    current = db.execute(
+        select(CampaignUserAssignment)
+        .where(
+            CampaignUserAssignment.user_id == row.normalized_identity,
+            CampaignUserAssignment.campaign_id == campaign.id,
+            CampaignUserAssignment.assignment_type == "primary",
+            CampaignUserAssignment.status == "active",
+            CampaignUserAssignment.effective_to.is_(None),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if current is None:
+        row.conflict_type = "not_assigned"
+        return _RowOutcome(row.row_number, "skipped_conflict")
+    campaign_service.end_user_assignment(
+        db, current, actor_id=actor_id, reason_code=values.get("reason_code")
+    )
+    row.committed_entity_type = "campaign_user_assignment"
+    row.committed_entity_id = current.id
+    return _RowOutcome(row.row_number, "ended")
+
+
 _COMMIT_ROW_FUNCTIONS = {
     "users": _commit_users_row,
     "explicit_deactivations": _commit_deactivation_row,
     "team_memberships": _commit_team_membership_row,
     "role_assignments": _commit_role_assignment_row,
     "reporting_assignments": _commit_reporting_assignment_row,
+    "campaign_user_assignments": _commit_campaign_assignment_row,
 }
 
 
@@ -829,11 +899,42 @@ def _reverse_reporting_assignment_row(
     return "restored"
 
 
+def _reverse_campaign_assignment_row(
+    db: Session, row: WorkforceImportRow, *, actor_id: uuid.UUID
+) -> str | None:
+    assignment = db.execute(
+        select(CampaignUserAssignment).where(CampaignUserAssignment.id == row.committed_entity_id)
+        .with_for_update()
+    ).scalar_one()
+    currently_active = assignment.status == "active" and assignment.effective_to is None
+    if row.action == "assign":
+        if not currently_active:
+            return None
+        campaign_service.end_user_assignment(db, assignment, actor_id=actor_id)
+        return "ended"
+    # end
+    if currently_active:
+        return None
+    values = row.parsed_values or {}
+    campaign = db.execute(
+        select(Campaign).where(Campaign.id == assignment.campaign_id)
+    ).scalar_one()
+    team_id = uuid.UUID(values["team_id"]) if values.get("team_id") else None
+    try:
+        campaign_service.assign_agent_to_campaign(
+            db, campaign, agent_id=assignment.user_id, team_id=team_id, actor_id=actor_id,
+        )
+    except CampaignAssignmentError:
+        return None
+    return "assigned"
+
+
 _REVERSE_ROW_FUNCTIONS = {
     "user": _reverse_user_row,
     "team_membership": _reverse_team_membership_row,
     "role_assignment": _reverse_role_assignment_row,
     "reporting_assignment": _reverse_reporting_assignment_row,
+    "campaign_user_assignment": _reverse_campaign_assignment_row,
 }
 
 

@@ -20,7 +20,6 @@ from app.db import get_session
 from app.flags.service import FeatureDisabledError
 from app.models.identity import User
 from app.models.workforce_imports import WorkforceImportJob
-from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY
 from app.workforce_imports import service as import_service
 from app.workforce_imports.schemas import (
     InvalidExample,
@@ -52,7 +51,7 @@ def _require_any_appointment_capability(
 ) -> User:
     if not any(
         authz.has_assigned_capability(db, user.id, capability)
-        for capability in ROLE_APPOINTMENT_CAPABILITY.values()
+        for capability in import_service.UPLOAD_CAPABILITIES
     ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not authorized")
     return user

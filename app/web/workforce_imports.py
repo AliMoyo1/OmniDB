@@ -23,7 +23,6 @@ from app.models.identity import User
 from app.models.workforce_imports import WorkforceImportJob
 from app.web.dependencies import require_page_user, verify_form_csrf
 from app.web.templates import page_context, templates
-from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY
 from app.workforce_imports import service as import_service
 from app.workforce_imports.service import (
     ImportNotReady,
@@ -48,13 +47,16 @@ _TEMPLATES: dict[str, str] = {
         "action,external_workforce_id,role_code,scope_type,scope_code,reason_code\r\n"
     ),
     "reporting_assignments": "external_workforce_id,supervisor_workforce_id,reason_code\r\n",
+    "campaign_user_assignments": (
+        "action,external_workforce_id,campaign_code,team_code,reason_code\r\n"
+    ),
 }
 
 
 def _any_appointment_capability(db: Session, user: User) -> bool:
     return any(
         authz.has_assigned_capability(db, user.id, capability)
-        for capability in ROLE_APPOINTMENT_CAPABILITY.values()
+        for capability in import_service.UPLOAD_CAPABILITIES
     )
 
 

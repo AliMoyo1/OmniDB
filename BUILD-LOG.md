@@ -1418,3 +1418,36 @@ Confirmed green on `0a0d487`: build, security, quality, integration
 (141/141 tests) all passed - the existing 140 still pass under the
 tightened check, since no existing test fixture's actor was actually
 relying on the gap (all had real, not just blanket, authority already).
+
+## 2026-09-02: Phase 4B-3 - campaign_user_assignments (assign, end)
+
+Last of the seven import types, closing out Phase 4B's staged-import
+coverage except `target_assignments` (blocked on 4C). No new service
+function needed - `campaign_service.assign_agent_to_campaign` and
+`end_user_assignment` already existed from Phase 4A, reused as-is. `action`
+`transfer` is deliberately deferred: 11.4 says correcting a transfer must
+itself be "a new compensating assignment or transfer event," a directional
+reversal genuinely different in shape from every other action this phase
+built, not a same-shape extension - real design work for its own
+increment, not something to rush into this one. `assign` + `end` already
+cover the core bulk use case (staffing a campaign up or down in bulk), just
+not day-to-day agent movement between campaigns.
+
+One more finding while wiring the blanket "may even use this surface"
+gate: it would have worked for this type only by coincidence - every role
+that currently holds `ASSIGN_CAMPAIGN_AGENT` also happens to hold a
+workforce-appointment capability today, but nothing enforces that staying
+true. Replaced the ad hoc check in both HTTP layers with a real shared
+constant covering the actual union of capabilities bulk import can require,
+so a future role reshuffle can't silently lock out a legitimate campaign
+stager with nothing catching it.
+
+Full design, and the `Campaign.external_code` prerequisite and authority-
+gap fix that came before it, in `PHASE-4B-PLAN.md`. ruff/mypy clean,
+offline FK-length check clean (no migration needed this time - reused
+existing generic columns), full suite (179 tests) collects, non-integration
+suite green locally (35/35). 2 new integration tests: the full assign/end/
+reversal path including the blocking-classify case for reassigning an
+already-assigned agent, and the same campaign-scoped-authority proof
+`team_memberships` established. No live database this session - pushing
+for CI.

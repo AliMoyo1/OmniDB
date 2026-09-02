@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.auth.service import normalize_email
 from app.imports.parser import ParsedRow, sanitize_text
 from app.models.authz import ReportingAssignment, RoleAssignment
+from app.models.campaign import Campaign, CampaignUserAssignment
 from app.models.identity import Team, TeamMembership, User
 from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY
 
@@ -28,6 +29,7 @@ _MAX_REASON_CODE_LEN = 50
 _USERS_ACTIONS = {"create", "update", "reactivate"}
 _TEAM_MEMBERSHIP_ACTIONS = {"add", "end"}
 _ROLE_ASSIGNMENT_ACTIONS = {"assign", "end"}
+_CAMPAIGN_ASSIGNMENT_ACTIONS = {"assign", "end"}
 _SCOPE_TYPES = {"installation", "organization", "team"}
 
 
@@ -538,4 +540,105 @@ def classify_reporting_assignment_row(
         normalized_identity=subordinate_id, parsed_values=parsed_values,
         validation_result="valid", validation_detail=None, conflict_type=None,
         risk_level="routine",
+    )
+
+
+def _lookup_campaign(db: Session, campaign_code: str) -> Campaign | None:
+    return db.scalar(select(Campaign).where(Campaign.external_code == campaign_code))
+
+
+def classify_campaign_assignment_row(
+    row: ParsedRow, *, db: Session, seen_identities: set[str]
+) -> WorkforceRowClassification:
+    action = _clean(row.values.get("action")).lower()
+    external_workforce_id = _clean(row.values.get("external_workforce_id"))
+    campaign_code = _clean(row.values.get("campaign_code"))
+    team_code = _clean(row.values.get("team_code")) or None
+    reason_code = _clean(row.values.get("reason_code")) or None
+
+    if not _valid_workforce_id(external_workforce_id):
+        return _invalid(
+            row.row_number, action=action or None, external_workforce_id=None,
+            detail="external_workforce_id is required and must not contain whitespace",
+        )
+    if action not in _CAMPAIGN_ASSIGNMENT_ACTIONS:
+        return _invalid(
+            row.row_number, action=action or None, external_workforce_id=external_workforce_id,
+            detail="action must be assign or end",
+        )
+    if not campaign_code:
+        return _invalid(
+            row.row_number, action=action, external_workforce_id=external_workforce_id,
+            detail="campaign_code is required",
+        )
+    dedup_key = f"{external_workforce_id}:{campaign_code}:{action}"
+    if dedup_key in seen_identities:
+        return _invalid(
+            row.row_number, action=action, external_workforce_id=external_workforce_id,
+            detail="this external_workforce_id/campaign_code/action repeats within this file",
+            conflict_type="duplicate_in_file",
+        )
+    seen_identities.add(dedup_key)
+
+    campaign = _lookup_campaign(db, campaign_code)
+    if campaign is None:
+        return _invalid(
+            row.row_number, action=action, external_workforce_id=external_workforce_id,
+            detail="no campaign matches this campaign_code", conflict_type="unknown_campaign",
+        )
+    user_id = _lookup_user_id(db, external_workforce_id)
+    if user_id is None:
+        return _invalid(
+            row.row_number, action=action, external_workforce_id=external_workforce_id,
+            detail="no existing user matches this external_workforce_id",
+            conflict_type="unknown_identity",
+        )
+
+    team_id: uuid.UUID | None = None
+    if team_code:
+        team = _lookup_team(db, team_code)
+        if team is None:
+            return _invalid(
+                row.row_number, action=action, external_workforce_id=external_workforce_id,
+                detail="no active team matches this team_code", conflict_type="unknown_team",
+            )
+        team_id = team.id
+
+    existing_primary = db.scalar(
+        select(CampaignUserAssignment.campaign_id).where(
+            CampaignUserAssignment.user_id == user_id,
+            CampaignUserAssignment.assignment_type == "primary",
+            CampaignUserAssignment.status == "active",
+            CampaignUserAssignment.effective_to.is_(None),
+        )
+    )
+    parsed_values = {
+        "campaign_id": str(campaign.id), "team_id": str(team_id) if team_id else None,
+        "reason_code": reason_code,
+    }
+
+    if action == "assign":
+        if existing_primary is not None:
+            return _invalid(
+                row.row_number, action=action, external_workforce_id=external_workforce_id,
+                detail="agent already has an active primary assignment - use a transfer",
+                conflict_type="already_assigned",
+            )
+        return WorkforceRowClassification(
+            row_number=row.row_number, action=action, external_workforce_id=external_workforce_id,
+            normalized_identity=user_id, parsed_values=parsed_values, validation_result="valid",
+            validation_detail=None, conflict_type=None, risk_level="routine",
+        )
+
+    # end
+    if existing_primary != campaign.id:
+        return _invalid(
+            row.row_number, action=action, external_workforce_id=external_workforce_id,
+            detail="agent has no active primary assignment on this campaign",
+            conflict_type="not_assigned",
+        )
+    return WorkforceRowClassification(
+        row_number=row.row_number, action=action, external_workforce_id=external_workforce_id,
+        normalized_identity=user_id, parsed_values=parsed_values, validation_result="valid",
+        validation_detail=None, conflict_type=None, risk_level="routine",
     )

@@ -112,6 +112,28 @@ def _make_team(prefix: str = "wfiteam") -> tuple[uuid.UUID, str]:
         return team.id, code
 
 
+def _make_campaign(
+    *, owning_scope_type: str = "organization", owning_scope_id: uuid.UUID | None = None,
+    prefix: str = "wficampaign",
+) -> tuple[uuid.UUID, str]:
+    from datetime import date
+
+    from app.campaigns import service as campaign_service
+
+    creator_id = make_user(f"{prefix}-creator-{uuid.uuid4().hex[:8]}@example.com")
+    code = f"{prefix}-{uuid.uuid4().hex[:8]}"
+    with SessionLocal() as db:
+        campaign = campaign_service.create_campaign(
+            db, created_by=creator_id, external_code=code, name=f"Campaign {code}",
+            description=None, owning_scope_type=owning_scope_type,
+            owning_scope_id=owning_scope_id, default_region="ZW", timezone="Africa/Harare",
+            purpose="Test", data_source="Test", data_obtained_at=date(2026, 1, 1),
+            lawful_basis_or_consent_reference="test-consent",
+        )
+        db.commit()
+        return campaign.id, code
+
+
 def _has_active_role(user_id: uuid.UUID, role_code: str, scope_type: str,
                       scope_id: uuid.UUID | None) -> bool:
     from app.models.authz import RoleAssignment
@@ -151,6 +173,20 @@ def _current_supervisor(subordinate_id: uuid.UUID) -> uuid.UUID | None:
                 ReportingAssignment.assignment_type == "primary",
                 ReportingAssignment.status == "active",
                 ReportingAssignment.effective_to.is_(None),
+            )
+        )
+
+
+def _current_primary_campaign(user_id: uuid.UUID) -> uuid.UUID | None:
+    from app.models.campaign import CampaignUserAssignment
+
+    with SessionLocal() as db:
+        return db.scalar(
+            select(CampaignUserAssignment.campaign_id).where(
+                CampaignUserAssignment.user_id == user_id,
+                CampaignUserAssignment.assignment_type == "primary",
+                CampaignUserAssignment.status == "active",
+                CampaignUserAssignment.effective_to.is_(None),
             )
         )
 
@@ -605,3 +641,96 @@ def test_routine_rows_still_need_real_per_row_authority_not_just_the_blanket_gat
 
     commit = _commit(uploader, headers, job, v)
     assert commit.status_code == 200, commit.text
+
+
+def test_campaign_assignment_assign_end_and_reversal():
+    manager, _ = _manager()
+    headers = csrf_headers(manager)
+    campaign_id, campaign_code = _make_campaign()
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    user_id = make_user(f"{wid}@example.com")
+
+    assign_csv = (
+        "action,external_workforce_id,campaign_code,team_code,reason_code\r\n"
+        f"assign,{wid},{campaign_code},,\r\n"
+    )
+    job1 = _upload(manager, headers, "campaign_user_assignments", assign_csv).json()["id"]
+    status1 = manager.get(f"/api/v1/workforce/imports/{job1}").json()
+    assert status1["high_risk_rows"] == 0, status1
+    v1 = _decide(manager, headers, job1, tier="standard").json()["decision_version"]
+    commit1 = _commit(manager, headers, job1, v1)
+    assert commit1.status_code == 200, commit1.text
+    assert commit1.json()["outcomes"] == [{"row_number": 1, "outcome": "assigned"}]
+    assert _current_primary_campaign(user_id) == campaign_id
+
+    # A second campaign, assigning the already-assigned agent again is a
+    # blocking classify error, not a silent no-op or a commit-time surprise.
+    _, other_code = _make_campaign(prefix="wficampaign2")
+    reassign_csv = (
+        "action,external_workforce_id,campaign_code,team_code,reason_code\r\n"
+        f"assign,{wid},{other_code},,\r\n"
+    )
+    job_bad = _upload(manager, headers, "campaign_user_assignments", reassign_csv).json()["id"]
+    status_bad = manager.get(f"/api/v1/workforce/imports/{job_bad}").json()
+    assert status_bad["invalid_rows"] == 1, status_bad
+    assert _current_primary_campaign(user_id) == campaign_id  # unaffected
+
+    reverse1 = manager.post(f"/api/v1/workforce/imports/{job1}/reverse", headers=headers)
+    assert reverse1.status_code == 200, reverse1.text
+    assert reverse1.json()["reversed"] == [{"row_number": 1, "outcome": "ended"}]
+    assert _current_primary_campaign(user_id) is None
+
+    # Re-establish, then exercise "end" and its own reversal.
+    job2 = _upload(manager, headers, "campaign_user_assignments", assign_csv).json()["id"]
+    v2 = _decide(manager, headers, job2, tier="standard").json()["decision_version"]
+    assert _commit(manager, headers, job2, v2).status_code == 200
+    assert _current_primary_campaign(user_id) == campaign_id
+
+    end_csv = (
+        "action,external_workforce_id,campaign_code,team_code,reason_code\r\n"
+        f"end,{wid},{campaign_code},,offboard\r\n"
+    )
+    job3 = _upload(manager, headers, "campaign_user_assignments", end_csv).json()["id"]
+    v3 = _decide(manager, headers, job3, tier="standard").json()["decision_version"]
+    commit3 = _commit(manager, headers, job3, v3)
+    assert commit3.status_code == 200, commit3.text
+    assert commit3.json()["outcomes"] == [{"row_number": 1, "outcome": "ended"}]
+    assert _current_primary_campaign(user_id) is None
+
+    reverse3 = manager.post(f"/api/v1/workforce/imports/{job3}/reverse", headers=headers)
+    assert reverse3.status_code == 200, reverse3.text
+    assert reverse3.json()["reversed"] == [{"row_number": 1, "outcome": "assigned"}]
+    assert _current_primary_campaign(user_id) == campaign_id
+
+
+def test_campaign_assignment_requires_campaign_scoped_authority():
+    uploader, _ = _manager(prefix="wficampuploader")
+    headers = csrf_headers(uploader)
+    team_a_id, _ = _make_team(prefix="wficampa")
+    team_b_id, _ = _make_team(prefix="wficampb")
+    _, campaign_code = _make_campaign(
+        owning_scope_type="team", owning_scope_id=team_a_id, prefix="wficampscoped"
+    )
+    wid = f"wfi-{uuid.uuid4().hex[:8]}"
+    make_user(f"{wid}@example.com")
+
+    assign_csv = (
+        "action,external_workforce_id,campaign_code,team_code,reason_code\r\n"
+        f"assign,{wid},{campaign_code},,\r\n"
+    )
+    job = _upload(uploader, headers, "campaign_user_assignments", assign_csv).json()["id"]
+
+    wrong_team, _ = _team_leader(team_b_id, prefix="wficampwrong")
+    wrong_team_headers = csrf_headers(wrong_team)
+    denied = _decide(wrong_team, wrong_team_headers, job, tier="standard")
+    assert denied.status_code == 403, denied.text
+
+    right_team, _ = _team_leader(team_a_id, prefix="wficampright")
+    right_team_headers = csrf_headers(right_team)
+    approved = _decide(right_team, right_team_headers, job, tier="standard")
+    assert approved.status_code == 200, approved.text
+    v = approved.json()["decision_version"]
+
+    commit = _commit(uploader, headers, job, v)
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["outcomes"] == [{"row_number": 1, "outcome": "assigned"}]

@@ -2,7 +2,11 @@
 
 Status: 4B-1 (users + explicit_deactivations) done, CI green on `97615bc`.
 4B-2 (team_memberships, role_assignments, reporting_assignments) done, CI
-green on the first push, `9782c92` (2026-09-02).
+green on the first push, `9782c92`. 4B-3 (campaign_user_assignments:
+assign, end) built, pushed for CI (2026-09-02). Along the way: added
+`Campaign.external_code` (a real prerequisite gap) and fixed a real
+per-row authority gap in already-shipped 4B-1/4B-2 code - see the Log
+below for both.
 
 ## Scope note: sequencing versus the master plan
 
@@ -346,11 +350,83 @@ touches already had a matching end-function (`end_role_assignment`,
 `end_team_membership`), but reporting lines only ever had `set_reporting_
 line`'s implicit supersede. Same shape as its two siblings.
 
+## 4B-3 design: campaign_user_assignments (assign, end)
+
+Last of the seven import types this pass covers. Reuses the campaign
+staffing functions Phase 4A already built and already reuses across the
+manual endpoint and `transfer_agent`:
+`campaign_service.assign_agent_to_campaign`, `end_user_assignment`. No new
+service-layer function needed - unlike every other type so far, both
+directions already existed before this phase touched anything.
+
+### Prerequisite: Campaign.external_code
+
+Covered above - every other template resolves its subject by a real code,
+and `Campaign` had none. Landed and CI-confirmed before this section's
+design started.
+
+### Template columns
+
+`action` (`assign` | `end`), `external_workforce_id`, `campaign_code`,
+`team_code` (optional - matches `assign_agent_to_campaign`'s own optional
+`team_id`), `reason_code` (optional).
+
+### Classify rules
+
+- `campaign_code` resolves against `Campaign.external_code` - unknown code
+  is a blocking error ("unknown campaigns... are blocking errors," 11.2).
+- `team_code`, when given, resolves against `Team.external_code` (must be
+  `status == "active"`, matching the manual endpoint's own check).
+- `assign`: blocking error if the agent already has an *any* active
+  primary assignment (`assign_agent_to_campaign`'s own rule - "moving an
+  agent who already has one is transfer's job"). Caught at classify time
+  for a clear preview message, not just left to fail at commit.
+- `end`: must find an active primary assignment for (agent, campaign) -
+  unknown/none is a blocking error, not a warning (there's nothing
+  ambiguous to warn about - either the assignment exists or the row is
+  simply wrong).
+
+### Risk tier: routine
+
+The manual endpoint gates every action here behind the same
+`ASSIGN_CAMPAIGN_AGENT` capability with no second-approval tier, so this
+type doesn't invent one either. What makes this safe now (and would not
+have been, before the authority-gap fix above) is that every row is
+checked against `authz.has_campaign_capability(actor_id,
+ASSIGN_CAMPAIGN_AGENT, campaign_id)` - the exact bar the manual endpoint
+enforces - via the same generalized `_row_authority_ok` dispatch, at
+standard-decision time and re-verified at commit and reversal.
+
+### Reversal
+
+- `assign` -> `end_user_assignment` if the committed assignment is still
+  active, else conflict.
+- `end` -> `assign_agent_to_campaign` again if the committed assignment is
+  still ended, else conflict; `assign_agent_to_campaign`'s own "already has
+  an active primary" guard is left to fire naturally and is treated as a
+  conflict, not an uncaught error, the same pattern used for `assert_not_
+  self` throughout this phase.
+
+### Deferred: transfer
+
+`transfer_agent` is a third, already-built action this type could cover,
+but its reversal is a genuinely different shape from everything else in
+4B: 11.4 says explicitly that correcting a transfer is "a new compensating
+assignment or transfer event," i.e. a reversal must itself be a *second
+transfer in the opposite direction*, not an end/re-create pair like every
+other action here. That is real, independent design work, not a
+same-shape extension of what this pass already built - deferred to its own
+increment rather than rushed into this one. `assign` + `end` alone already
+cover the core bulk use case this phase exists for: bulk-onboarding and
+bulk-offboarding campaign staffing, not day-to-day agent movement.
+
 ## Out of scope for this pass
 
-- `campaign_user_assignments` (4B-3 - transfers prorate targets per
-  11.4/11.6, depends on whatever the 4C decision turns out to be) and
-  `target_assignments` (blocked entirely on 4C).
+- `transfer` action for `campaign_user_assignments` (see above - deferred
+  to its own increment, not blocked on anything, just genuinely separate
+  design work).
+- `target_assignments` (blocked entirely on 4C - no `target_policies` table
+  exists to reference).
 - Acting/time-limited role appointments (see scope cuts above - a
   separately-named roadmap item, "acting-role and delegation workflow").
 - In-app notification of uploaders/approvers (separate roadmap item).
@@ -602,3 +678,29 @@ line`'s implicit supersede. Same shape as its two siblings.
   the gap). Authority fix done - moving on to 4B-3's actual
   `campaign_user_assignments` type, now with `_row_authority_ok` already
   covering every type that exists so far.
+- 2026-09-02: built `campaign_user_assignments` (`assign`, `end`) per the
+  design above - no new service-layer function needed, `assign_agent_to_
+  campaign`/`end_user_assignment` already existed from Phase 4A. While
+  wiring the blanket "may even open this surface" gate, found it would
+  have worked for this type only by coincidence: every role that currently
+  holds `ASSIGN_CAMPAIGN_AGENT` also happens to hold a `ROLE_APPOINTMENT_
+  CAPABILITY` value today, but nothing enforces that link staying true.
+  Replaced the ad hoc `ROLE_APPOINTMENT_CAPABILITY.values()` check in both
+  HTTP layers with a real shared constant
+  (`import_service.UPLOAD_CAPABILITIES`, the union of both sets) so a
+  future role reshuffle can't silently lock out a legitimate campaign
+  stager without a single test catching it.
+
+  ruff/mypy clean repo-wide (92 files), the same offline FK-length check
+  confirms no new violations (no migration needed - reused existing
+  columns), app imports and generates its OpenAPI schema cleanly, full
+  suite (179 tests) collects, full non-integration suite green locally
+  (35/35). 2 new integration tests: the full assign/end/reversal path plus
+  the blocking-classify case for re-assigning an already-assigned agent,
+  and the same campaign-scoped-authority proof the team_memberships test
+  established (a Team Leader scoped to team B cannot approve a campaign
+  owned by team A). No live database this session - pushing for CI.
+
+  This closes out all seven of the master plan's bulk-import types except
+  `target_assignments` (blocked on 4C) - 4B-1 through 4B-3 complete, modulo
+  CI confirming this last push and the deferred `transfer` action.
