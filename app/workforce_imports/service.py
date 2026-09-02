@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import itertools
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import PurePosixPath
@@ -206,6 +206,12 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
     seen_identities: set[str] = set()
     batch: list[WorkforceImportRow] = []
     classifier = _CLASSIFIERS[job.import_type]
+    # Distinct object-level authorization requirements, accumulated as rows are
+    # classified so can_access_job never has to re-derive them from every row
+    # later. Capped: past _REQUIREMENTS_CAP distinct entries the footprint is
+    # marked over_cap instead of stored in full (see _REQUIREMENTS_CAP).
+    footprint_requirements: set[tuple] = set()
+    footprint_over_cap = False
 
     try:
         # Read independently of the data-row loop below, not inferred from the
@@ -229,20 +235,26 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
         for row in parse_file(path, ext):
             total += 1
             result = classifier(row, db=db, seen_identities=seen_identities)
-            batch.append(
-                WorkforceImportRow(
-                    import_job_id=job.id,
-                    row_number=result.row_number,
-                    action=result.action,
-                    external_workforce_id=result.external_workforce_id,
-                    normalized_identity=result.normalized_identity,
-                    parsed_values=result.parsed_values,
-                    validation_result=result.validation_result,
-                    validation_detail=result.validation_detail,
-                    conflict_type=result.conflict_type,
-                    risk_level=result.risk_level,
-                )
+            import_row = WorkforceImportRow(
+                import_job_id=job.id,
+                row_number=result.row_number,
+                action=result.action,
+                external_workforce_id=result.external_workforce_id,
+                normalized_identity=result.normalized_identity,
+                parsed_values=result.parsed_values,
+                validation_result=result.validation_result,
+                validation_detail=result.validation_detail,
+                conflict_type=result.conflict_type,
+                risk_level=result.risk_level,
             )
+            batch.append(import_row)
+            if not footprint_over_cap:
+                requirement = _row_requirement(job, import_row)
+                if requirement is not None:
+                    footprint_requirements.add(requirement)
+                    if len(footprint_requirements) > _REQUIREMENTS_CAP:
+                        footprint_over_cap = True
+                        footprint_requirements.clear()
             if result.validation_result == "invalid":
                 invalid += 1
             elif result.validation_result == "warning":
@@ -284,6 +296,14 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
     job.warning_rows = warning
     job.invalid_rows = invalid
     job.high_risk_rows = high_risk
+    job.authorization_footprint = {
+        "over_cap": footprint_over_cap,
+        "requirements": (
+            []
+            if footprint_over_cap
+            else [_serialize_requirement(req) for req in footprint_requirements]
+        ),
+    }
     job.state = "parsed"
     record_audit(
         db, action="workforce_import.parse", result="success", actor_user_id=job.uploader_id,
@@ -350,7 +370,16 @@ def _row_requirement(
         return ("user", row.normalized_identity)
     if job.import_type == "users":
         if row.action == "create":
-            return None
+            # A *valid* create names a brand-new identity with no role and no
+            # scope - the blanket appointment capability (already required at
+            # the HTTP layer) is the only bar, matching create_user's own
+            # manual screen, so it correctly contributes no scope constraint.
+            # An INVALID create (malformed email, a duplicate-in-file) has
+            # failed validation and will never commit; letting it also return
+            # None would let a job of nothing but invalid creates be seen and
+            # rejected by any capability holder, the same fail-open the
+            # unresolved-target cases already close - so it denies instead.
+            return None if row.validation_result == "valid" else ("deny",)
         if row.action in ("update", "reactivate"):
             if row.normalized_identity is None:
                 return ("deny",)
@@ -377,21 +406,53 @@ def _row_requirement(
     return ("deny",)
 
 
-def _bulk_authority_ok(
-    db: Session, actor_id: uuid.UUID, job: WorkforceImportJob, rows: list[WorkforceImportRow]
+# Above this many DISTINCT requirements, a job's footprint is not stored in
+# full - it is marked over_cap and the (rare, large) job falls back to a
+# single-job row scan when actually opened, rather than bloating every list
+# request that reads its summary. Distinct requirements for a normal import
+# are small (a handful of teams/campaigns); only a mega-import touching
+# thousands of distinct users/scopes approaches this.
+_REQUIREMENTS_CAP = 1000
+
+
+def _serialize_requirement(req: tuple) -> list:
+    """A requirement tuple as JSON-safe data (UUIDs to strings, None kept)."""
+    return [str(part) if isinstance(part, uuid.UUID) else part for part in req]
+
+
+def _deserialize_requirement(entry: list) -> tuple:
+    """Inverse of _serialize_requirement - reconstructs the tuple can_access_job
+    feeds to _authority_over_requirements from stored footprint data."""
+    kind = entry[0]
+    if kind == "deny":
+        return ("deny",)
+    if kind == "user":
+        return ("user", uuid.UUID(entry[1]))
+    if kind == "scope":
+        scope_id = uuid.UUID(entry[3]) if entry[3] is not None else None
+        return ("scope", entry[1], entry[2], scope_id)
+    if kind == "campaign":
+        return ("campaign", uuid.UUID(entry[1]))
+    raise ValueError(f"unrecognized stored requirement: {entry!r}")
+
+
+def _authority_over_requirements(
+    db: Session, actor_id: uuid.UUID, requirements: Sequence[tuple | None]
 ) -> bool:
-    """Same policy _row_requirement expresses, applied to every row in `rows`
-    with a query count bounded by a small, fixed number of round trips - not
-    by row count, and not by how many DISTINCT targets/scopes are referenced
-    either: a 100,000-row job naming 100,000 distinct users still resolves in
-    a handful of chunked queries, not one per row and not one per target.
-    Every actual authorization decision still goes through the same trusted
-    logic the manual one-row screens ultimately rely on (authz.
-    scope_capabilities_matched / campaign_ids_with_capability, both built on
-    the same primitives has_scope_capability/has_campaign_capability use) -
+    """Whether `actor_id` is authorized for every requirement in the list -
+    the resolution core shared by the live per-row check (_assert_rows_
+    authorized, fed a job's committable rows) and the stored-footprint access
+    check (can_access_job, fed a job's precomputed distinct requirement set).
+    A query count bounded by a small, fixed number of round trips - not by
+    how many requirements are passed, and not by how many DISTINCT targets/
+    scopes they reference either: 100,000 distinct users still resolve in a
+    handful of chunked queries. Every actual authorization decision still
+    goes through the same trusted logic the manual one-row screens rely on
+    (authz.scope_capabilities_matched / campaign_ids_with_capability, built
+    on the same primitives has_scope_capability/has_campaign_capability use) -
     this only ever changes how many round trips that takes, never what it
-    decides."""
-    requirements = [_row_requirement(job, row) for row in rows]
+    decides. A None requirement is a row that needs no check (a valid user
+    creation) and contributes nothing."""
     if any(req == ("deny",) for req in requirements):
         return False
 
@@ -481,14 +542,37 @@ def _bulk_authority_ok(
 def _assert_rows_authorized(
     db: Session, job: WorkforceImportJob, actor_id: uuid.UUID, *, risk_level: str
 ) -> None:
+    # The approve/commit/reverse path always resolves live from the job's own
+    # committable rows (valid-only, by risk level), never from the stored
+    # access footprint - the footprint is over ALL rows for the access gate,
+    # a deliberately different (and coarser) set than what may actually be
+    # committed. This is one job the actor is already acting on, so loading
+    # its committable rows here is bounded and appropriate.
     rows = _committable_rows(db, job, risk_level=risk_level)
-    if not _bulk_authority_ok(db, actor_id, job, rows):
+    requirements = [_row_requirement(job, row) for row in rows]
+    if not _authority_over_requirements(db, actor_id, requirements):
         raise InsufficientApprovalAuthority(
             "not authorized for the effect of one or more rows in this import"
         )
 
 
-def can_access_job(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob) -> bool:
+def _authority_over_all_rows(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob) -> bool:
+    """The fallback access resolution that materializes every row - used only
+    when a stored footprint is unavailable (a job parsed before the footprint
+    column existed) or when the footprint said the distinct requirement set
+    was too large to store and a single-job full check is warranted anyway.
+    Never reached from the list view for a summarized job."""
+    rows = list(
+        db.scalars(select(WorkforceImportRow).where(WorkforceImportRow.import_job_id == job.id))
+    )
+    if not rows:
+        return False
+    return _authority_over_requirements(db, actor_id, [_row_requirement(job, row) for row in rows])
+
+
+def can_access_job(
+    db: Session, actor_id: uuid.UUID, job: WorkforceImportJob, *, for_listing: bool = False
+) -> bool:
     """Whether this actor has any legitimate reach into this specific job at all -
     not just "holds some import-related capability somewhere." Without this, any
     holder of any import capability could open, decide, commit, or reverse *any*
@@ -498,19 +582,38 @@ def can_access_job(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob) ->
     over *every* row it contains - not only the currently-valid ones, since an
     invalid or warning row can still name a real team, role, or campaign, and
     merely viewing that should require the same authority acting on it would.
-    A job with no rows yet (quarantined, still parsing, or failed before any row
-    was recorded) has nothing to scope-check against, so it is uploader-only
-    until parsing actually produces something to check - a job the parser never
-    reached must never be readable by "anyone who holds any import capability
-    anywhere," which is what a fail-open default here would mean in practice."""
+
+    Resolved against the job's stored authorization_footprint (computed once at
+    parse time) rather than by re-loading every row on each call - so the list
+    view can check up to 200 candidate jobs without ever materializing their
+    rows. `for_listing` distinguishes the two callers: the list view passes it
+    so an over-cap job (one whose distinct requirement set was too large to
+    summarize) is simply skipped rather than triggering a full row scan; every
+    other caller acts on a single already-chosen job and leaves it False, so a
+    qualified non-uploader (e.g. a high-risk approver) can still reach even an
+    over-cap job through the detail/decision path - the two-person rule must
+    not become unenforceable just because a job is large.
+
+    A NULL footprint means "not computed": a job still quarantined/parsing, one
+    that failed to parse, or one that predates the footprint column. The first
+    two are uploader-only (nothing to scope-check yet, and a fail-open default
+    here would let any capability holder read a job the parser never finished);
+    a legacy parsed job falls back to loading its rows, correct if no longer
+    cheap - only jobs from before this column ever hit that path."""
     if actor_id == job.uploader_id:
         return True
-    rows = list(
-        db.scalars(select(WorkforceImportRow).where(WorkforceImportRow.import_job_id == job.id))
-    )
-    if not rows:
-        return False
-    return _bulk_authority_ok(db, actor_id, job, rows)
+
+    footprint = job.authorization_footprint
+    if footprint is None:
+        if job.state != "parsed":
+            return False
+        return _authority_over_all_rows(db, actor_id, job)
+    if footprint.get("over_cap"):
+        if for_listing:
+            return False
+        return _authority_over_all_rows(db, actor_id, job)
+    requirements = [_deserialize_requirement(entry) for entry in footprint.get("requirements", [])]
+    return _authority_over_requirements(db, actor_id, requirements)
 
 
 def _assert_job_accessible(db: Session, job: WorkforceImportJob, actor_id: uuid.UUID) -> None:
@@ -523,11 +626,11 @@ def visible_jobs(
 ) -> list[WorkforceImportJob]:
     """The list view's job set, scoped to what this actor can actually reach -
     checked with the same per-job authority commit/decide/reverse require, not
-    just the blanket "holds some import capability" gate. Fetches a larger
-    candidate batch and filters in Python (can_access_job needs each job's own
-    rows, which isn't expressible as a single SQL WHERE clause here) - fine at
-    this build's real scale (a pilot-sized workforce), worth revisiting only if
-    job volume grows enough for it to matter."""
+    just the blanket "holds some import capability" gate. Each candidate is
+    resolved against its stored authorization_footprint (for_listing=True), so
+    this filters up to `candidate_limit` jobs without ever loading their rows -
+    an out-of-scope reviewer's list request no longer scans every row of every
+    candidate."""
     candidates = db.scalars(
         select(WorkforceImportJob)
         .order_by(WorkforceImportJob.created_at.desc())
@@ -535,7 +638,7 @@ def visible_jobs(
     )
     visible: list[WorkforceImportJob] = []
     for job in candidates:
-        if can_access_job(db, actor_id, job):
+        if can_access_job(db, actor_id, job, for_listing=True):
             visible.append(job)
             if len(visible) >= limit:
                 break

@@ -1846,3 +1846,76 @@ passed - the migration's order-preserving reconciliation and the new
 bulk authorization primitives both hold under CI's own fresh Postgres/
 Redis containers, matching local verification exactly. Three review
 rounds on this feature now closed in a row.
+
+## 2026-09-02: Phase 4B code review response, round 4 - 2 findings on round 3's fixes
+
+A fourth review, on round 3's fixes. Two findings, both high-priority,
+both real. Both fixed.
+
+**#1 - invalid user-CREATE rows still failed open.** Round 3 fixed the
+unresolved-TARGET cases (deactivation/reporting/user-update/team) to
+return `("deny",)`, but the `users` `create` branch checked `action`
+before validity: `if row.action == "create": return None` fired for
+every create, including invalid ones (a malformed email, a
+duplicate-in-file). A job of nothing but invalid creates therefore had an
+all-`None` requirement set and passed the object-access check trivially,
+so any capability holder could see and reject it - the same fail-open the
+target cases already close, reached through invalid creates instead. Fixed
+so a create returns `None` only when `validation_result == "valid"`
+(a valid create genuinely names a brand-new identity with no scope,
+matching create_user's own blanket manual bar); an invalid create returns
+`("deny",)` like every other non-committable row. A companion test guards
+the flip side - a purely-valid create-only job must still be reachable by
+a non-uploader who holds an appointment capability, exactly as they could
+create those users through the manual screen, so the fix must not
+over-correct into denying legitimate create-only access.
+
+**#2 - the list view still materialized every row of up to 200 jobs.**
+Round 3 made per-job authorization bounded in *queries*, but
+`can_access_job` still loaded every `WorkforceImportRow` of its job as an
+ORM object to derive requirements, and `visible_jobs` called it once per
+candidate (up to 200). At the documented 100,000-row-per-job maximum, one
+list request could materialize millions of ORM rows. Fixed by computing
+each job's distinct authorization requirement set once, at parse time
+(via the single-source `_row_requirement`), and storing it on the job row
+as a new nullable JSONB column `authorization_footprint` (migration
+0015). The access check now resolves against that small stored summary
+and never touches `workforce_import_rows` for a summarized job - proven
+directly by a test that hooks every executed statement and asserts none
+reference the rows table while an authorized non-uploader's list-access
+check runs against a genuinely non-empty job.
+  - `_bulk_authority_ok(db, actor, job, rows)` was refactored into
+    `_authority_over_requirements(db, actor, requirements)` - the same
+    round-3 chunked resolution core, now fed a precomputed requirement
+    list instead of deriving it from rows. The approve/commit/reverse path
+    (`_assert_rows_authorized`) still resolves live from the job's own
+    committable rows (a deliberately different, valid-only set than the
+    all-rows access footprint), which is fine - that path acts on one job
+    the actor is already committing.
+  - Footprint semantics: NULL = not computed (still parsing, failed parse,
+    or a job predating the column) - treated as uploader-only, never
+    fail-open; a legacy parsed job with a NULL footprint falls back to the
+    old row-load path, correct if no longer cheap, and only reachable for
+    jobs from before this migration (not backfilled: a pilot has ~0
+    existing jobs, and the fallback is fail-safe). An empty requirement
+    set (e.g. a valid-create-only job) stores `[]` and is accessible to a
+    capability holder. Distinct requirements past a 1,000 cap store an
+    `over_cap` sentinel instead of the full set: the list view
+    (`for_listing=True`) skips such a job rather than scanning its rows on
+    every list request, while a single-job action (`for_listing=False` -
+    detail, decision, commit) still falls back to the live row check, so a
+    qualified non-uploader high-risk approver can always reach even a
+    mega-job - the two-person rule must not become unenforceable by size.
+    A dedicated test proves both `over_cap` routes (list skip vs.
+    single-job fallback, plus uploader-always and outsider-never).
+
+Verification: ruff and mypy clean repo-wide. Full suite green against
+real Postgres 16 + Redis 7 locally: migration 0015 applies/downgrades/
+reapplies cleanly, `pytest -m integration` (165 tests, up from 161) and
+the unit suite (35 tests) both pass matching CI's two jobs, `docker
+build` succeeds. The round-3 high-cardinality query-count test keeps
+passing unchanged - its ORM-built job has a NULL footprint, so it now
+exercises the legacy row-load fallback and still resolves in under 15
+queries, confirming that path stays bounded too. 4 new tests: invalid-
+create-only inaccessible, valid-create-only still accessible, list-access
+resolves without loading rows, and the over_cap routing.

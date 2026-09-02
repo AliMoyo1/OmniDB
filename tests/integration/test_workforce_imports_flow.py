@@ -1342,3 +1342,173 @@ def test_can_access_job_query_count_stays_bounded_at_high_distinct_cardinality()
         "chunk size) - should be bounded by a small, fixed number of chunked "
         "round trips, not by distinct-target/scope count"
     )
+
+
+def test_job_of_entirely_invalid_creates_is_not_accessible_to_non_uploader():
+    """Round-4 review finding #1: _row_requirement returned None ("no check
+    needed") for EVERY create row, including invalid ones (a malformed email,
+    a duplicate-in-file). A job of nothing but invalid creates therefore had
+    an all-None requirement set and passed the access check trivially, so any
+    capability holder could see and reject it - the same fail-open the
+    unresolved-target cases already close, reached through invalid creates.
+    Only a *valid* create should contribute no constraint."""
+    uploader, _ = _manager(prefix="wfiinvcreate")
+    headers = csrf_headers(uploader)
+    # Both rows are creates with malformed login_identifiers -> classify marks
+    # them invalid, but their action is still "create".
+    bad_csv = (
+        "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
+        f"create,wfi-{uuid.uuid4().hex[:8]},not-an-email,Name,,\r\n"
+        f"create,wfi-{uuid.uuid4().hex[:8]},also-not-an-email,Name,,\r\n"
+    )
+    job_id = _upload(uploader, headers, "users", bad_csv).json()["id"]
+    status = uploader.get(f"/api/v1/workforce/imports/{job_id}").json()
+    assert status["total_rows"] == 2, status
+    assert status["invalid_rows"] == 2, status
+
+    outsider, _ = _manager(prefix="wfiinvcreateoutsider")
+    get_denied = outsider.get(f"/api/v1/workforce/imports/{job_id}")
+    assert get_denied.status_code == 404, get_denied.text
+
+    get_by_uploader = uploader.get(f"/api/v1/workforce/imports/{job_id}")
+    assert get_by_uploader.status_code == 200, get_by_uploader.text
+
+
+def test_valid_create_only_job_is_still_accessible_to_a_capability_holder():
+    """The flip side of finding #1: a job of purely VALID create rows still has
+    no scope constraint (a create names a brand-new identity with no role,
+    gated only by the blanket appointment capability the HTTP layer already
+    requires) - so a non-uploader who holds an appointment capability must
+    still be able to reach it, exactly as they could create those users
+    through the manual one-row screen. Guards against the finding-#1 fix
+    over-correcting into denying legitimate create-only access."""
+    uploader, _ = _manager(prefix="wfivalidcreate")
+    headers = csrf_headers(uploader)
+    good_csv = (
+        "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
+        f"create,wfi-{uuid.uuid4().hex[:8]},{uuid.uuid4().hex[:8]}@example.com,Name,,\r\n"
+    )
+    job_id = _upload(uploader, headers, "users", good_csv).json()["id"]
+    status = uploader.get(f"/api/v1/workforce/imports/{job_id}").json()
+    assert status["valid_rows"] == 1, status
+
+    other_manager, _ = _manager(prefix="wfivalidcreateother")
+    get_ok = other_manager.get(f"/api/v1/workforce/imports/{job_id}")
+    assert get_ok.status_code == 200, get_ok.text
+
+
+def test_list_access_check_resolves_from_footprint_without_loading_rows():
+    """Round-4 review finding #2: visible_jobs called can_access_job per
+    candidate job (up to 200), and each call loaded every WorkforceImportRow
+    of its job as an ORM object - at the 100,000-row maximum, one list request
+    could scan millions of rows. Now each job's authorization requirements are
+    summarized once at parse time onto the job row itself, so the per-candidate
+    access check (can_access_job with for_listing=True, exactly what
+    visible_jobs calls) reads that summary and never touches
+    workforce_import_rows. Proven directly: an authorized non-uploader resolves
+    access to a genuinely non-empty job while not one executed statement
+    references the workforce_import_rows table.
+
+    Checks can_access_job(for_listing=True) directly rather than visible_jobs
+    end-to-end, because visible_jobs scans the 200 most recent jobs globally -
+    which in a shared test database includes other tests' jobs, some built
+    directly via the ORM with no footprint, which legitimately fall back to a
+    row load. The per-candidate check on a normally-parsed job is the unit the
+    fix actually changed."""
+    from sqlalchemy import event
+
+    from app.db import engine
+    from app.models.workforce_imports import WorkforceImportJob
+    from app.workforce_imports import service as import_service
+
+    uploader, _ = _manager(prefix="wfinorows")
+    headers = csrf_headers(uploader)
+    team_id, team_code = _make_team(prefix="wfinorowsteam")
+    wid = f"wfinorows-{uuid.uuid4().hex[:8]}"
+    make_user(f"{wid}@example.com")
+    add_csv = f"action,external_workforce_id,team_code,reason_code\r\nadd,{wid},{team_code},\r\n"
+    job_id = _upload(uploader, headers, "team_memberships", add_csv).json()["id"]
+
+    # A non-uploader who genuinely has authority over the job (a Team Leader
+    # scoped to the team the membership targets), so the footprint's scope
+    # requirement actually resolves to True - not just an early deny.
+    _leader_client, leader_id = _team_leader(team_id, prefix="wfinorowsleader")
+
+    row_table_hits: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        if "workforce_import_rows" in statement:
+            row_table_hits.append(statement)
+
+    with SessionLocal() as db:
+        job = db.get(WorkforceImportJob, uuid.UUID(job_id))
+        assert job is not None
+        assert job.authorization_footprint is not None, "parse should store a footprint"
+        event.listen(engine, "before_cursor_execute", _capture)
+        try:
+            allowed = import_service.can_access_job(
+                db, uuid.UUID(leader_id), job, for_listing=True
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", _capture)
+
+    assert allowed is True, "the scoped Team Leader should reach this job"
+    assert not row_table_hits, (
+        "the list access check queried workforce_import_rows - it must resolve "
+        f"from the stored footprint only. Offending SQL: {row_table_hits[:1]}"
+    )
+
+
+def test_over_cap_job_is_skipped_in_list_but_reachable_for_a_qualified_approver():
+    """Round-4 finding #2, the over-cap branch: a job whose distinct
+    authorization footprint was too large to store in full is marked over_cap.
+    The list view (for_listing=True) skips it rather than triggering a full row
+    scan for every such job on every list request - but a single-job action
+    (detail/decision/commit, for_listing=False) still falls back to the live
+    row check, so a qualified non-uploader (e.g. a high-risk approver) can
+    still reach it. The two-person rule must not become unenforceable just
+    because a job is large. Building 1,000+ distinct requirements to trip the
+    real cap would be slow, so the over_cap footprint is set directly and the
+    row that backs the fallback is inserted alongside it."""
+    from app.models.workforce_imports import WorkforceImportJob, WorkforceImportRow
+    from app.workforce_imports import service as import_service
+
+    uploader_id = make_user(f"wfiovercap-uploader-{uuid.uuid4().hex[:8]}@example.com")
+    team_id, _team_code = _make_team(prefix="wfiovercapteam")
+    target_id = make_user(f"wfiovercap-target-{uuid.uuid4().hex[:8]}@example.com")
+    _leader_client, leader_id = _team_leader(team_id, prefix="wfiovercapleader")
+    outsider_id = make_user(f"wfiovercap-outsider-{uuid.uuid4().hex[:8]}@example.com")
+
+    with SessionLocal() as db:
+        job = WorkforceImportJob(
+            import_type="team_memberships", uploader_id=uploader_id,
+            source_filename_display="overcap.csv",
+            generated_storage_key=f"overcap-{uuid.uuid4().hex}", file_hash="deadbeef",
+            state="parsed", total_rows=1, valid_rows=1, warning_rows=0, invalid_rows=0,
+            high_risk_rows=0,
+            authorization_footprint={"over_cap": True, "requirements": []},
+        )
+        db.add(job)
+        db.flush()
+        db.add(
+            WorkforceImportRow(
+                import_job_id=job.id, row_number=1, action="add",
+                external_workforce_id="x", normalized_identity=target_id,
+                parsed_values={"team_id": str(team_id)}, validation_result="valid",
+                risk_level="routine",
+            )
+        )
+        db.commit()
+        job_id = job.id
+
+    with SessionLocal() as db:
+        job = db.get(WorkforceImportJob, job_id)
+        assert job is not None
+        # List view: skipped for a non-uploader regardless of their authority.
+        assert import_service.can_access_job(db, leader_id, job, for_listing=True) is False
+        # Single-job action: the scoped Team Leader reaches it via the fallback.
+        assert import_service.can_access_job(db, leader_id, job, for_listing=False) is True
+        # An unrelated user still cannot, even through the fallback.
+        assert import_service.can_access_job(db, outsider_id, job, for_listing=False) is False
+        # The uploader always can.
+        assert import_service.can_access_job(db, uploader_id, job, for_listing=True) is True

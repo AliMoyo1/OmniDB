@@ -848,3 +848,32 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
 - 2026-09-02: CI green on `3d9e5f2` - quality, build, and integration all
   passed, confirming local verification exactly. Three review rounds on
   this feature now closed in a row.
+- 2026-09-02: code review response, round 4 - on round 3's fixes. 2
+  findings, both high-priority; full account in `BUILD-LOG.md`'s matching
+  entry. Summary:
+  - **Invalid user-creates now deny** - round 3's `_row_requirement`
+    returned `None` ("no check") for every `create` row, checking action
+    before validity, so a job of nothing but invalid creates passed the
+    access check trivially. A create now returns `None` only when valid;
+    an invalid create denies like any other non-committable row. (A
+    companion test guards that valid-create-only jobs stay accessible.)
+  - **The list view no longer materializes rows** - `can_access_job` still
+    loaded every WorkforceImportRow to derive requirements, and
+    `visible_jobs` called it per candidate (≤200), so at the 100k-row max
+    one list request could scan millions of rows. Requirements are now
+    computed once at parse time (single-source `_row_requirement`) and
+    stored on the job as `authorization_footprint` (JSONB, migration
+    0015); the access check reads that summary and never touches
+    workforce_import_rows for a summarized job. NULL footprint =
+    uploader-only (unparsed/failed) or a legacy row-load fallback (jobs
+    predating the column); `over_cap` sentinel past 1,000 distinct
+    requirements skips the job in the list but still allows a qualified
+    non-uploader to reach it via the single-job detail/decision path (so
+    the two-person rule can't be broken by job size).
+
+  Verified against real Postgres 16 + Redis 7 locally: migration 0015
+  applies/downgrades/reapplies cleanly, `pytest -m integration` (165
+  tests, up from 161) and the unit suite (35 tests) both green matching
+  CI's two jobs, `docker build` succeeds, ruff/mypy clean. A test hooks
+  every executed statement to prove the list-access check issues no query
+  against workforce_import_rows.

@@ -37,6 +37,14 @@ class WorkforceImportJob(UUIDMixin, TimestampMixin, Base):
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     committed_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # The distinct object-level authorization requirements this job's rows
+    # collectively imply, computed once at parse time so the list view and
+    # per-job access check never have to re-load and re-derive them from every
+    # row. NULL means "not computed yet" (still quarantined/parsing, or a job
+    # that predates this column) - which the access check treats as
+    # uploader-only, never fail-open. See app/workforce_imports/service.py's
+    # _row_requirement / can_access_job for the shape and the reasoning.
+    authorization_footprint: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class WorkforceImportRow(UUIDMixin, TimestampMixin, Base):
