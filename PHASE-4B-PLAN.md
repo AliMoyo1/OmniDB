@@ -757,3 +757,7 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
   reversal-conflict instances, two for the blocking-errors/warnings
   split), including a genuine multi-thread concurrency test for the
   version race.
+- 2026-09-02: CI green on `0b1803c` - security, quality, integration, and
+  build all passed, confirming the local Docker-based verification
+  exactly. All nine review findings closed; workforce imports are back to
+  a clean, production-ready state per the review's own gate.

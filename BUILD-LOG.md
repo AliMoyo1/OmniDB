@@ -1616,3 +1616,10 @@ concretely, including the object-level-authorization bypass, the
 blocking-errors and warnings gates, the live concurrency race, and both
 reversal-conflict-detection instances. Local containers torn down after
 verification; nothing left running.
+
+Confirmed green on `0b1803c`: security, quality, integration, and build
+all passed on the first push - no surprises between local Docker
+verification and CI. This also carried a separately-completed, unrelated
+commit (`5ef0ede`, fixing three more ORM/DB foreign-key name mismatches
+in `work_items`/`call_attempts` flagged as a follow-up during this same
+round's own offline DDL check) through the same run.
