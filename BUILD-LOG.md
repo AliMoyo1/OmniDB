@@ -1742,3 +1742,8 @@ containers, not a real regression - confirmed by a clean re-run of the
 full suite immediately after. 4 new tests prove the four findings
 concretely, including a genuine query-counting test for the N+1 fix and
 a genuine seeded-duplicate-data test for the migration reconciliation.
+
+Confirmed green on `6ec4f6b`: integration, quality, build, and security
+all passed - migration 0014's reconciliation step and the bulk
+authorization rewrite both hold under CI's own fresh Postgres/Redis
+containers, matching local verification exactly.

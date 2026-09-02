@@ -808,3 +808,6 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
   CI's two jobs exactly. ruff/mypy clean. 4 new tests, including a real
   query-counting test (SQLAlchemy's `before_cursor_execute` event) proving
   a 120-row job resolves access in under 20 queries.
+- 2026-09-02: CI green on `6ec4f6b` - integration, quality, build, and
+  security all passed, confirming the local Docker-based verification
+  exactly under CI's own fresh containers. Round 2 closed.
