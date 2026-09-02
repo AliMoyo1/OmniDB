@@ -317,3 +317,23 @@ since.
   written covering the two-person high-risk rule and reversal specifically.
   Pushing for CI to confirm against a real Postgres - no live database this
   session.
+- 2026-09-02: first CI run failed at "Migrate up," before any test ran -
+  `sqlalchemy.exc.IdentifierError: Identifier
+  'fk_workforce_import_decisions_import_job_id_workforce_import_jobs'
+  exceeds maximum length of 63 characters`. A real gap in this session's
+  verification routine: every prior migration this session was checked with
+  `alembic history` (reads migration files only) but that never compiles
+  the DDL, so an over-length identifier had no way to surface without a
+  live Postgres connection - which this session hasn't had all session.
+  Fixed by shortening that one constraint's explicit name (58 chars);
+  confirmed by compiling the exact `CreateTable` DDL offline against
+  `sqlalchemy.dialects.postgresql.dialect()`, which reproduces Postgres's
+  63-character identifier check without needing a live database at all.
+  While building that check, ran it across every model
+  (`app.models.Base.metadata`) and found the same class of bug already
+  latent in two pre-existing tables (`work_items`, `call_attempts`) - their
+  migrations already hand-shorten the name (matching what this fix now also
+  does), so the mismatch is cosmetic (model-metadata-only, never applied to
+  a real database) and pre-existing, not introduced here. Left those two
+  alone - out of scope, not something this change broke. Re-verified
+  ruff/mypy/`alembic history`, re-pushed.

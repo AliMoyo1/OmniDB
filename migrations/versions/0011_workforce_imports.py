@@ -129,7 +129,10 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["import_job_id"],
             ["workforce_import_jobs.id"],
-            name="fk_workforce_import_decisions_import_job_id_workforce_import_jobs",
+            # Shortened from the full column/table names (which would exceed
+            # Postgres's 63-character identifier limit) while staying unique
+            # and readable.
+            name="fk_workforce_import_decisions_job_id_workforce_import_jobs",
         ),
         sa.ForeignKeyConstraint(
             ["decided_by"], ["users.id"], name="fk_workforce_import_decisions_decided_by_users"
