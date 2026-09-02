@@ -1056,3 +1056,59 @@ flag check passed, which is exactly what should happen - the off-path
 assertion had already proven the flag itself worked before the fixture's gap
 surfaced. Gave the fixture a committed contact, re-pushed, CI green across
 all four jobs (commit `e84fa3d`, run 33170144544, 122/122 integration tests).
+
+## 2026-09-02: Review of two Codex-authored PRs (isolated deployment, MFA enrollment)
+
+Two PRs landed from the parallel Codex UI/deployment track since the feature-
+flags work above, merged to `main` while this session had no visibility into
+them: `1ae2e65` "Add isolated deployment and secure bootstrap activation"
+(PR #1) and `1512225` "Enforce secure browser TOTP enrollment" (PR #2). Asked
+to check what changed in the repo; reviewed both in full rather than
+assuming CI-green was sufficient, since both touch auth/secrets.
+
+**PR #1** adds `app/ops/bootstrap_super_admin.py` (an operator-only CLI, no
+HTTP route, for creating exactly the first Super Admin) plus
+`deploy/vps/{compose.yaml,app.env.example,ciphercontact.caddy.example}`.
+Verified: the advisory-lock pattern (`db_locks.py::lock_initial_super_admin`)
+matches the existing leasing lock's shape; a second bootstrap attempt is
+rejected once any active Super Admin exists; the one-time activation token is
+written with `O_EXCL|O_NOFOLLOW`, mode 0600, and a resolved-path containment
+check before write, with the token file removed again if the surrounding
+transaction doesn't commit; `compose.yaml` publishes no host ports, runs the
+app as non-root with `cap_drop: ALL`, `read_only` root filesystem, and puts
+Postgres/Redis on an `internal: true` network reachable only from `web`/
+`worker`/`beat`; the `bootstrap` service is a separate `ops`-profile
+container never started by a plain `up`.
+
+**PR #2** adds `app/web/security.py` (`/security/mfa`) and reworks the
+current-user dependencies (`app/auth/dependencies.py`,
+`app/web/dependencies.py`) into two tiers: `get_authenticated_user`/
+`require_authenticated_page_user` (valid session only) and `get_current_user`/
+`require_page_user` (also requires `totp_enrolled` and `session.mfa_state ==
+MFA_SATISFIED`) - the enforcing versions kept the original names, so every
+pre-existing caller across `app/web/*.py`, `app/api/*.py`, and
+`app/authz/dependencies.py::require_capability` (which `app/api/work.py`
+sits behind) now enforces MFA without having been touched individually.
+Verified by grep that only the two legitimately pre-MFA surfaces
+(`app/web/security.py` itself and the JSON `totp_enroll`/`totp_verify`/
+`reauthenticate` endpoints in `app/auth/router.py`) use the non-enforcing
+dependency. A `RedirectToMfaEnrollment` exception + handler in `app/main.py`
+sends a gated browser request to `/security/mfa` the same way
+`RedirectToLogin`/`InvalidFormCsrf` already did. Enrollment itself requires a
+fresh password (+ existing TOTP if any) re-authentication step-up before a
+secret can be created or verified, both steps rate-limited and audited, and
+successful verification revokes every other session for the user before
+issuing a new `MFA_SATISFIED` one. The secret is rendered once, in a POST
+response only, never a GET/URL/log. Test fixtures in
+`tests/integration/conftest.py` were retrofitted centrally (`make_user`/
+`make_user_with_role` now default `totp_enrolled=True`; `login()` computes a
+live `pyotp` code) rather than touching every existing test individually.
+
+No defects found in either PR. Confirmed ruff and mypy clean repo-wide (84
+source files) and both PRs' CI green on both the feature branch and the
+`main` merge commit (build/security/integration/quality). One side effect
+worth recording: PR #1's `ciphercontact.caddy.example` has the edge Caddy
+overwrite (not append) `X-Forwarded-For`/`X-Real-IP`, closing finding #3 from
+the 5B security review below - see that entry and PHASE-5-PLAN.md, updated
+to reflect it. Finding #2 from that same review (encryption key-rotation not
+wired up) is untouched by either PR and remains open.

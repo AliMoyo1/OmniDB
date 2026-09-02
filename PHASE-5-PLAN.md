@@ -191,17 +191,21 @@ staged to diff - unusable here. Did the review directly instead.
    when it isn't - the first real key rotation would silently fail to decrypt
    every value encrypted under the old key. Worth a real fix before this build
    ever rotates `FIELD_ENCRYPTION_KEY` for real, not before pilot.
-3. **`X-Forwarded-For` trusted without a known-proxy check (not fixed - noted for
-   awareness, not a reportable vulnerability)** - `app/web/auth_pages.py::_client_ip`
-   takes the first value from `X-Forwarded-For` unconditionally. If a client can
-   ever reach the app directly (bypassing Caddy) or Caddy doesn't overwrite rather
-   than append client-supplied values, a request could spoof its apparent source
-   IP. The only consequences are IP-based login rate-limit keying (rate-limiting
-   is explicitly out of scope for this kind of review - it fails safe, not open)
-   and less accurate `source_ip` on audit events - no auth bypass, no data
-   exposure. Worth confirming Caddy's proxy config overwrites rather than trusts
-   incoming `X-Forwarded-For` as part of Phase 5's LAN/TLS verification pass, not
-   urgent on its own.
+3. **`X-Forwarded-For` trusted without a known-proxy check (addressed at the edge
+   2026-09-01, app code unchanged)** - `app/web/auth_pages.py::_client_ip` and
+   `app/web/security.py::_client_ip` both still take the first value from
+   `X-Forwarded-For` unconditionally, so the app layer itself still trusts
+   whatever header it receives. What closes the gap in practice:
+   `deploy/vps/ciphercontact.caddy.example` (added in the isolated-deployment
+   PR, commit `1ae2e65`) has the edge Caddy explicitly overwrite - not append -
+   `X-Real-IP`/`X-Forwarded-For`/`X-Forwarded-Proto` with `{remote_host}` on
+   every proxied request, and `compose.yaml` publishes no host ports, so the
+   app is only reachable through that Caddy. Confirmed no auth bypass either
+   way (matches the finding as originally written). Residual caveat: the file
+   is checked in as `.example` and only takes effect once it's actually copied
+   to `/srv/edge/sites/ciphercontact.caddy` on the VPS per its own header
+   comment - worth confirming during the real deploy, per RUNBOOKS.md's
+   Deploy/Release runbook.
 
 No SQL injection, no XSS (Jinja2 autoescaping is on throughout, confirmed no
 `|safe`/`Markup` usage on any user-controlled value), no CSRF gaps (every state-
