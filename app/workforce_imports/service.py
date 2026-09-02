@@ -199,9 +199,11 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
     except (ParseLimitExceeded, UnicodeDecodeError, ValueError) as exc:
         job.state = "failed"
         job.error_summary = str(exc)[:1000]
+        # AuditEvent.reason_code is String(50) - the full message is preserved above
+        # in error_summary (String(1000)); this is a short tag, not the detail.
         record_audit(
             db, action="workforce_import.parse", result="failure", actor_user_id=job.uploader_id,
-            target_type="workforce_import_job", target_id=job.id, reason_code=str(exc)[:100],
+            target_type="workforce_import_job", target_id=job.id, reason_code=str(exc)[:50],
         )
         return
 
@@ -302,14 +304,23 @@ def record_decision(
 def _latest_decision(
     db: Session, job: WorkforceImportJob, *, tier: str
 ) -> WorkforceImportDecision | None:
+    """The most recent decision recorded for one tier, independent of the other
+    tier's activity. Both tiers share job.decision_version as a single incrementing
+    counter (each decision call, either tier, bumps it once), so a tier's own
+    decision is not necessarily AT the job's current version once the other tier
+    has since recorded one too - filtering on an exact version match here would
+    make an already-recorded standard approval unfindable the moment a high-risk
+    decision is recorded afterward. commit_job separately requires the caller's
+    supplied decision_version to equal the current job.decision_version, which is
+    the actual staleness guard against a *third* decision landing after the one
+    being acted on."""
     return db.scalar(
         select(WorkforceImportDecision)
         .where(
             WorkforceImportDecision.import_job_id == job.id,
-            WorkforceImportDecision.decision_version == job.decision_version,
             WorkforceImportDecision.decision_tier == tier,
         )
-        .order_by(WorkforceImportDecision.created_at.desc())
+        .order_by(WorkforceImportDecision.decision_version.desc())
         .limit(1)
     )
 
@@ -317,9 +328,9 @@ def _latest_decision(
 def current_decisions(
     db: Session, job: WorkforceImportJob
 ) -> dict[str, WorkforceImportDecision | None]:
-    """The standard and (if applicable) high_risk decision at the job's current
-    decision_version, for display - a rejected/cancelled decision still shows here
-    rather than looking like "nothing decided yet"."""
+    """The most recent standard and (if applicable) high_risk decision, for
+    display - a rejected/cancelled decision still shows here rather than looking
+    like "nothing decided yet"."""
     return {
         "standard": _latest_decision(db, job, tier="standard"),
         "high_risk": _latest_decision(db, job, tier="high_risk") if job.high_risk_rows else None,

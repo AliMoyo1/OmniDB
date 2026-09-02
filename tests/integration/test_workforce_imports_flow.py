@@ -246,6 +246,10 @@ def test_deactivation_is_high_risk_and_needs_a_second_qualified_approver():
     approver_headers = csrf_headers(approver)
     good_approve = _decide(approver, approver_headers, job2, tier="high_risk")
     assert good_approve.status_code == 200, good_approve.text
+    # decision_version is one shared counter across both tiers - this approval
+    # bumped it again, so the version to commit against is this response's, not
+    # the standard decision's earlier one.
+    version2 = good_approve.json()["decision_version"]
 
     commit2 = _commit(uploader, up_headers, job2, version2)
     assert commit2.status_code == 200, commit2.text
@@ -295,7 +299,11 @@ def test_reverse_restores_state_but_skips_conflicting_rows():
     assert approve_hr.status_code == 403, approve_hr.text
     approver, _ = _manager(prefix="wfireverser")
     approver_headers = csrf_headers(approver)
-    assert _decide(approver, approver_headers, job2, tier="high_risk").status_code == 200
+    hr_approve = _decide(approver, approver_headers, job2, tier="high_risk")
+    assert hr_approve.status_code == 200, hr_approve.text
+    # decision_version is one shared counter across both tiers - use this
+    # approval's version, not the earlier standard decision's.
+    v2 = hr_approve.json()["decision_version"]
     commit2 = _commit(manager, headers, job2, v2)
     assert commit2.status_code == 200, commit2.text
     assert _is_active(wid) is False

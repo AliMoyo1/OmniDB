@@ -355,3 +355,35 @@ since.
   column (the two `team_a`/`team_b` scope IDs are safe - `RoleAssignment.
   scope_id` carries no FK, confirmed against the model). Re-verified ruff,
   mypy, and test collection; re-pushed.
+- 2026-09-02: third CI run got past setup - 133 of 136 tests passed - but
+  surfaced two more issues, one cosmetic and one a real design bug caught
+  only by exercising the full two-tier approval path against real Postgres:
+  - `record_audit`'s `reason_code` was truncated to 100 characters
+    (`str(exc)[:100]`, copied from the campaign importer's own equivalent
+    line) but `AuditEvent.reason_code` is `String(50)` - the campaign
+    importer's own error messages happen to stay under 50 in practice, so
+    this was already latently wrong there too, just never triggered. This
+    session's new "file header is missing required column(s): ..." message
+    is longer and hit it. Fixed to `[:50]` (the full message is already
+    preserved separately in `job.error_summary`, `String(1000)`).
+  - The real one: `job.decision_version` is a single counter shared by both
+    tiers, incremented on every decision call regardless of tier. `_latest_
+    decision(tier=X)` filtered for a decision AT `job.decision_version` -
+    which meant recording the high-risk decision (bumping the shared
+    counter) made the already-recorded standard decision unfindable at the
+    new "current" version, since it was recorded at the old one. commit_job
+    would then either wrongly report "not yet approved" or - as CI actually
+    hit it - reject a stale-version commit built from the standard
+    decision's own (now superseded) version number. Same bug would have
+    quietly broken the web detail page's decision-status display the same
+    way, since `current_decisions()` calls the same lookup. Fixed
+    `_latest_decision` to find each tier's own most recent decision
+    independent of the other tier's version bumps, keeping
+    `job.decision_version` as what it should have been all along: a
+    guard against a *third*, later decision superseding the one just acted
+    on, not a per-tier filter. Fixed the two tests that exercised the full
+    high-risk path to commit against the version returned by whichever
+    decision call happened last (matching how the web UI already behaves,
+    since it re-reads `job.decision_version` fresh on every page load
+    rather than caching it). Re-verified ruff, mypy, and the full
+    non-integration suite (35/35); re-pushed.
