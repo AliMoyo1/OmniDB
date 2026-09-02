@@ -1205,3 +1205,42 @@ approver succeeds), idempotent replay without reissuing tokens, and
 reversal (rejected for the uploader, succeeds for a qualified non-uploader,
 cannot be repeated). No live database this session, so these could only be
 collected, not run - pushing for CI to give the real answer.
+
+CI took four pushes to go green, finding three real bugs no amount of
+offline checking this session could reach without a live Postgres:
+
+1. A foreign-key constraint name 65 characters long
+   (`fk_workforce_import_decisions_import_job_id_workforce_import_jobs`),
+   over Postgres's 63-character limit - `alembic history` never compiles
+   DDL, so this had no way to surface without a real database. Fixed by
+   shortening the name; confirmed offline afterward by compiling the exact
+   `CreateTable` DDL against `sqlalchemy.dialects.postgresql.dialect()`,
+   which reproduces Postgres's own identifier check without a connection.
+   The same offline check, run across every model, found the identical
+   class of bug already latent (and already compensated for in its own
+   migration) in two pre-existing tables - `work_items`, `call_attempts` -
+   confirmed pre-existing and left alone, not something this change broke.
+2. A test fixture passed a fabricated `uuid.uuid4()` as the actor for
+   turning on the new rollout flag; `FeatureFlag.updated_by` is a real
+   foreign key to `users.id`, and a fake UUID only fails against an actual
+   constrained insert - another live-database-only class of bug.
+3. The one worth remembering: `job.decision_version` is a single counter
+   shared by both approval tiers, incremented on every decision call
+   regardless of tier. Recording the high-risk decision after the standard
+   one bumped the shared counter, which made the already-recorded standard
+   decision unfindable at the new "current" version - `_latest_decision`
+   was filtering by an exact version match instead of just finding each
+   tier's own most recent decision. This would have quietly broken the web
+   detail page's decision-status display the same way, since it calls the
+   identical lookup. Fixed by dropping the per-tier version filter, leaving
+   `job.decision_version` to do only what it should have: guard against a
+   *third*, later decision superseding the one actually being acted on.
+
+Confirmed green on `97615bc`: build, security, quality, integration
+(migrate up, migration reversibility, 136/136 tests) all passed. 4B-1 done -
+`users` and `explicit_deactivations` import types, staged upload through
+commit and reversal, two-person high-risk approval. Four of the master
+plan's seven import types remain (`team_memberships`, `role_assignments`,
+`reporting_assignments`, `campaign_user_assignments`), plus
+`target_assignments`, blocked on 4C - the next increments, per
+`PHASE-4B-PLAN.md`.

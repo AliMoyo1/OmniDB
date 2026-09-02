@@ -1,6 +1,7 @@
 # Phase 4B plan: staged bulk-workforce import
 
-Status: 4B-1 (users + explicit_deactivations) built, pushed for CI (2026-09-02).
+Status: 4B-1 (users + explicit_deactivations) done (2026-09-02). CI green on
+`97615bc`.
 
 ## Scope note: sequencing versus the master plan
 
@@ -286,7 +287,12 @@ since.
       touch the database. Full non-integration, non-performance suite passes
       locally (35/35, unaffected). No live database this session for the
       integration suite itself - pushing for CI to give the real answer.
-- [ ] CI result.
+- [x] CI green on `97615bc` after three real bugs found and fixed (see Log):
+      an over-length FK constraint name, a fabricated actor UUID violating a
+      real FK in a test fixture, and a genuine decision_version design bug
+      in the two-tier approval flow. All four jobs passed - build, security,
+      quality, integration (migrate up, migration reversibility, 136/136
+      tests).
 
 ## Log
 - 2026-09-02: reconciled scope against master plan sections 10.2, 11.2,
@@ -387,3 +393,6 @@ since.
     since it re-reads `job.decision_version` fresh on every page load
     rather than caching it). Re-verified ruff, mypy, and the full
     non-integration suite (35/35); re-pushed.
+- 2026-09-02: fourth CI run green - build, security, quality, integration
+  (migrate up, migration reversibility, 136/136 tests) all passed on
+  `97615bc`. 4B-1 done.
