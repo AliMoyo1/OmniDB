@@ -595,3 +595,10 @@ line`'s implicit supersede. Same shape as its two siblings.
   designed to do, not that the design itself was complete; this gap was
   only found by re-deriving the authority model from scratch while
   designing the next type, not by anything CI could have caught.
+- 2026-09-02: CI green on `0a0d487` - build, security, quality, integration
+  (141/141 tests) all passed; the existing 140 all still pass under the
+  tightened check (every existing fixture's actor already had real
+  authority, not just the blanket capability, so nothing was relying on
+  the gap). Authority fix done - moving on to 4B-3's actual
+  `campaign_user_assignments` type, now with `_row_authority_ok` already
+  covering every type that exists so far.

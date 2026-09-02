@@ -1413,3 +1413,8 @@ while designing the next import type to notice the asymmetry.
 ruff/mypy clean, full non-integration suite green locally (35/35), full
 suite (177 tests) collects without error. No live database this session -
 pushing for CI.
+
+Confirmed green on `0a0d487`: build, security, quality, integration
+(141/141 tests) all passed - the existing 140 still pass under the
+tightened check, since no existing test fixture's actor was actually
+relying on the gap (all had real, not just blanket, authority already).
