@@ -845,3 +845,6 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
   (round 3), `pytest -m integration` (161 tests, up from 158) and the unit
   suite (35 tests) both green matching CI's two jobs, `docker build`
   succeeds, ruff/mypy clean.
+- 2026-09-02: CI green on `3d9e5f2` - quality, build, and integration all
+  passed, confirming local verification exactly. Three review rounds on
+  this feature now closed in a row.

@@ -1840,3 +1840,9 @@ seeded skewed-timestamp scenario above. `docker build` succeeds. 3 new
 tests: the skewed-timestamp migration check (scripted, not pytest - same
 reasoning as round 2's duplicate-data check), the entirely-unresolvable-
 rows access test, and the high-cardinality query-count test.
+
+Confirmed green on `3d9e5f2`: quality, build, and integration all
+passed - the migration's order-preserving reconciliation and the new
+bulk authorization primitives both hold under CI's own fresh Postgres/
+Redis containers, matching local verification exactly. Three review
+rounds on this feature now closed in a row.
