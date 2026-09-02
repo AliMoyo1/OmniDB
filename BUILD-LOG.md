@@ -1623,3 +1623,122 @@ verification and CI. This also carried a separately-completed, unrelated
 commit (`5ef0ede`, fixing three more ORM/DB foreign-key name mismatches
 in `work_items`/`call_attempts` flagged as a follow-up during this same
 round's own offline DDL check) through the same run.
+
+## 2026-09-02: Phase 4B code review response, round 2 - 4 more findings on the round-1 fixes themselves
+
+A second review, this time on the round-1 fixes just shipped, not the
+original Phase 4B feature. Four findings (3 high-priority, 1 medium), all
+re-confirmed against the actual current source before any fix was
+written. All four fixed.
+
+**#1 - authorization performed one database query per imported row.**
+`can_access_job`'s round-1 fix was correct in what it checked but not in
+how: it loaded every row and called a real authorization query
+(`has_scope_capability`, `can_manage_user`, ...) once per row. The list
+page calls this for up to 200 candidate jobs; imports support up to
+100,000 rows each - a legitimate reviewer opening the list page could
+trigger hundreds of thousands of queries. Fixed by replacing the per-row
+loop with a bulk resolver (`_row_requirement` / `_bulk_authority_ok` in
+`app/workforce_imports/service.py`): every row is reduced to an opaque
+requirement key (a target user, a (capability, scope_type, scope_id)
+tuple, or a campaign id), the distinct set of those keys is resolved
+once each, and role assignments for the distinct target users referenced
+by `users`/`explicit_deactivations`/`reporting_assignments` rows are
+bulk-fetched in a single query instead of one per target. The actual
+authorization *decision* still goes through the same public, trusted
+functions the manual one-row screens call - this only ever reduces how
+many times they're called, never re-implements what they decide. A
+100,000-row job assigning a handful of teams now costs a handful of
+queries, not 100,000 - proven with a real query-counting test
+(`test_can_access_job_query_count_does_not_scale_with_row_count`, using
+SQLAlchemy's `before_cursor_execute` event) against a 120-row job:
+under 20 queries, not 120. `_assert_rows_authorized` (the approval-time
+authority check, previously the same per-row shape) was rewritten the
+same way; its error message can no longer name a specific failing row
+(a bulk check can't cheaply attribute one), so it now says "one or more
+rows" - a deliberate, documented trade for a design that can't regress
+to O(rows) queries.
+
+**#2 - a job with no rows yet failed open, not closed.** Round-1's
+`can_access_job` granted access to *every* import-capable user, not just
+the uploader, whenever a job had zero rows - true for a job still
+`quarantined`, still `parsing`, or `failed` before any row was recorded.
+This defeated round-1 finding #1 for the entire pre-parse window, which
+is invisible in this test suite (Celery runs eager/synchronous, so a job
+is never observably unparsed once the upload endpoint returns) but real
+in production under async Celery. Fixed by making the empty-rows case
+fail closed (`return False`, relying on the earlier uploader
+short-circuit) instead of open, and by making `record_decision` require
+`job.state == "parsed"` before doing anything else - row counts
+(`invalid_rows`, `warning_rows`) are only meaningful once parsing has
+actually finished, so deciding on a still-parsing job would otherwise
+check the blocking-errors/warnings gates against numbers that are still
+all zero by default. Two new tests construct a job directly in
+`quarantined` state (bypassing the upload endpoint, since eager Celery
+never leaves one observable) to prove both halves.
+
+**#3 - the decision-version migration assumed the pre-fix race never
+actually produced duplicates.** Migration `0014`'s `upgrade()`
+immediately created a unique constraint on `(import_job_id,
+decision_version)`; if the race round-1 fixed had ever actually fired in
+a real, running production database, that database would already
+contain duplicate rows, and the migration would fail outright rather
+than deploy. Fixed by adding a reconciliation step before the constraint:
+a single SQL window-function `UPDATE` renumbers every job's decisions
+into a gapless, chronological sequence by `(created_at, id)`. This is
+safe and idempotent by construction - a decision's version has always
+equalled its chronological insertion rank, even under the buggy pre-fix
+code (`decision_version` was only ever incremented, never assigned out
+of order), so a job the race never hit is renumbered to the exact values
+it already has, a no-op; a job the race did hit gets its duplicate
+collapsed into a valid sequence. No decision row is ever deleted or its
+content changed - these are audit-relevant records of who approved or
+rejected what, and when. Verified against real duplicate data, not just
+reasoned about: seeded two decisions both claiming version 1 for the
+same job at revision `0013` (before the constraint exists), confirmed
+`alembic upgrade head` would have failed without this fix, ran it with
+the fix and confirmed it succeeds and prints what it reconciled,
+confirmed both rows survive with distinct sequential versions and the
+job's own counter re-synced to the new max, then confirmed the
+constraint is genuinely live by attempting a fresh duplicate insert and
+watching Postgres reject it.
+
+**#4 - a header-only file bypassed header validation entirely.**
+`parse_job` derived the header from the first *yielded data row*
+(`next(rows_iter, None)`); a header-only file has zero data rows, so
+`first_row` was `None` and both the missing-column and unknown-column
+checks were skipped outright - the file silently became a
+"successfully parsed," zero-row job, which would then sail through the
+round-1 approve/commit gates since 0 invalid/0 warning rows never trip
+anything. Root cause was shared, low-level parsing code
+(`app/imports/parser.py`'s `parse_file` only ever yields data rows; the
+header is consumed internally and never exposed on its own), so the fix
+adds a new `read_header(path, extension) -> list[str]` function there -
+a pure addition, not a change to `parse_file`'s existing signature or
+behavior. `parse_job` now calls `read_header` first (header validation
+runs whether or not there are data rows), then raises if `total == 0`
+after the data-row loop, so a zero-row file always ends in `failed`
+state regardless of how "valid" its header looks. The identical bug
+pattern exists in `app/imports/service.py` (the older, separate
+campaign-contact-import pipeline, confirmed via the same `first_row =
+next(rows_iter, None)` shape) - out of scope for this review (different
+pipeline, not cited), flagged as a follow-up task rather than fixed
+here; the user had already started that follow-up independently by the
+time this round finished, in the same working tree, so its own
+in-progress files are deliberately excluded from this round's commit.
+
+Verification: ruff and mypy clean repo-wide. Docker Desktop (already
+running from round 1) reused for a fresh Postgres 16 + Redis 7 pair.
+Migration 0014 applies/downgrades/reapplies cleanly on an empty database,
+*and* separately verified against seeded duplicate data as described
+above. Full suite green against real Postgres: the exact `pytest -m
+integration` CI runs (158 tests, up from 154) and `pytest -m "not
+integration and not performance"` (35 tests) both pass, matching CI's two
+jobs exactly. One transient failure during verification
+(`test_campaign_import_enabled_gates_new_imports`, passed in isolation,
+an `IntegrityError` only in the full run) was traced to the concurrently-
+running follow-up session sharing the same local Postgres/Redis
+containers, not a real regression - confirmed by a clean re-run of the
+full suite immediately after. 4 new tests prove the four findings
+concretely, including a genuine query-counting test for the N+1 fix and
+a genuine seeded-duplicate-data test for the migration reconciliation.

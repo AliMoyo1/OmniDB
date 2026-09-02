@@ -9,14 +9,13 @@ layer, so no caller can bypass it.
 
 from __future__ import annotations
 
-import itertools
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import PurePosixPath
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
@@ -27,7 +26,7 @@ from app.campaigns.service import CampaignAssignmentError
 from app.config import get_settings
 from app.flags import service as flags
 from app.imports import storage, validators
-from app.imports.parser import ParseLimitExceeded, parse_file
+from app.imports.parser import ParseLimitExceeded, parse_file, read_header
 from app.models.authz import ReportingAssignment, RoleAssignment
 from app.models.base import utcnow
 from app.models.campaign import Campaign, CampaignUserAssignment
@@ -84,9 +83,10 @@ _CLASSIFIERS = {
     "campaign_user_assignments": classify.classify_campaign_assignment_row,
 }
 # The blanket, coarse "may even open this surface at all" gate the web and JSON
-# API layers both use. Every real authorization decision happens per-row in
-# _row_authority_ok; this is only a pre-filter, but it still needs to actually
-# include every capability a real import type's rows can require - not just
+# API layers both use. Every real authorization decision happens per-row (see
+# _row_requirement/_bulk_authority_ok); this is only a pre-filter, but it still
+# needs to actually include every capability a real import type's rows can
+# require - not just
 # ROLE_APPOINTMENT_CAPABILITY's values, which would silently exclude a Team
 # Captain who holds ASSIGN_CAMPAIGN_AGENT but no workforce-appointment
 # capability from ever reaching campaign_user_assignments at all.
@@ -202,25 +202,25 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
     classifier = _CLASSIFIERS[job.import_type]
 
     try:
-        rows_iter = parse_file(path, ext)
-        first_row = next(rows_iter, None)
-        if first_row is not None:
-            header = set(first_row.values)
-            missing = REQUIRED_COLUMNS[job.import_type] - header
-            if missing:
-                raise ParseLimitExceeded(
-                    f"file header is missing required column(s): {', '.join(sorted(missing))} "
-                    "- download the current template"
-                )
-            unknown = header - ALLOWED_COLUMNS[job.import_type]
-            if unknown:
-                raise ParseLimitExceeded(
-                    f"file header has unrecognized column(s): {', '.join(sorted(unknown))} "
-                    "- download the current template"
-                )
-        all_rows = itertools.chain([first_row], rows_iter) if first_row is not None else ()
+        # Read independently of the data-row loop below, not inferred from the
+        # first yielded row - a header-only file has zero data rows, so a
+        # header derived that way would silently skip every check here and let
+        # the file become a "successfully parsed," zero-row job.
+        header = set(read_header(path, ext))
+        missing = REQUIRED_COLUMNS[job.import_type] - header
+        if missing:
+            raise ParseLimitExceeded(
+                f"file header is missing required column(s): {', '.join(sorted(missing))} "
+                "- download the current template"
+            )
+        unknown = header - ALLOWED_COLUMNS[job.import_type]
+        if unknown:
+            raise ParseLimitExceeded(
+                f"file header has unrecognized column(s): {', '.join(sorted(unknown))} "
+                "- download the current template"
+            )
 
-        for row in all_rows:
+        for row in parse_file(path, ext):
             total += 1
             result = classifier(row, db=db, seen_identities=seen_identities)
             batch.append(
@@ -256,6 +256,11 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
         if batch:
             db.add_all(batch)
             db.flush()
+
+        if total == 0:
+            raise ParseLimitExceeded(
+                "file has no data rows - upload a file with at least one row"
+            )
 
     except (ParseLimitExceeded, UnicodeDecodeError, ValueError) as exc:
         job.state = "failed"
@@ -307,59 +312,148 @@ def _committable_rows(
     return list(db.scalars(select(WorkforceImportRow).where(*conditions)))
 
 
-def _row_authority_ok(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob,
-                       row: WorkforceImportRow) -> bool:
-    """The precise authority bar for one row's specific effect - not the same check
-    for every import type, since "may disable this user," "may grant this exact role
-    at this exact scope," and "may manage this exact team's roster" are different
-    questions with different existing answers elsewhere in this codebase (the manual,
-    one-row-at-a-time screens each already enforce their own version of this; bulk
-    import must not be a looser path to the same effect - plan 11.2's "a file cannot
-    grant the uploader more authority")."""
+def _row_requirement(
+    job: WorkforceImportJob, row: WorkforceImportRow
+) -> tuple | None:
+    """The one authorization fact this row's effect depends on, as an opaque key -
+    "may disable this user," "may grant this exact role at this exact scope," and
+    "may manage this exact team's roster" are different questions with different
+    existing answers elsewhere in this codebase (the manual, one-row-at-a-time
+    screens each already enforce their own version of this; bulk import must not
+    be a looser path to the same effect - plan 11.2's "a file cannot grant the
+    uploader more authority"). Returning a key rather than a bool lets the bulk
+    check below collect every row's *distinct* requirement and resolve each one
+    once, instead of re-deriving and re-querying it per row. None means the row
+    needs no check (a plain user creation, matching create_user's own blanket
+    bar); ("deny",) means it can never be authorized, independent of who's
+    asking (an unresolvable role/scope or campaign reference)."""
     values = row.parsed_values or {}
     if job.import_type in ("explicit_deactivations", "reporting_assignments"):
         if row.normalized_identity is None:
-            return True
-        return workforce_service.can_manage_user(db, actor_id, row.normalized_identity)
+            return None
+        return ("user", row.normalized_identity)
     if job.import_type == "users":
         if row.action not in ("update", "reactivate") or row.normalized_identity is None:
-            return True  # create matches create_user's own blanket bar
-        return workforce_service.can_manage_user(db, actor_id, row.normalized_identity)
+            return None
+        return ("user", row.normalized_identity)
     if job.import_type == "team_memberships":
         team_id = values.get("team_id")
         if team_id is None:
-            return True
-        return authz.has_scope_capability(
-            db, actor_id, APPOINT_TEAM_CAPTAIN, scope_type="team", scope_id=uuid.UUID(team_id)
-        )
+            return None
+        return ("scope", APPOINT_TEAM_CAPTAIN, "team", uuid.UUID(team_id))
     if job.import_type == "role_assignments":
         role_code = values.get("role_code")
         scope_type = values.get("scope_type")
         scope_id = uuid.UUID(values["scope_id"]) if values.get("scope_id") else None
         capability = ROLE_APPOINTMENT_CAPABILITY.get(role_code) if role_code else None
         if capability is None or scope_type is None:
-            return False
-        return authz.has_scope_capability(
-            db, actor_id, capability, scope_type=scope_type, scope_id=scope_id
-        )
+            return ("deny",)
+        return ("scope", capability, scope_type, scope_id)
     if job.import_type == "campaign_user_assignments":
         campaign_id = values.get("campaign_id")
         if campaign_id is None:
-            return False
-        return authz.has_campaign_capability(
-            db, actor_id, ASSIGN_CAMPAIGN_AGENT, uuid.UUID(campaign_id)
+            return ("deny",)
+        return ("campaign", uuid.UUID(campaign_id))
+    return None
+
+
+def _bulk_authority_ok(
+    db: Session, actor_id: uuid.UUID, job: WorkforceImportJob, rows: list[WorkforceImportRow]
+) -> bool:
+    """Same policy _row_requirement/the old per-row check expressed, applied to
+    every row in `rows` with a query count bounded by the number of DISTINCT
+    targets/scopes referenced, not by row count - a 100,000-row job assigning
+    the same handful of teams costs a handful of queries, not 100,000. Every
+    actual authorization decision still goes through the same public, trusted
+    functions the manual one-row screens call (has_scope_capability,
+    has_campaign_capability, has_assigned_capability) - this only ever calls
+    them once per distinct requirement instead of once per row; it never
+    re-implements the decision they make."""
+    requirements = [_row_requirement(job, row) for row in rows]
+    if any(req == ("deny",) for req in requirements):
+        return False
+
+    target_ids = {req[1] for req in requirements if req is not None and req[0] == "user"}
+    scope_tuples: set[tuple[str, str, uuid.UUID | None]] = {
+        req[1:] for req in requirements if req is not None and req[0] == "scope"
+    }
+    campaign_ids = {req[1] for req in requirements if req is not None and req[0] == "campaign"}
+
+    # One bulk fetch for every distinct target's own active roles, instead of one
+    # query per target (mirrors authz.effective_role_assignments's own filter -
+    # the actual authorization decision below still goes through has_scope_
+    # capability/has_assigned_capability unchanged, just fewer times).
+    now = utcnow()
+    target_roles_by_id: dict[uuid.UUID, list[RoleAssignment]] = {tid: [] for tid in target_ids}
+    if target_ids:
+        for assignment in db.scalars(
+            select(RoleAssignment).where(
+                RoleAssignment.user_id.in_(target_ids),
+                RoleAssignment.status == "active",
+                RoleAssignment.effective_from <= now,
+                or_(RoleAssignment.effective_to.is_(None), RoleAssignment.effective_to > now),
+            )
+        ):
+            target_roles_by_id[assignment.user_id].append(assignment)
+        for roles in target_roles_by_id.values():
+            for ra in roles:
+                capability = ROLE_APPOINTMENT_CAPABILITY.get(ra.role_code)
+                if capability is not None:
+                    scope_tuples.add((capability, ra.scope_type, ra.scope_id))
+
+    scope_ok = {
+        tup: authz.has_scope_capability(db, actor_id, tup[0], scope_type=tup[1], scope_id=tup[2])
+        for tup in scope_tuples
+    }
+    campaign_ok = {
+        cid: authz.has_campaign_capability(db, actor_id, ASSIGN_CAMPAIGN_AGENT, cid)
+        for cid in campaign_ids
+    }
+    no_role_fallback_ok = (
+        any(
+            authz.has_assigned_capability(db, actor_id, capability)
+            for capability in ROLE_APPOINTMENT_CAPABILITY.values()
         )
+        if any(not target_roles_by_id[tid] for tid in target_ids)
+        else False
+    )
+
+    def _target_ok(target_id: uuid.UUID) -> bool:
+        roles = target_roles_by_id.get(target_id, [])
+        if not roles:
+            return no_role_fallback_ok
+        return any(
+            scope_ok.get(
+                (ROLE_APPOINTMENT_CAPABILITY[ra.role_code], ra.scope_type, ra.scope_id), False
+            )
+            for ra in roles
+            if ra.role_code in ROLE_APPOINTMENT_CAPABILITY
+        )
+
+    for req in requirements:
+        if req is None:
+            continue
+        kind = req[0]
+        if kind == "user":
+            if not _target_ok(req[1]):
+                return False
+        elif kind == "scope":
+            if not scope_ok.get(req[1:], False):
+                return False
+        elif kind == "campaign":
+            if not campaign_ok.get(req[1], False):
+                return False
     return True
 
 
 def _assert_rows_authorized(
     db: Session, job: WorkforceImportJob, actor_id: uuid.UUID, *, risk_level: str
 ) -> None:
-    for row in _committable_rows(db, job, risk_level=risk_level):
-        if not _row_authority_ok(db, actor_id, job, row):
-            raise InsufficientApprovalAuthority(
-                f"not authorized for the effect of row {row.row_number}"
-            )
+    rows = _committable_rows(db, job, risk_level=risk_level)
+    if not _bulk_authority_ok(db, actor_id, job, rows):
+        raise InsufficientApprovalAuthority(
+            "not authorized for the effect of one or more rows in this import"
+        )
 
 
 def can_access_job(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob) -> bool:
@@ -372,16 +466,19 @@ def can_access_job(db: Session, actor_id: uuid.UUID, job: WorkforceImportJob) ->
     over *every* row it contains - not only the currently-valid ones, since an
     invalid or warning row can still name a real team, role, or campaign, and
     merely viewing that should require the same authority acting on it would.
-    An unparsed job (no rows yet) has nothing to scope-check, so the caller's own
-    blanket capability gate is all there is at that point."""
+    A job with no rows yet (quarantined, still parsing, or failed before any row
+    was recorded) has nothing to scope-check against, so it is uploader-only
+    until parsing actually produces something to check - a job the parser never
+    reached must never be readable by "anyone who holds any import capability
+    anywhere," which is what a fail-open default here would mean in practice."""
     if actor_id == job.uploader_id:
         return True
     rows = list(
         db.scalars(select(WorkforceImportRow).where(WorkforceImportRow.import_job_id == job.id))
     )
     if not rows:
-        return True
-    return all(_row_authority_ok(db, actor_id, job, row) for row in rows)
+        return False
+    return _bulk_authority_ok(db, actor_id, job, rows)
 
 
 def _assert_job_accessible(db: Session, job: WorkforceImportJob, actor_id: uuid.UUID) -> None:
@@ -444,6 +541,14 @@ def record_decision(
     if job is None:
         raise ImportNotReady("import job not found")
     _assert_job_accessible(db, job, decided_by)
+    if job.state != "parsed":
+        # Row counts (invalid_rows, warning_rows, high_risk_rows) are only
+        # meaningful once parsing has actually finished - deciding on a job
+        # that is still quarantined/parsing (or that failed to parse) would
+        # check the blocking-errors/warnings gates below against numbers that
+        # are still all zero by default, regardless of what the file actually
+        # contains once parsing completes.
+        raise ImportNotReady(f"import job is not ready to decide on (state={job.state})")
     if decision not in ("approve", "reject", "cancel"):
         raise ValueError("decision must be approve, reject, or cancel")
     if decision_tier not in ("standard", "high_risk"):

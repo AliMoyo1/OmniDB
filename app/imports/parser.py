@@ -108,3 +108,33 @@ def parse_file(path: Path, extension: str) -> Iterator[ParsedRow]:
         yield from parse_xlsx(path)
     else:
         raise ParseLimitExceeded(f"unsupported extension: {extension}")
+
+
+def read_header(path: Path, extension: str) -> list[str]:
+    """The header alone, independent of whether the file has any data rows.
+    parse_file's row generators only ever yield data rows - the header is
+    consumed internally to build each ParsedRow.values dict - so a header-only
+    file (zero data rows) would otherwise never expose its header for
+    validation at all: callers that inferred the header from the first yielded
+    row would see none, skip header validation entirely, and let the file
+    become a "successfully parsed," zero-row job."""
+    if extension == ".csv":
+        with open(path, newline="", encoding="utf-8-sig", errors="strict") as fh:
+            try:
+                header = next(csv.reader(fh))
+            except StopIteration:
+                return []
+            return _validate_header(header)
+    elif extension == ".xlsx":
+        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True, keep_links=False)
+        try:
+            sheet = workbook.worksheets[0]
+            try:
+                header_row = next(sheet.iter_rows(values_only=True))
+            except StopIteration:
+                return []
+            return _validate_header([str(c) if c is not None else "" for c in header_row])
+        finally:
+            workbook.close()
+    else:
+        raise ParseLimitExceeded(f"unsupported extension: {extension}")

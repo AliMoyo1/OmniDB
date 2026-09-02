@@ -761,3 +761,50 @@ bulk-offboarding campaign staffing, not day-to-day agent movement.
   build all passed, confirming the local Docker-based verification
   exactly. All nine review findings closed; workforce imports are back to
   a clean, production-ready state per the review's own gate.
+- 2026-09-02: code review response, round 2 - on the round-1 fixes
+  themselves, not the original feature. 3 high-priority findings and 1
+  medium; full account in `BUILD-LOG.md`'s matching entry. Summary:
+  - **N+1 authorization queries fixed** - `can_access_job`/
+    `_assert_rows_authorized`'s round-1 design was correct in *what* it
+    checked but called a real authorization query once per row; a
+    100,000-row job on the 200-job list page could mean hundreds of
+    thousands of queries. Replaced with `_row_requirement`/
+    `_bulk_authority_ok`: every row reduces to an opaque requirement key,
+    the distinct set of keys is resolved once each (with a single bulk
+    fetch for target users' role assignments, instead of one query per
+    target), and the same public, trusted authorization functions decide
+    each one - never re-implemented, only called fewer times.
+  - **Empty-rows fail-open closed** - round-1's `can_access_job` granted
+    access to *every* capability holder, not just the uploader, whenever
+    a job had zero rows (true for `quarantined`/`parsing`/pre-row
+    `failed` states) - defeating round-1's own object-level-authorization
+    fix for the entire pre-parse window, real under async Celery in
+    production though invisible in this suite's eager-Celery tests. Now
+    fails closed (uploader-only), and `record_decision` requires
+    `state == "parsed"` before anything else.
+  - **Migration 0014 now reconciles pre-existing duplicates** before
+    creating its unique constraint, instead of assuming there aren't
+    any - verified against actual seeded duplicate data, not just
+    reasoned about (see BUILD-LOG.md for the exact before/after).
+  - **Header-only files now rejected** - the header was inferred from
+    the first *data* row, so a zero-data-row file skipped header
+    validation entirely and became a "successfully parsed" empty job.
+    `app/imports/parser.py` gained a `read_header()` that reads the
+    header independent of row count (a pure addition, not a `parse_file`
+    signature change); `parse_job` now validates the header unconditionally
+    and rejects zero-row files outright. The identical bug exists in the
+    separate, older `app/imports/service.py` pipeline - flagged as a
+    follow-up rather than fixed here (different pipeline, out of scope
+    for this review); the user had already started that follow-up in the
+    same working tree by the time this round finished, so its files are
+    deliberately excluded from this round's commit.
+
+  Verified against real Postgres 16 + Redis 7 locally: migration 0014
+  checked against both an empty database and one seeded with real
+  duplicate decision-version rows (confirmed it would have failed
+  without the reconciliation step, succeeds with it, and the unique
+  constraint is genuinely live afterward). `pytest -m integration` (158
+  tests, up from 154) and the unit suite (35 tests) both green, matching
+  CI's two jobs exactly. ruff/mypy clean. 4 new tests, including a real
+  query-counting test (SQLAlchemy's `before_cursor_execute` event) proving
+  a 120-row job resolves access in under 20 queries.

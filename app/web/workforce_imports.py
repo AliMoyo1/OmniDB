@@ -190,8 +190,13 @@ def decide_workforce_import(
             db, job_id, decided_by=user.id, decision=decision, decision_tier=decision_tier,
             note=note.strip() or None, acknowledge_warnings=acknowledge_warnings,
         )
-    except ImportNotReady:
-        return _index_redirect(error="Import job not found.")
+    except ImportNotReady as exc:
+        # Covers both "no such job" and "exists but not parsed yet" - job_redirect
+        # resolves the former correctly on its own (import_detail redirects to the
+        # index when the job truly doesn't exist) and shows the latter's real
+        # reason on the job's own page, which only a caller record_decision has
+        # already confirmed has access can ever reach.
+        return _job_redirect(job_id, error=str(exc))
     except SelfApproval:
         db.rollback()
         return _job_redirect(

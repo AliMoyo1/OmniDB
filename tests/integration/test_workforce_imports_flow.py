@@ -15,6 +15,7 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.flags import service as flags_service
 from app.models.identity import User
+from app.models.workforce_imports import WorkforceImportJob
 from tests.integration.conftest import csrf_headers, login, make_user, make_user_with_role
 
 pytestmark = pytest.mark.integration
@@ -1059,3 +1060,138 @@ def test_commit_and_reverse_emit_row_level_audit_events_linked_to_the_job():
         e for e in reverse_events if e.event_metadata.get("import_job_id") == job_id
     ]
     assert len(matching_reverse) == 1, matching_reverse
+
+
+def test_can_access_job_query_count_does_not_scale_with_row_count():
+    """Round-2 review finding #1: can_access_job/visible_jobs previously called
+    a real authorization query once per ROW - a 100,000-row job checked on the
+    200-job list page could mean hundreds of thousands of queries. Proves the
+    bulk rewrite holds: a job with many rows but few distinct teams costs a
+    small, bounded number of queries to resolve, not one per row."""
+    from sqlalchemy import event
+
+    from app.db import engine
+    from app.workforce_imports import service as import_service
+
+    teams = [_make_team(prefix=f"wfiqc{i}") for i in range(3)]
+    uploader, _ = _manager(prefix="wfiqcupload")
+    headers = csrf_headers(uploader)
+
+    rows_per_team = 40
+    lines = ["action,external_workforce_id,team_code,reason_code"]
+    for _team_id, team_code in teams:
+        for _i in range(rows_per_team):
+            wid = f"wfiqc-{uuid.uuid4().hex[:8]}"
+            make_user(f"{wid}@example.com")
+            lines.append(f"add,{wid},{team_code},")
+    csv_text = "\r\n".join(lines) + "\r\n"
+
+    job_id = _upload(uploader, headers, "team_memberships", csv_text).json()["id"]
+    status = uploader.get(f"/api/v1/workforce/imports/{job_id}").json()
+    total_rows = rows_per_team * len(teams)
+    assert status["total_rows"] == total_rows, status
+
+    # A second manager - organization-wide authority, the same bar
+    # test_team_membership_add_end_and_reversal already proves is sufficient -
+    # not the uploader, so this exercises the real per-row authority path
+    # rather than the uploader short-circuit.
+    approver, approver_id = _manager(prefix="wfiqcapprover")
+
+    query_count = 0
+
+    def _count(*_args, **_kwargs):
+        nonlocal query_count
+        query_count += 1
+
+    with SessionLocal() as db:
+        job = db.get(WorkforceImportJob, uuid.UUID(job_id))
+        assert job is not None
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            result = import_service.can_access_job(db, uuid.UUID(approver_id), job)
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+
+    assert result is True
+    assert query_count < 20, (
+        f"can_access_job issued {query_count} queries for a {total_rows}-row "
+        f"job spanning only {len(teams)} distinct teams - should be bounded by "
+        "distinct scopes referenced, not by row count"
+    )
+
+
+def test_unparsed_job_is_accessible_only_to_the_uploader():
+    """Round-2 review finding #2: a job with no rows yet (quarantined, still
+    parsing, or failed before any row was recorded) previously granted access
+    to every import-capable user, not just the uploader - defeating finding
+    #1's whole point for the entire pre-parse window. Invisible in this suite
+    (Celery runs eager, so a job is never observably unparsed after upload
+    returns) but real under production's async Celery - the job here is built
+    directly to exercise that window."""
+    uploader, uploader_id = _manager(prefix="wfiunparsed")
+    with SessionLocal() as db:
+        job = WorkforceImportJob(
+            import_type="users", uploader_id=uuid.UUID(uploader_id),
+            source_filename_display="still-parsing.csv",
+            generated_storage_key=f"wfiunparsed-{uuid.uuid4().hex}",
+            file_hash="deadbeef", state="quarantined",
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    outsider, _ = _manager(prefix="wfiunparsedoutsider")
+    get_denied = outsider.get(f"/api/v1/workforce/imports/{job_id}")
+    assert get_denied.status_code == 404, get_denied.text
+
+    get_by_uploader = uploader.get(f"/api/v1/workforce/imports/{job_id}")
+    assert get_by_uploader.status_code == 200, get_by_uploader.text
+
+
+def test_record_decision_requires_parsed_state():
+    """Round-2 review finding #2 (second half): record_decision did not
+    require state == "parsed" - row counts (invalid_rows, warning_rows) are
+    only meaningful once parsing finishes, so deciding on a still-parsing job
+    would check the blocking-errors/warnings gates against numbers that are
+    still all zero by default, regardless of what the file actually contains
+    once parsing completes."""
+    uploader, uploader_id = _manager(prefix="wfidecidestate")
+    headers = csrf_headers(uploader)
+    with SessionLocal() as db:
+        job = WorkforceImportJob(
+            import_type="users", uploader_id=uuid.UUID(uploader_id),
+            source_filename_display="still-parsing.csv",
+            generated_storage_key=f"wfidecidestate-{uuid.uuid4().hex}",
+            file_hash="deadbeef", state="quarantined",
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    denied = uploader.patch(
+        f"/api/v1/workforce/imports/{job_id}/decisions",
+        json={"decision": "approve", "decision_tier": "standard"},
+        headers=headers,
+    )
+    assert denied.status_code == 404, denied.text
+    assert "not ready" in denied.json()["detail"].lower()
+
+
+def test_header_only_file_is_rejected_even_with_a_valid_header():
+    """Round-2 review finding #4: a header-only file (zero data rows)
+    previously derived its header from the first yielded DATA row, so it
+    skipped every header check entirely and became a "successfully parsed"
+    zero-row job - which would then sail through the approve/commit gates
+    since 0 invalid/0 warning rows never trip anything. Uses a fully valid
+    header to isolate the "zero rows" check from A1's unknown-column check
+    (already covered by test_unknown_column_in_header_fails_parse_cleanly)."""
+    client, _ = _manager(prefix="wfizerorows")
+    headers = csrf_headers(client)
+    valid_header_only = (
+        "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
+    )
+    upload = _upload(client, headers, "users", valid_header_only)
+    job_id = upload.json()["id"]
+    status = client.get(f"/api/v1/workforce/imports/{job_id}").json()
+    assert status["state"] == "failed"
+    assert status["total_rows"] == 0
