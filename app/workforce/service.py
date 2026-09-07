@@ -69,10 +69,17 @@ def visible_team_ids(db: Session, actor_id: uuid.UUID) -> tuple[bool, set[uuid.U
     """Scope a workforce (user) listing to what the actor's own appointment-capability
     grants cover, the same non-leaking principle campaign_scope_filter already applies
     to campaigns. Returns (sees_everyone, team_ids); an empty, non-everyone result
-    means the actor has no appointment capability with a resolvable scope at all."""
+    means the actor has no appointment capability with a resolvable scope at all.
+
+    Coverage must mirror the authorization core (_scope_assignment_covers_target): an
+    installation or null-organization grant sees everyone; a grant scoped to a specific
+    organization covers every team in that organization (resolved below); a team grant
+    covers exactly that team. An org-scoped grant that resolved to nothing here would
+    hide teams the actor is genuinely authorized over - fail-closed, but wrong."""
     appointment_capabilities = set(ROLE_APPOINTMENT_CAPABILITY.values())
     sees_everyone = False
     team_ids: set[uuid.UUID] = set()
+    organization_ids: set[uuid.UUID] = set()
     for assignment in authz.effective_role_assignments(db, actor_id):
         if not ROLE_CAPABILITIES.get(assignment.role_code, set()) & appointment_capabilities:
             continue
@@ -80,8 +87,18 @@ def visible_team_ids(db: Session, actor_id: uuid.UUID) -> tuple[bool, set[uuid.U
             sees_everyone = True
         elif assignment.scope_type == "organization" and assignment.scope_id is None:
             sees_everyone = True
+        elif assignment.scope_type == "organization" and assignment.scope_id is not None:
+            organization_ids.add(assignment.scope_id)
         elif assignment.scope_type == "team" and assignment.scope_id is not None:
             team_ids.add(assignment.scope_id)
+    if not sees_everyone and organization_ids:
+        team_ids |= set(
+            db.scalars(
+                select(Team.id).where(
+                    Team.organization_id.in_(organization_ids), Team.status == "active"
+                )
+            )
+        )
     return sees_everyone, team_ids
 
 

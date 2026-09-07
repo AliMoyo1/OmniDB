@@ -232,3 +232,64 @@ def test_team_picker_does_not_expose_teams_outside_the_callers_scope():
     assert f"MineTeamAlpha{marker}" in body  # the caller's own team is offered
     assert f"OtherTeamBravo{marker}" not in body  # a team in another org is not
     assert str(other_team_id) not in body  # nor its id
+
+
+def test_org_scoped_manager_sees_own_org_teams_and_can_delegate_to_one():
+    """An appointment role scoped to a specific organization covers every team in
+    that organization (the authz core resolves the team's org), so the delegation
+    page must offer those teams - and only those - and a team-scoped delegation for
+    one of them must go through the form."""
+    from app.models.identity import Organization, Team
+
+    marker = uuid.uuid4().hex[:8]
+    with SessionLocal() as db:
+        org1 = Organization(name=f"OSOrg1 {marker}", status="active")
+        org2 = Organization(name=f"OSOrg2 {marker}", status="active")
+        db.add_all([org1, org2])
+        db.flush()
+        team_a1 = Team(
+            organization_id=org1.id, external_code=f"a1-{marker}", name=f"OrgOneAlpha{marker}"
+        )
+        team_a2 = Team(
+            organization_id=org1.id, external_code=f"a2-{marker}", name=f"OrgOneBeta{marker}"
+        )
+        team_b = Team(
+            organization_id=org2.id, external_code=f"b-{marker}", name=f"OrgTwoGamma{marker}"
+        )
+        db.add_all([team_a1, team_a2, team_b])
+        db.commit()
+        org1_id, a1_id, b_id = org1.id, team_a1.id, team_b.id
+
+    mgr_email = f"osmgr-{marker}@example.com"
+    make_user_with_role(mgr_email, "manager", scope_type="organization", scope_id=org1_id)
+    delegate_id = make_user(f"osdel-{marker}@example.com")
+    client = _client(mgr_email)
+
+    body = client.get("/delegations").text
+    assert f"OrgOneAlpha{marker}" in body  # both of the caller's own-org teams are offered
+    assert f"OrgOneBeta{marker}" in body
+    assert f"OrgTwoGamma{marker}" not in body  # a team in another org is not
+    assert str(b_id) not in body
+
+    # A team-scoped delegation for an authorized team goes through the web form.
+    resp = client.post(
+        "/delegations",
+        data={
+            "csrf_token": _csrf(client),
+            "delegate_id": str(delegate_id),
+            "capabilities": [APPOINT_TEAM_CAPTAIN],
+            "scope_type": "team",
+            "team_id": str(a1_id),
+            "campaign_id": "",
+            "effective_from": "",
+            "effective_to": "",
+            "reason_code": "cover",
+        },
+    )
+    assert resp.status_code == 303
+    assert "flash_success" in resp.headers["location"]
+
+    with SessionLocal() as db:
+        assert authz.has_scope_capability(
+            db, delegate_id, APPOINT_TEAM_CAPTAIN, scope_type="team", scope_id=a1_id
+        )

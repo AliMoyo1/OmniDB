@@ -2340,6 +2340,17 @@ all active teams for an installation/org-wide holder, else only the caller's sco
 teams, else none. create_delegation still enforces the precise per-capability role check,
 so the picker can only ever be narrower than what a delegation may actually target. Test:
 a team-scoped user's page shows their own team, never a team in another organization.
+  - P2 follow-up the same day: `visible_team_ids` only recognized installation-scoped,
+    org-scoped-with-null-id, and team-scoped assignments, NOT an org-scoped role with a
+    specific organization id. But the authz core (`_scope_assignment_covers_target`)
+    resolves a team's organization and lets such a role cover that org's teams, so
+    `create_delegation` authorized the manager while the picker showed them nothing (fail-
+    closed, but wrong). Fixed: `visible_team_ids` now also collects org-scoped ids and
+    unions in all active teams of those organizations (one query, only when not already
+    sees_everyone), mirroring the authz coverage exactly and closing the same latent gap
+    in `list_visible_users`. Teams outside those orgs stay hidden. Test: an org-scoped
+    manager sees their own org's teams (not another org's) and can create a team-scoped
+    delegation for one of them through the web form.
 
 P1-3: the completed-campaign Excel export appended cells raw, so an operator-controlled
 disposition label or an agent display name beginning with a formula prefix (openpyxl

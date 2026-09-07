@@ -53,6 +53,21 @@ begin with "+" and are validated E.164, so they too get the leading "'": safe, u
   with each dangerous prefix; assert every such cell is a string (not a formula) and is
   neutralized.
 
+## P2 follow-up (2026-09-07): org-scoped delegators saw no teams in the web form
+The P1-2 fix scoped the team picker through `visible_team_ids`, but that helper only
+recognized installation-scoped, org-scoped-with-null-id, and team-scoped assignments -
+NOT an org-scoped role with a specific organization id. Yet the authz layer
+(`_scope_assignment_covers_target`) resolves a team's organization and DOES let such a
+role cover that org's teams, so `create_delegation` authorizes the manager while the
+picker showed them nothing (fail-closed: a usability gap, not a leak).
+
+Fix: `visible_team_ids` now also collects org-scoped ids (scope_id != None) and unions in
+all active teams belonging to those organizations (one query, only when not already
+sees_everyone). This mirrors the authz coverage exactly and also fixes the same latent
+gap for `list_visible_users`. Teams outside those orgs stay hidden (fail-closed kept).
+- Test: an org-scoped manager sees their own org's teams, not another org's, and can
+  create a team-scoped delegation for one of their teams through the web form.
+
 ## Verify
 ruff/mypy, full suite vs real Postgres (Docker; Redis 16379), docker build, BUILD-LOG,
 commit/push/CI. No migration.
