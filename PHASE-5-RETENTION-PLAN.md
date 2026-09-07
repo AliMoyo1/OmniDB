@@ -48,7 +48,7 @@ Built in three safe increments (system coherent at each step):
 - Tests: a completed campaign exports rows w/ the right columns; a non-completed
   campaign refuses; authz gate; an audit event is written.
 
-## Increment C: deletion (manual + auto)  [STATUS: not started]
+## Increment C: deletion (manual + auto)  [STATUS: DONE 2026-09-02; integration 185; pending commit/CI. ADR-020 retention COMPLETE.]
 - app/campaigns/retention.py: `delete_completed_campaign_data(db, campaign, *,
   actor_id, reason)` - deletes CampaignContacts + WorkItems + CallAttempts +
   now-orphaned Contacts for the campaign, but NEVER audit events or

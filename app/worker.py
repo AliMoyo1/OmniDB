@@ -51,6 +51,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.campaigns.tasks.detect_completed_campaigns_task",
         "schedule": 3600.0,
     },
+    # The auto-delete backstop; the countdown is in days, so hourly is ample.
+    "purge-expired-campaign-data": {
+        "task": "app.campaigns.tasks.purge_expired_campaign_data_task",
+        "schedule": 3600.0,
+    },
 }
 
 celery_app.autodiscover_tasks(

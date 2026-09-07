@@ -15,7 +15,13 @@
   <strong>Complete — retention countdown: {{ retention_days_remaining }} day{{ '' if retention_days_remaining == 1 else 's' }} left.</strong>
   Every number has a final disposition. This campaign's contact data will be auto-deleted
   {% if campaign.retention_delete_after %}on {{ campaign.retention_delete_after.strftime("%Y-%m-%d") }}{% endif %}. Export it before then if you need a record.
-  {% if can_export_campaign %}<div style="margin-top:8px"><a href="/campaigns/{{ campaign.id }}/export"><button type="button">Export to Excel</button></a></div>{% endif %}
+  {% if can_export_campaign %}<div style="margin-top:8px">
+    <a href="/campaigns/{{ campaign.id }}/export"><button type="button">Export to Excel</button></a>
+    <form method="post" action="/campaigns/{{ campaign.id }}/delete-data" class="inline" onsubmit="return confirm('Delete this campaign\'s contact data now? This cannot be undone. Export first if you need a record.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="quiet-danger">Delete data now</button>
+    </form>
+  </div>{% endif %}
 </section>
 {% endif %}
 

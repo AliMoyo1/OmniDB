@@ -28,3 +28,22 @@ def detect_completed_campaigns_task() -> int:
             db.rollback()
             logger.exception("campaign completion-detection task failed")
             raise
+
+
+@celery_app.task(
+    name="app.campaigns.tasks.purge_expired_campaign_data_task",
+    autoretry_for=(Exception,),
+    retry_kwargs={"max_retries": 2},
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def purge_expired_campaign_data_task() -> int:
+    with SessionLocal() as db:
+        try:
+            purged = retention.purge_expired_campaign_data(db)
+            db.commit()
+            return purged
+        except Exception:
+            db.rollback()
+            logger.exception("campaign retention purge task failed")
+            raise

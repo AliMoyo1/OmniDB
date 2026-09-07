@@ -2135,3 +2135,42 @@ to the decrypted phone / disposition label / agent name and writes one audit
 event; an active campaign's export is refused; a user without the capability is
 denied), unit suite 35, `docker build` clean, ruff/mypy clean. Increment C
 (deletion - manual + auto) is next.
+
+Confirmed green on `d5c8d88`: build, security, quality, integration all passed.
+
+## 2026-09-02: completed-campaign retention, increment C - deletion, manual + auto (ADR-020)
+
+The data-minimization guarantee itself, and the last of the three retention
+increments. `retention.delete_completed_campaign_data` removes a completed
+campaign's contact database - its call attempts, work items, campaign-contact
+rows, and any Contact left referenced by no other campaign - in FK-dependency
+order (nulling call attempts' self-references first, then attempts, work items,
+campaign contacts, then the now-orphaned numbers). It never touches audit events
+or DNC-suppression entries: those are the retained evidence ADR-020 keeps
+separately. Only a *completed* campaign can be deleted (an active one still
+holds live, workable data), and it is idempotent - re-running on an already-
+purged campaign deletes nothing. On deletion the retention countdown is cleared,
+which also takes the campaign out of the auto-purge query.
+
+Two entry points: a manual Team Captain delete (`POST /campaigns/{id}/
+delete-data`, gated by the same `EXPORT_COMPLETED_CAMPAIGN` capability as the
+export, CSRF-protected, with a confirm dialog and a "Delete data now" button in
+the retention banner), and an hourly auto-purge beat task
+(`purge_expired_campaign_data_task`) that deletes every completed campaign whose
+60-day countdown has elapsed - the hard backstop for data a Team Captain never
+manually cleared. Both audit the deletion (`campaign.delete_data`, with the
+counts).
+
+A number shared with another campaign is deliberately preserved: only Contacts
+left with no remaining CampaignContact anywhere are removed, so deleting one
+campaign never strips a number still in use by another.
+
+Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 185
+(+5: manual delete removes contact data - contacts, work items, call attempts,
+orphaned numbers - while suppression entries and audit events survive and the
+countdown clears; a number shared with an active campaign is kept; auto-purge
+deletes only past-countdown completed campaigns and leaves the not-yet-due and
+the active ones intact; deletion refuses a non-completed campaign; the web
+endpoint enforces the capability and actually purges for an authorized user),
+unit suite 35, `docker build` clean, ruff/mypy clean. **ADR-020 retention
+complete**: detection + countdown (A), export (B), deletion (C).

@@ -323,6 +323,32 @@ def export_campaign(
     )
 
 
+@router.post("/{campaign_id}/delete-data", dependencies=[Depends(verify_form_csrf)])
+def delete_campaign_data_action(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None or not _can_access(db, user, EXPORT_COMPLETED_CAMPAIGN, campaign):
+        return _index_redirect(error="Campaign not found or not authorized.")
+    try:
+        result = campaign_retention.delete_completed_campaign_data(
+            db, campaign, actor_id=user.id, reason="manual"
+        )
+    except campaign_retention.CampaignNotDeletable as exc:
+        db.rollback()
+        return _campaign_redirect(campaign_id, error=str(exc))
+    db.commit()
+    return _campaign_redirect(
+        campaign_id,
+        success=(
+            f"Contact data deleted: {result['campaign_contacts']} campaign contact(s), "
+            f"{result['contacts_deleted']} number(s) removed."
+        ),
+    )
+
+
 @router.post("/{campaign_id}/imports", dependencies=[Depends(verify_form_csrf)])
 def upload_import(
     campaign_id: uuid.UUID,
