@@ -38,7 +38,7 @@ Built in three safe increments (system coherent at each step):
   owner notified; an outstanding-contact campaign does not; detail shows the
   countdown; idempotent (re-running detect doesn't re-mark/re-notify).
 
-## Increment B: Team Captain Excel export  [STATUS: not started]
+## Increment B: Team Captain Excel export  [STATUS: DONE 2026-09-02; new cap EXPORT_COMPLETED_CAMPAIGN; integration 180; pending commit/CI]
 - app/campaigns/export.py: build an xlsx (openpyxl) of a COMPLETED campaign's
   contacts - decrypted phone, final disposition, agent, completed_at. Gated by a
   Team-Captain-level capability over the campaign; audited (who exported, when).

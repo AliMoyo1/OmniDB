@@ -2106,3 +2106,32 @@ complete with a 60-day countdown and owner notified; an outstanding contact
 blocks it; an empty campaign never completes; detection idempotent; the detail
 page shows the countdown), unit suite 35, `docker build` clean, ruff/mypy clean.
 Increments B (export) and C (deletion) are next.
+
+Confirmed green on `6203903`: build, security, quality, integration all passed.
+
+## 2026-09-02: completed-campaign retention, increment B - Team Captain Excel export (ADR-020)
+
+The one authorized raw-PII export in the system: a completed campaign's contact
+database - raw numbers, final dispositions, calling-agent names - to an .xlsx a
+Team Captain saves before the retention countdown deletes it. `app/campaigns/
+export.py` builds the workbook (openpyxl) from each CampaignContact - decrypting
+the phone, resolving the disposition code to its label and the agent id to a
+name - but only for a *completed* campaign (`CampaignNotExportable` otherwise, so
+no raw-export path can touch a still-active campaign's live data). Every export
+is audited (`campaign.export`, with the row count) - ADR-020's required record of
+who took raw data out of the system.
+
+A new capability `EXPORT_COMPLETED_CAMPAIGN` gates it, resolved per-campaign by
+scope like every other campaign capability. ADR-020 names the Team Captain as
+the authorized exporter; the campaign-operational roles above them (team leader,
+manager) inherit it, so a supervisor can export their own completed campaign
+rather than being locked out. The web endpoint (`GET /campaigns/{id}/export`)
+streams the file as an attachment; the detail page's retention banner shows an
+"Export to Excel" button when the viewer holds the capability.
+
+Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 180
+(+3: a completed campaign exports an xlsx whose row round-trips through openpyxl
+to the decrypted phone / disposition label / agent name and writes one audit
+event; an active campaign's export is refused; a user without the capability is
+denied), unit suite 35, `docker build` clean, ruff/mypy clean. Increment C
+(deletion - manual + auto) is next.

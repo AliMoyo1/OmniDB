@@ -40,6 +40,15 @@ ASSIGN_CAMPAIGN_AGENT = "assign_campaign_agent"
 # one capability Viewer is meant to hold at all.
 VIEW_CAMPAIGN_REPORTS = "view_campaign_reports"
 
+# The one authorized raw-PII export (ADR-020): a completed campaign's contact
+# database to Excel, before the retention countdown deletes it. Distinct from
+# every other campaign capability because it exposes raw numbers, dispositions,
+# and agent names - an audited exception to the no-raw-export rule. ADR-020
+# names the Team Captain as the authorized exporter; the campaign-operational
+# roles above them (team leader, manager) inherit it, resolved per-campaign by
+# scope like every other campaign capability.
+EXPORT_COMPLETED_CAMPAIGN = "export_completed_campaign"
+
 ROLE_SUPER_ADMIN = "super_admin"
 ROLE_MANAGER = "manager"
 ROLE_TEAM_LEADER = "team_leader"
@@ -62,6 +71,7 @@ ROLE_CAPABILITIES: dict[str, set[str]] = {
         ARCHIVE_CAMPAIGN,
         ASSIGN_CAMPAIGN_AGENT,
         VIEW_CAMPAIGN_REPORTS,
+        EXPORT_COMPLETED_CAMPAIGN,
         VIEW_AUDIT,
     },
     ROLE_TEAM_LEADER: {
@@ -73,6 +83,7 @@ ROLE_CAPABILITIES: dict[str, set[str]] = {
         PAUSE_CAMPAIGN,
         ASSIGN_CAMPAIGN_AGENT,
         VIEW_CAMPAIGN_REPORTS,
+        EXPORT_COMPLETED_CAMPAIGN,
         VIEW_AUDIT,
     },
     ROLE_TEAM_CAPTAIN: {
@@ -80,6 +91,7 @@ ROLE_CAPABILITIES: dict[str, set[str]] = {
         VIEW_CAMPAIGN,
         ASSIGN_CAMPAIGN_AGENT,
         VIEW_CAMPAIGN_REPORTS,
+        EXPORT_COMPLETED_CAMPAIGN,
         VIEW_AUDIT,
     },
     ROLE_AGENT: {WORK_QUEUE},

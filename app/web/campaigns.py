@@ -13,7 +13,7 @@ from collections.abc import Generator
 from datetime import date
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ from app.authz.capabilities import (
     ARCHIVE_CAMPAIGN,
     ASSIGN_CAMPAIGN_AGENT,
     CREATE_CAMPAIGN,
+    EXPORT_COMPLETED_CAMPAIGN,
     LAUNCH_CAMPAIGN,
     MANAGE_CAMPAIGN,
     PAUSE_CAMPAIGN,
@@ -30,6 +31,7 @@ from app.authz.capabilities import (
     VIEW_CAMPAIGN,
     VIEW_CAMPAIGN_REPORTS,
 )
+from app.campaigns import export as campaign_export
 from app.campaigns import retention as campaign_retention
 from app.campaigns import service as campaign_service
 from app.campaigns.service import (
@@ -267,6 +269,7 @@ def campaign_detail(
         can_launch_campaign=_can_access(db, user, LAUNCH_CAMPAIGN, campaign),
         can_pause_campaign=_can_access(db, user, PAUSE_CAMPAIGN, campaign),
         can_archive_campaign=_can_access(db, user, ARCHIVE_CAMPAIGN, campaign),
+        can_export_campaign=_can_access(db, user, EXPORT_COMPLETED_CAMPAIGN, campaign),
         import_jobs=import_jobs,
         selected_job=selected_job,
         selected_preview=(
@@ -291,6 +294,33 @@ def campaign_detail(
         flash_success=request.query_params.get("flash_success"),
     )
     return templates.TemplateResponse(request, "campaign_detail.html", context)
+
+
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get("/{campaign_id}/export")
+def export_campaign(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None or not _can_access(db, user, EXPORT_COMPLETED_CAMPAIGN, campaign):
+        # Same message either way - never confirm a campaign the caller may not
+        # export even exists.
+        return _index_redirect(error="Campaign not found or not authorized to export.")
+    try:
+        data = campaign_export.export_completed_campaign(db, campaign, actor_id=user.id)
+    except campaign_export.CampaignNotExportable as exc:
+        return _campaign_redirect(campaign_id, error=str(exc))
+    db.commit()
+    filename = f"campaign-{campaign.external_code}-contacts.xlsx"
+    return Response(
+        content=data,
+        media_type=_XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{campaign_id}/imports", dependencies=[Depends(verify_form_csrf)])
