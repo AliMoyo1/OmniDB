@@ -46,6 +46,13 @@ celery_app.conf.beat_schedule = {
         "task": "app.work.tasks.reclaim_expired_leases_task",
         "schedule": 120.0,
     },
+    # A 60-day retention countdown needs no finer detection than hourly.
+    "detect-completed-campaigns": {
+        "task": "app.campaigns.tasks.detect_completed_campaigns_task",
+        "schedule": 3600.0,
+    },
 }
 
-celery_app.autodiscover_tasks(["app.imports", "app.work", "app.workforce_imports"])
+celery_app.autodiscover_tasks(
+    ["app.imports", "app.work", "app.workforce_imports", "app.campaigns"]
+)

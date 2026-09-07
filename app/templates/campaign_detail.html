@@ -10,6 +10,14 @@
   </div>
 </div>
 
+{% if campaign.status == "completed" and retention_days_remaining is not none %}
+<section class="flash error" role="status" aria-label="Retention countdown">
+  <strong>Complete — retention countdown: {{ retention_days_remaining }} day{{ '' if retention_days_remaining == 1 else 's' }} left.</strong>
+  Every number has a final disposition. This campaign's contact data will be auto-deleted
+  {% if campaign.retention_delete_after %}on {{ campaign.retention_delete_after.strftime("%Y-%m-%d") }}{% endif %}. Export it before then if you need a record.
+</section>
+{% endif %}
+
 <section class="readiness-strip" aria-label="Campaign readiness">
   <div><span>Provenance</span><strong>{% if campaign.data_source and campaign.purpose and campaign.data_obtained_at and campaign.lawful_basis_or_consent_reference %}Ready{% else %}Incomplete{% endif %}</strong></div>
   <div><span>Valid timezone</span><strong>{{ campaign.timezone }}</strong></div>

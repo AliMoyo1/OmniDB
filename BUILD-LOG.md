@@ -2063,3 +2063,46 @@ excluding the uploader and a plain agent; a routine-only import pings nobody),
 unit suite 35, `docker build` clean, ruff/mypy clean. A possible later
 extension noted in the plan: broadcasting routine jobs whose uploader lacks the
 per-row authority to self-approve.
+
+## 2026-09-02: Phase 5 - completed-campaign retention, increment A (ADR-020)
+
+Next operational workflow after notifications: ADR-020's completion-triggered
+retention - the DLP obligation the product exists to honor (completed contact
+data must not linger). Reconciliation: the model fields
+(`Campaign.completed_at`/`retention_delete_after`, `CampaignContact.completed_at`)
+and a Celery beat schedule already exist; there was no completion detection,
+export, or deletion. Building it in three safe increments (system coherent at
+each step): (A) detection + countdown, (B) Team Captain Excel export, (C)
+deletion (manual + auto). This is increment A.
+
+Completion signal: every terminal path a contact can take - normal completion,
+per-lease DNC suppression, and the cross-campaign suppression sweep - already
+sets `CampaignContact.completed_at` together with the disposition and agent. So
+"complete" is exactly: an active campaign with at least one contact and none
+still `completed_at IS NULL`. `app/campaigns/retention.py` detects this
+(`campaign_is_complete`), moves the campaign to a new `completed` status,
+stamps `completed_at`, starts the 60-day countdown
+(`retention_delete_after = now + 60d`), audits it, and notifies the campaign's
+owner through the inbox to export before deletion. An hourly beat task
+(`detect_completed_campaigns_task`) drives it - a 60-day countdown needs no
+finer granularity - and it is idempotent, since only active campaigns are
+scanned so an already-completed one is never re-marked or re-notified. The
+campaign detail page now shows a prominent countdown banner. Moving a campaign
+to `completed` is safe: a fully-worked campaign has no leasable work left, and
+launch/pause/archive already reject non-matching states.
+
+Migration 0017 widens the `campaigns.status` CHECK constraint (draft/active/
+paused/archived) to include `completed`. Because 0002's constraint name was run
+through this build's naming convention and ended up doubled
+(`ck_campaigns_ck_campaigns_status`), the migration alters it with raw SQL to
+preserve that exact name rather than re-running it through the convention (which
+would triple-prefix); the downgrade maps any `completed` campaign back to
+`archived` before restoring the stricter constraint.
+
+Verified against real Postgres 16 + Redis 7 locally: migration 0017 applies/
+downgrades/reapplies cleanly (and the widened constraint confirmed in pg_
+constraint), `pytest -m integration` 177 (+5: fully-worked campaign detected
+complete with a 60-day countdown and owner notified; an outstanding contact
+blocks it; an empty campaign never completes; detection idempotent; the detail
+page shows the countdown), unit suite 35, `docker build` clean, ruff/mypy clean.
+Increments B (export) and C (deletion) are next.

@@ -30,6 +30,7 @@ from app.authz.capabilities import (
     VIEW_CAMPAIGN,
     VIEW_CAMPAIGN_REPORTS,
 )
+from app.campaigns import retention as campaign_retention
 from app.campaigns import service as campaign_service
 from app.campaigns.service import (
     CampaignAssignmentError,
@@ -284,6 +285,7 @@ def campaign_detail(
         ),
         assignments=assignments,
         available_agents=agents,
+        retention_days_remaining=campaign_retention.retention_days_remaining(campaign),
         idempotency_key=str(uuid.uuid4()),
         flash_error=request.query_params.get("flash_error"),
         flash_success=request.query_params.get("flash_success"),
