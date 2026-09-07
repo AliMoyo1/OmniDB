@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from app.api.admin import router as admin_router
 from app.api.campaigns import campaigns_router, imports_router
+from app.api.delegations import router as delegations_router
 from app.api.flags import router as flags_router
 from app.api.notifications import router as notifications_router
 from app.api.work import agent_router, work_router
@@ -90,6 +91,7 @@ app.include_router(workforce_router)
 app.include_router(workforce_imports_router)
 app.include_router(flags_router)
 app.include_router(notifications_router)
+app.include_router(delegations_router)
 app.include_router(web_auth_router)
 app.include_router(web_agent_work_router)
 app.include_router(web_campaigns_router)

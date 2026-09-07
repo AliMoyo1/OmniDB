@@ -2174,3 +2174,53 @@ the active ones intact; deletion refuses a non-completed campaign; the web
 endpoint enforces the capability and actually purges for an authorized user),
 unit suite 35, `docker build` clean, ruff/mypy clean. **ADR-020 retention
 complete**: detection + countdown (A), export (B), deletion (C).
+
+Confirmed green on `05352df`: build, security, quality, integration all passed.
+
+## 2026-09-02: Phase 5 - acting-role / delegation, increment 1 (service + API)
+
+The last operational workflow before the pilot: wiring the dormant `Delegation`
+model so a user can temporarily hold another's capabilities (to cover an absent
+approver), per plan v0.3 section 11.3. The risk here is entirely in the
+authorization core - a delegation bug would be a privilege-escalation path - so
+the integration is deliberately minimal-divergence.
+
+A delegation is structurally a role assignment for scope purposes: both carry
+`scope_type`/`scope_id`. So the authz core gained ONE new grant source -
+`_capability_grants(db, user, capability)` returns the user's effective role
+assignments that grant the capability PLUS the delegations they currently hold
+whose `capability_set` contains it (`active_delegations` enforces the window and
+revocation at read time, so an elapsed delegation grants nothing with no job
+needed). All five scope checks (`has_capability`, `has_assigned_capability`,
+`has_scope_capability`, the bulk `scope_capabilities_matched`, and
+`campaign_scope_filter` - which carries `has_campaign_capability` and the bulk
+`campaign_ids_with_capability`) were rewritten to iterate that one source
+instead of role-assignments-filtered-by-ROLE_CAPABILITIES; the scope-covering
+logic itself is untouched, since it only ever reads `scope_type`/`scope_id` and
+a `_ScopedGrant` Protocol now types it for both. With zero delegations the
+behavior is byte-identical - the 185 pre-existing tests stayed green unchanged -
+and single and bulk paths are delegation-aware *consistently*, so a delegated
+approver is honored by the import-approval bulk check and the campaign filter
+alike, never one but not the other. `users_with_any_capability` also unions in
+delegates, so a delegated approver joins the notification broadcast set.
+
+Management (`app/authz/delegations.py`) enforces the plan's guardrails:
+`create_delegation` rejects self-delegation, unknown capabilities, and the
+non-delegable set (TECHNICAL_CONFIG / RESET_USER_AUTH / CREATE_MANAGER /
+MANAGE_ROLES - role-elevation and system-config), and - the key one - rejects
+any capability the delegator does not themselves hold at that exact scope, so a
+delegation can never be an escalation. It audits the grant and rotates the
+delegate's sessions (a privilege change); revoke does the same. The JSON API
+(POST/GET/DELETE /api/v1/delegations) makes creation self-authorized (the
+service's authority check is the gate) but requires step-up reauthentication,
+like the other privileged admin actions.
+
+Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 197
+(+12: an active delegation grants a scoped capability the delegate's roles don't,
+and confers campaign visibility end-to-end; out-of-window / revoked / out-of-
+scope grants nothing; self / non-delegable / unknown capabilities are rejected;
+a delegator cannot delegate authority they lack at the scope; the API creates,
+lists, and revokes, requires step-up, and refuses to let a user delegate
+authority they don't hold), unit suite 35, `docker build` clean, ruff/mypy
+clean. No migration - the table has existed since the baseline. Web UI to
+grant/revoke/view is a noted increment-2 follow-up.

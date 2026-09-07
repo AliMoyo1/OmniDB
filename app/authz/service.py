@@ -9,6 +9,7 @@ from __future__ import annotations
 import itertools
 import uuid
 from collections.abc import Iterable
+from typing import Protocol
 
 from sqlalchemy import and_, exists, false, or_, select, true
 from sqlalchemy.orm import Session
@@ -16,10 +17,20 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.auth import sessions as sess
 from app.authz.capabilities import ROLE_CAPABILITIES
-from app.models.authz import RoleAssignment
+from app.models.authz import Delegation, RoleAssignment
 from app.models.base import utcnow
 from app.models.campaign import Campaign, CampaignTeamAssignment
 from app.models.identity import Team
+
+
+class _ScopedGrant(Protocol):
+    """Anything that grants capability at a scope. A RoleAssignment and a
+    Delegation both satisfy it, so the scope-covering helpers below decide
+    coverage for either without knowing which it is - the one place a grant's
+    scope is compared to a target, shared by roles and delegations alike."""
+
+    scope_type: str
+    scope_id: uuid.UUID | None
 
 # Postgres's extended query protocol caps bind parameters per statement at
 # 65,535 - well under a single import's documented 100,000-row maximum, so
@@ -54,8 +65,47 @@ def capabilities_for(roles: set[str]) -> set[str]:
     return caps
 
 
+def active_delegations(db: Session, user_id: uuid.UUID) -> list[Delegation]:
+    """The delegations this user currently HOLDS (is the delegate of): not
+    revoked, and inside their effective window right now. Expiry is enforced at
+    read time here, so an elapsed delegation grants nothing without any job
+    having to run (plan 11.3: request-time activation/expiry)."""
+    now = utcnow()
+    return list(
+        db.scalars(
+            select(Delegation).where(
+                Delegation.delegate_user_id == user_id,
+                Delegation.revoked_at.is_(None),
+                Delegation.effective_from <= now,
+                or_(Delegation.effective_to.is_(None), Delegation.effective_to > now),
+            )
+        )
+    )
+
+
+def _capability_grants(
+    db: Session, user_id: uuid.UUID, capability: str
+) -> list[_ScopedGrant]:
+    """Every active grant of one capability to this user - from their effective
+    roles AND from delegations they currently hold. A single source of truth so
+    every check below (single or bulk) treats a delegated capability exactly
+    like a role-granted one, at the delegation's scope; nothing here can honor a
+    delegation in one path but miss it in another."""
+    grants: list[_ScopedGrant] = [
+        assignment
+        for assignment in effective_role_assignments(db, user_id)
+        if capability in ROLE_CAPABILITIES.get(assignment.role_code, set())
+    ]
+    grants.extend(
+        delegation
+        for delegation in active_delegations(db, user_id)
+        if capability in (delegation.capability_set or [])
+    )
+    return grants
+
+
 def _scope_covers(
-    ra: RoleAssignment, scope_type: str | None, scope_id: uuid.UUID | None
+    ra: _ScopedGrant, scope_type: str | None, scope_id: uuid.UUID | None
 ) -> bool:
     if ra.scope_type == "installation":
         return True
@@ -81,19 +131,16 @@ def has_capability(
     scope_type: str | None = None,
     scope_id: uuid.UUID | None = None,
 ) -> bool:
-    for ra in effective_role_assignments(db, user_id):
-        granted = ROLE_CAPABILITIES.get(ra.role_code, set())
-        if capability in granted and _scope_covers(ra, scope_type, scope_id):
-            return True
-    return False
+    return any(
+        _scope_covers(grant, scope_type, scope_id)
+        for grant in _capability_grants(db, user_id, capability)
+    )
 
 
 def has_assigned_capability(db: Session, user_id: uuid.UUID, capability: str) -> bool:
-    """Return whether any effective role grants a capability, independent of scope."""
-    return any(
-        capability in ROLE_CAPABILITIES.get(assignment.role_code, set())
-        for assignment in effective_role_assignments(db, user_id)
-    )
+    """Whether any active grant (role or held delegation) confers a capability,
+    independent of scope."""
+    return bool(_capability_grants(db, user_id, capability))
 
 
 def users_with_any_capability(
@@ -108,26 +155,42 @@ def users_with_any_capability(
     check (has_scope_capability / can_access_job); this only avoids scanning
     every user in the system to find the handful that could possibly qualify."""
     wanted = set(capabilities)
+    now = utcnow()
+    user_ids: set[uuid.UUID] = set()
+
     role_codes = {
         role for role, granted in ROLE_CAPABILITIES.items() if granted & wanted
     }
-    if not role_codes:
-        return set()
-    now = utcnow()
-    return set(
-        db.scalars(
-            select(RoleAssignment.user_id).where(
-                RoleAssignment.role_code.in_(role_codes),
-                RoleAssignment.status == "active",
-                RoleAssignment.effective_from <= now,
-                or_(RoleAssignment.effective_to.is_(None), RoleAssignment.effective_to > now),
+    if role_codes:
+        user_ids |= set(
+            db.scalars(
+                select(RoleAssignment.user_id).where(
+                    RoleAssignment.role_code.in_(role_codes),
+                    RoleAssignment.status == "active",
+                    RoleAssignment.effective_from <= now,
+                    or_(RoleAssignment.effective_to.is_(None), RoleAssignment.effective_to > now),
+                )
             )
         )
-    )
+
+    # A delegate who currently holds one of these capabilities is a candidate
+    # too. Delegations are few, so scan the active ones and keep those whose
+    # capability_set overlaps.
+    for delegation in db.scalars(
+        select(Delegation).where(
+            Delegation.revoked_at.is_(None),
+            Delegation.effective_from <= now,
+            or_(Delegation.effective_to.is_(None), Delegation.effective_to > now),
+        )
+    ):
+        if wanted & set(delegation.capability_set or []):
+            user_ids.add(delegation.delegate_user_id)
+
+    return user_ids
 
 
 def _scope_covered_by_assignment(
-    assignment: RoleAssignment,
+    assignment: _ScopedGrant,
     scope_type: str,
     scope_id: uuid.UUID | None,
     team_organization_ids: dict[uuid.UUID, uuid.UUID],
@@ -155,7 +218,7 @@ def _scope_covered_by_assignment(
 
 def _scope_assignment_covers_target(
     db: Session,
-    assignment: RoleAssignment,
+    assignment: _ScopedGrant,
     scope_type: str,
     scope_id: uuid.UUID | None,
 ) -> bool:
@@ -183,12 +246,10 @@ def has_scope_capability(
     scope_id: uuid.UUID | None,
 ) -> bool:
     """Authorize creation or management of a server-validated owning scope."""
-    for assignment in effective_role_assignments(db, user_id):
-        if capability not in ROLE_CAPABILITIES.get(assignment.role_code, set()):
-            continue
-        if _scope_assignment_covers_target(db, assignment, scope_type, scope_id):
-            return True
-    return False
+    return any(
+        _scope_assignment_covers_target(db, grant, scope_type, scope_id)
+        for grant in _capability_grants(db, user_id, capability)
+    )
 
 
 def scope_capabilities_matched(
@@ -210,18 +271,14 @@ def scope_capabilities_matched(
     if not requests:
         return set()
 
-    assignments = [
-        assignment
-        for assignment in effective_role_assignments(db, user_id)
-        if capability in ROLE_CAPABILITIES.get(assignment.role_code, set())
-    ]
-    if not assignments:
+    grants = _capability_grants(db, user_id, capability)
+    if not grants:
         return set()
 
     team_organization_ids: dict[uuid.UUID, uuid.UUID] = {}
     needs_team_ancestry = any(
-        assignment.scope_type == "organization" and assignment.scope_id is not None
-        for assignment in assignments
+        grant.scope_type == "organization" and grant.scope_id is not None
+        for grant in grants
     )
     if needs_team_ancestry:
         team_ids = {
@@ -240,8 +297,8 @@ def scope_capabilities_matched(
         (scope_type, scope_id)
         for scope_type, scope_id in requests
         if any(
-            _scope_covered_by_assignment(assignment, scope_type, scope_id, team_organization_ids)
-            for assignment in assignments
+            _scope_covered_by_assignment(grant, scope_type, scope_id, team_organization_ids)
+            for grant in grants
         )
     }
 
@@ -249,35 +306,32 @@ def scope_capabilities_matched(
 def campaign_scope_filter(
     db: Session, user_id: uuid.UUID, capability: str
 ) -> ColumnElement[bool]:
-    """Build the database filter for campaigns visible through effective role scopes."""
-    assignments = [
-        assignment
-        for assignment in effective_role_assignments(db, user_id)
-        if capability in ROLE_CAPABILITIES.get(assignment.role_code, set())
-    ]
-    if not assignments:
+    """Build the database filter for campaigns visible through effective role
+    scopes and any held delegations that grant this capability."""
+    grants = _capability_grants(db, user_id, capability)
+    if not grants:
         return false()
     if any(
-        assignment.scope_type == "installation"
-        or (assignment.scope_type == "organization" and assignment.scope_id is None)
-        for assignment in assignments
+        grant.scope_type == "installation"
+        or (grant.scope_type == "organization" and grant.scope_id is None)
+        for grant in grants
     ):
         return true()
 
     campaign_ids = {
-        assignment.scope_id
-        for assignment in assignments
-        if assignment.scope_type == "campaign" and assignment.scope_id is not None
+        grant.scope_id
+        for grant in grants
+        if grant.scope_type == "campaign" and grant.scope_id is not None
     }
     team_ids = {
-        assignment.scope_id
-        for assignment in assignments
-        if assignment.scope_type == "team" and assignment.scope_id is not None
+        grant.scope_id
+        for grant in grants
+        if grant.scope_type == "team" and grant.scope_id is not None
     }
     organization_ids = {
-        assignment.scope_id
-        for assignment in assignments
-        if assignment.scope_type == "organization" and assignment.scope_id is not None
+        grant.scope_id
+        for grant in grants
+        if grant.scope_type == "organization" and grant.scope_id is not None
     }
 
     conditions: list[ColumnElement[bool]] = []
