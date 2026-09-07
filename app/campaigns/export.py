@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
+from app.imports.parser import sanitize_text
 from app.models.campaign import Campaign, CampaignDispositionDefinition
 from app.models.contact import CampaignContact, Contact
 from app.models.identity import User
@@ -71,7 +72,13 @@ def build_export_workbook(db: Session, campaign: Campaign) -> bytes:
     sheet.title = "Contacts"
     sheet.append(_COLUMNS)
     for row in _rows(db, campaign.id):
-        sheet.append(list(row))
+        # Neutralize spreadsheet-formula injection at the write boundary: a
+        # disposition label or agent display name is operator-controlled and can
+        # reach here unsanitized, and openpyxl stores a value like "=1+1" as a live
+        # FORMULA that would run when the Team Captain opens this raw-PII export.
+        # sanitize_text prepends "'" to any value starting with = + - @ tab or CR
+        # (the same neutralization applied on import).
+        sheet.append([sanitize_text(value) for value in row])
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()

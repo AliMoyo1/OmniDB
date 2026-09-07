@@ -47,7 +47,7 @@ from app.web.dependencies import (
     verify_form_csrf,
 )
 from app.web.templates import page_context, templates
-from app.workforce.service import list_visible_users
+from app.workforce.service import list_visible_users, visible_team_ids
 
 router = APIRouter(prefix="/delegations", tags=["web-delegations"])
 
@@ -131,7 +131,24 @@ def delegations_page(
 
     delegable = sorted(authz.capabilities_for(authz.effective_roles(db, user.id)) - NON_DELEGABLE)
     candidates = [u for u in list_visible_users(db, user.id) if u.id != user.id]
-    teams = list(db.scalars(select(Team).where(Team.status == "active").order_by(Team.name)))
+    # Scope the team picker to what the caller's own role authority covers - the
+    # same non-leaking scoping list_visible_users applies - so a narrowly-scoped
+    # user cannot enumerate every team (and org) in the system from this page.
+    # create_delegation still enforces the precise per-capability role check, so
+    # this can only ever be narrower than what a delegation may actually target.
+    sees_all_teams, scoped_team_ids = visible_team_ids(db, user.id)
+    if sees_all_teams:
+        teams = list(db.scalars(select(Team).where(Team.status == "active").order_by(Team.name)))
+    elif scoped_team_ids:
+        teams = list(
+            db.scalars(
+                select(Team)
+                .where(Team.status == "active", Team.id.in_(scoped_team_ids))
+                .order_by(Team.name)
+            )
+        )
+    else:
+        teams = []
     campaigns = list(
         db.scalars(
             select(Campaign)

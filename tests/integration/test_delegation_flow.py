@@ -338,3 +338,93 @@ def test_api_create_rejects_delegating_authority_you_lack():
         headers=csrf_headers(client),
     )
     assert resp.status_code == 403, resp.text
+
+
+# --- Delegator authority lifecycle --------------------------------------------
+
+def test_ending_the_delegators_role_immediately_removes_the_delegated_capability():
+    """A delegation lends authority the delegator genuinely owns. If that backing
+    role is later ended, the delegate must lose the borrowed capability at once -
+    not keep it until the delegation's own expiry, which would be an orphaned
+    privilege surviving the deliberate removal of the authority behind it."""
+    from app.models.authz import RoleAssignment
+    from app.workforce import service as workforce_service
+
+    delegator_id = make_user_with_role(f"dendmgr-{uuid.uuid4().hex[:8]}@example.com", "manager")
+    delegate_id = make_user(f"deleg-endto-{uuid.uuid4().hex[:8]}@example.com")
+    ender_id = make_user_with_role(f"deleg-ender-{uuid.uuid4().hex[:8]}@example.com", "manager")
+
+    with SessionLocal() as db:
+        delegation_service.create_delegation(
+            db, delegator_id=delegator_id, delegate_id=delegate_id,
+            capability_set=[APPOINT_TEAM_CAPTAIN], scope_type="organization", scope_id=None,
+            effective_from=_NOW() - timedelta(minutes=1), effective_to=None, reason_code="cover",
+        )
+        db.commit()
+
+    with SessionLocal() as db:
+        assert authz.has_scope_capability(
+            db, delegate_id, APPOINT_TEAM_CAPTAIN, scope_type="organization", scope_id=None
+        )
+
+    # End the delegator's own backing role.
+    with SessionLocal() as db:
+        assignment = db.scalar(
+            select(RoleAssignment).where(
+                RoleAssignment.user_id == delegator_id, RoleAssignment.status == "active"
+            )
+        )
+        assert assignment is not None
+        workforce_service.end_role_assignment(
+            db, assignment, ended_by=ender_id, reason_code="left_team"
+        )
+        db.commit()
+
+    # The delegate's borrowed capability is gone at once, in the same query.
+    with SessionLocal() as db:
+        assert not authz.has_scope_capability(
+            db, delegate_id, APPOINT_TEAM_CAPTAIN, scope_type="organization", scope_id=None
+        )
+        assert not authz.has_assigned_capability(db, delegate_id, APPOINT_TEAM_CAPTAIN)
+
+
+def test_ending_the_delegators_role_invalidates_the_delegates_sessions():
+    """Ending the delegator's role also refreshes the sessions of anyone they
+    delegated to, so a delegate's privilege state is re-derived immediately rather
+    than only at their next lookup."""
+    from app.auth import sessions as sess
+    from app.models.authz import RoleAssignment
+    from app.models.session import Session as SessionModel
+    from app.workforce import service as workforce_service
+
+    delegator_id = make_user_with_role(f"deleg-smgr-{uuid.uuid4().hex[:8]}@example.com", "manager")
+    delegate_id = make_user(f"deleg-sto-{uuid.uuid4().hex[:8]}@example.com")
+    ender_id = make_user_with_role(f"deleg-sender-{uuid.uuid4().hex[:8]}@example.com", "manager")
+
+    with SessionLocal() as db:
+        delegation_service.create_delegation(
+            db, delegator_id=delegator_id, delegate_id=delegate_id,
+            capability_set=[APPOINT_TEAM_CAPTAIN], scope_type="organization", scope_id=None,
+            effective_from=_NOW() - timedelta(minutes=1), effective_to=None, reason_code="cover",
+        )
+        # A live session for the delegate, created after the delegation so it is
+        # not the one the delegation's own creation already refreshed.
+        session, _token = sess.create_session(db, delegate_id, source_summary="t")
+        db.commit()
+        session_id = session.id
+
+    with SessionLocal() as db:
+        assignment = db.scalar(
+            select(RoleAssignment).where(
+                RoleAssignment.user_id == delegator_id, RoleAssignment.status == "active"
+            )
+        )
+        assert assignment is not None
+        workforce_service.end_role_assignment(
+            db, assignment, ended_by=ender_id, reason_code="left_team"
+        )
+        db.commit()
+
+    with SessionLocal() as db:
+        refreshed = db.get(SessionModel, session_id)
+        assert refreshed is not None and refreshed.revoked_at is not None

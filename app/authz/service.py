@@ -109,6 +109,7 @@ def _capability_grants(
         delegation
         for delegation in active_delegations(db, user_id)
         if capability in (delegation.capability_set or [])
+        and _delegation_still_backed(db, delegation, capability)
     )
     return grants
 
@@ -184,7 +185,9 @@ def users_with_any_capability(
 
     # A delegate who currently holds one of these capabilities is a candidate
     # too. Delegations are few, so scan the active ones and keep those whose
-    # capability_set overlaps.
+    # capability_set overlaps AND whose delegator still owns that capability via a
+    # role at the delegation's scope - an orphaned delegation (its backing role
+    # ended) grants nothing, so its delegate is not a candidate.
     for delegation in db.scalars(
         select(Delegation).where(
             Delegation.revoked_at.is_(None),
@@ -192,7 +195,8 @@ def users_with_any_capability(
             or_(Delegation.effective_to.is_(None), Delegation.effective_to > now),
         )
     ):
-        if wanted & set(delegation.capability_set or []):
+        overlap = wanted & set(delegation.capability_set or [])
+        if any(_delegation_still_backed(db, delegation, capability) for capability in overlap):
             user_ids.add(delegation.delegate_user_id)
 
     return user_ids
@@ -278,6 +282,24 @@ def has_scope_capability_via_role(
     return any(
         _scope_assignment_covers_target(db, grant, scope_type, scope_id)
         for grant in _role_capability_grants(db, user_id, capability)
+    )
+
+
+def _delegation_still_backed(db: Session, delegation: Delegation, capability: str) -> bool:
+    """Whether the delegator STILL holds `capability` through a role at the
+    delegation's own scope. A delegation lends authority the delegator genuinely
+    owned when it was created (create_delegation enforced exactly this), but that
+    backing can later disappear - the role is ended, expires, or is rescoped. So
+    it is re-checked at read time, right beside the window and revocation checks:
+    the moment the delegator no longer owns the capability, the delegation grants
+    nothing, leaving no orphaned privilege behind (and, being read-time, this
+    catches every way the backing can be lost, not only an explicit role end)."""
+    return has_scope_capability_via_role(
+        db,
+        delegation.delegator_user_id,
+        capability,
+        scope_type=delegation.scope_type,
+        scope_id=delegation.scope_id,
     )
 
 
@@ -453,3 +475,26 @@ def assert_not_self(requester_id: uuid.UUID, subject_id: uuid.UUID) -> None:
 def invalidate_sessions_on_privilege_change(db: Session, user_id: uuid.UUID) -> None:
     """Role or privilege changes revoke the affected user's active sessions (plan 6.4)."""
     sess.revoke_all_for_user(db, user_id)
+
+
+def invalidate_delegate_sessions_for_delegator(db: Session, delegator_id: uuid.UUID) -> None:
+    """When a user's own authority changes, refresh the sessions of everyone they
+    have lent authority to. A held delegation only grants while the delegator still
+    owns the capability via a role (checked at read time), so this is not required
+    for correctness, but it re-derives each delegate's privilege state immediately
+    rather than at their next lookup - the same session-refresh a delegation's own
+    create or revoke performs. Scanned over active delegations FROM this user, which
+    are few."""
+    now = utcnow()
+    delegate_ids = set(
+        db.scalars(
+            select(Delegation.delegate_user_id).where(
+                Delegation.delegator_user_id == delegator_id,
+                Delegation.revoked_at.is_(None),
+                Delegation.effective_from <= now,
+                or_(Delegation.effective_to.is_(None), Delegation.effective_to > now),
+            )
+        )
+    )
+    for delegate_id in delegate_ids:
+        sess.revoke_all_for_user(db, delegate_id)

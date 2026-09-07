@@ -198,3 +198,37 @@ def test_web_cannot_redelegate_a_delegation_only_capability():
         assert not authz.has_scope_capability(
             db, c_id, APPOINT_TEAM_CAPTAIN, scope_type="organization", scope_id=None
         )
+
+
+def test_team_picker_does_not_expose_teams_outside_the_callers_scope():
+    """The delegation page's team picker must be scoped to what the caller's own
+    role authority covers - a narrowly-scoped team leader must not be able to
+    enumerate every team, and organization, in the system from this page."""
+    from app.models.identity import Organization, Team
+
+    marker = uuid.uuid4().hex[:8]
+    with SessionLocal() as db:
+        org1 = Organization(name=f"DWScopeOrg1 {marker}", status="active")
+        org2 = Organization(name=f"DWScopeOrg2 {marker}", status="active")
+        db.add_all([org1, org2])
+        db.flush()
+        my_team = Team(
+            organization_id=org1.id, external_code=f"mine-{marker}", name=f"MineTeamAlpha{marker}"
+        )
+        other_team = Team(
+            organization_id=org2.id, external_code=f"other-{marker}", name=f"OtherTeamBravo{marker}"
+        )
+        db.add_all([my_team, other_team])
+        db.commit()
+        my_team_id, other_team_id = my_team.id, other_team.id
+
+    email = f"dwscope-leader-{marker}@example.com"
+    make_user_with_role(email, "team_leader", scope_type="team", scope_id=my_team_id)
+    client = _client(email)
+
+    page = client.get("/delegations")
+    assert page.status_code == 200
+    body = page.text
+    assert f"MineTeamAlpha{marker}" in body  # the caller's own team is offered
+    assert f"OtherTeamBravo{marker}" not in body  # a team in another org is not
+    assert str(other_team_id) not in body  # nor its id

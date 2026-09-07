@@ -282,6 +282,11 @@ def end_role_assignment(
     assignment.effective_to = now
     assignment.ended_at = now
     authz.invalidate_sessions_on_privilege_change(db, assignment.user_id)
+    # This user may have delegated authority they held through the role just ended.
+    # Those delegations stop granting the moment the backing role is gone (authz
+    # revalidates the delegator's current role authority at read time), but refresh
+    # the delegates' sessions too so their privilege state is re-derived at once.
+    authz.invalidate_delegate_sessions_for_delegator(db, assignment.user_id)
     record_audit(
         db, action="workforce.role.end", result="success", actor_user_id=ended_by,
         target_type="user", target_id=assignment.user_id, reason_code=reason_code,

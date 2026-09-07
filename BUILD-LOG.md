@@ -2308,3 +2308,49 @@ self-approve).
 
 Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 206 (+3),
 unit suite 35, ruff/mypy clean, `docker build` clean. No migration.
+
+## 2026-09-07: security review round on the Phase 5 delegation + export work (three P1s)
+
+A structured review of the recent delegation and retention-export work returned
+three P1 findings, all confirmed real in the code. Fixed in one increment, no
+migration.
+
+P1-1: delegated authority survived loss of the delegator's role. `active_delegations`
+/ `_capability_grants` honored a held delegation on recipient + window + revocation
+only, never re-checking that the DELEGATOR still held the capability. So ending (or
+expiring, or rescoping) the delegator's backing role left the delegate holding the
+capability until the delegation's own expiry: an orphaned privilege that outlived the
+deliberate removal of the authority behind it. Fixed with request-time revalidation,
+which is self-correcting for EVERY authority-loss path (not just an explicit role end)
+and matches the delegation design's existing request-time expiry: a held delegation is
+now honored for a capability only if `has_scope_capability_via_role(delegator,
+capability, delegation's scope)` still holds (new `_delegation_still_backed`), applied
+both in `_capability_grants` and in `users_with_any_capability`'s delegate union. Plus,
+`end_role_assignment` now also invalidates the sessions of anyone that user delegated
+to (new `invalidate_delegate_sessions_for_delegator`), so a delegate's privilege state
+is re-derived at once, the same session refresh a delegation's own create/revoke does.
+Tests: ending a delegator's role immediately removes the delegate's borrowed capability
+(same query) and revokes the delegate's session.
+
+P1-2: the delegation page's team picker was an unscoped `Team.status=='active'` query,
+so any authenticated reader (including a narrowly-scoped team leader) could enumerate
+every team, and organization, in the system. Fixed by scoping the picker through
+`visible_team_ids` - the exact helper `list_visible_users` uses for the delegate picker:
+all active teams for an installation/org-wide holder, else only the caller's scoped
+teams, else none. create_delegation still enforces the precise per-capability role check,
+so the picker can only ever be narrower than what a delegation may actually target. Test:
+a team-scoped user's page shows their own team, never a team in another organization.
+
+P1-3: the completed-campaign Excel export appended cells raw, so an operator-controlled
+disposition label or an agent display name beginning with a formula prefix (openpyxl
+stores "=1+1" as a live FORMULA) could execute when the Team Captain opened this
+privileged raw-PII export. Fixed by running every exported cell through the existing
+`sanitize_text` (app/imports/parser.py) at the write boundary - it prepends "'" to any
+value starting with = + - @ tab or CR, the same neutralization used on import. Applied
+uniformly (an E.164 phone begins with "+", so it too carries the guard: safe and
+consistent). Test: a workbook built from a campaign whose disposition labels and agent
+name begin with each dangerous prefix has no formula cells and every dangerous value
+neutralized.
+
+Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 210 (+4),
+unit suite 35, ruff/mypy clean, `docker build` clean. No migration.
