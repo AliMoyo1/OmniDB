@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://redis:6379/0"
 
+    # Notification email channel (Phase 0: "in-app inbox + dormant email"). Off by
+    # default - the pilot ships in-app only; a later build adds real SMTP delivery.
+    email_notifications_enabled: bool = False
+
     # Sessions
     session_idle_minutes: int = 30
     session_absolute_hours: int = 8

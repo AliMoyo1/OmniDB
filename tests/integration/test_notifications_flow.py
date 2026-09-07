@@ -167,6 +167,49 @@ def test_inbox_page_renders_and_mark_all_read_clears_the_badge():
     assert owner.get("/api/v1/notifications/unread-count").json()["unread"] == 0
 
 
+def test_email_channel_is_dormant_by_default(monkeypatch):
+    """The email channel ships off (Phase 0 "dormant email capability"): notify()
+    creates the in-app row and hands nothing to the sender."""
+    from app.notifications import email as email_channel
+
+    sent: list = []
+    monkeypatch.setattr(email_channel, "_deliver", lambda to, subject, body: sent.append(to))
+
+    recipient_id = make_user(f"notif-email-off-{uuid.uuid4().hex[:8]}@example.com")
+    with SessionLocal() as db:
+        note = notifications_service.notify(
+            db, recipient_id=recipient_id, category="test", title="Hi", body="b",
+        )
+        db.commit()
+        assert note.id is not None  # the in-app row is still created
+    assert sent == []  # dormant: nothing handed to the sender
+
+
+def test_email_channel_when_enabled_hands_the_recipient_address_to_the_sender(monkeypatch):
+    """When the channel is switched on, notify() resolves the recipient's address
+    and hands it, with the title and body, to the single send point a future SMTP
+    build replaces."""
+    from app.notifications import email as email_channel
+
+    monkeypatch.setattr(email_channel, "_channel_enabled", lambda: True)
+    captured: list = []
+    monkeypatch.setattr(
+        email_channel, "_deliver",
+        lambda to, subject, body: captured.append((to, subject, body)),
+    )
+
+    email_addr = f"notif-email-on-{uuid.uuid4().hex[:8]}@example.com"
+    recipient_id = make_user(email_addr)
+    with SessionLocal() as db:
+        notifications_service.notify(
+            db, recipient_id=recipient_id, category="test",
+            title="You have mail", body="body text",
+        )
+        db.commit()
+
+    assert captured == [(email_addr, "You have mail", "body text")]
+
+
 def _needs_review(client: TestClient, job_id: str) -> list:
     return [
         n
@@ -221,11 +264,87 @@ def test_high_risk_import_broadcasts_to_qualified_non_uploader_approvers():
 
 
 def test_routine_only_import_does_not_broadcast_for_review():
-    """A routine-only import (no high-risk rows) needs no second person - the
-    uploader can carry it - so it pings nobody for review."""
+    """A routine-only import (no high-risk rows) the uploader can carry themselves
+    needs no second person - so it pings nobody for review. (Here the uploader is
+    an org-wide manager and the rows are plain user creations, which name no
+    existing target, so the uploader is authorized to approve them alone.)"""
     watcher, _ = _manager(prefix="brdcstwatcher")
     uploader, _ = _manager(prefix="brdcstroutine")
     headers = csrf_headers(uploader)
     job_id = _upload_users_create(uploader, headers)
     assert uploader.get(f"/api/v1/workforce/imports/{job_id}").json()["high_risk_rows"] == 0
     assert _needs_review(watcher, job_id) == []
+
+
+def _org_with_two_teams() -> tuple[uuid.UUID, uuid.UUID]:
+    from app.models.identity import Organization, Team
+
+    with SessionLocal() as db:
+        org = Organization(name=f"Rt org {uuid.uuid4().hex[:8]}", status="active")
+        db.add(org)
+        db.flush()
+        a = Team(organization_id=org.id, external_code=f"rta-{uuid.uuid4().hex[:6]}", name="RA")
+        b = Team(organization_id=org.id, external_code=f"rtb-{uuid.uuid4().hex[:6]}", name="RB")
+        db.add_all([a, b])
+        db.commit()
+        return a.id, b.id
+
+
+def test_routine_import_uploader_cannot_self_approve_broadcasts_to_qualified_approver():
+    """A routine-only import still needs a second person when the uploader lacks
+    authority over its rows - e.g. a team-membership add for a team they do not
+    manage. The qualified approver (that team's leader) is pinged; a capable leader
+    of an unrelated team is filtered out by the real access check, and the uploader
+    is excluded."""
+    from app.models.workforce_imports import WorkforceImportJob, WorkforceImportRow
+    from app.workforce_imports import service as import_service
+
+    team_a, team_b = _org_with_two_teams()
+    leader_a = make_user_with_role(
+        f"rtb-la-{uuid.uuid4().hex[:8]}@example.com", "team_leader",
+        scope_type="team", scope_id=team_a,
+    )
+    leader_b = make_user_with_role(
+        f"rtb-lb-{uuid.uuid4().hex[:8]}@example.com", "team_leader",
+        scope_type="team", scope_id=team_b,
+    )
+    uploader_id = make_user(f"rtb-up-{uuid.uuid4().hex[:8]}@example.com")
+    target_id = make_user(f"rtb-tg-{uuid.uuid4().hex[:8]}@example.com")
+
+    with SessionLocal() as db:
+        job = WorkforceImportJob(
+            import_type="team_memberships", uploader_id=uploader_id,
+            source_filename_display="routine.csv",
+            generated_storage_key=f"routine-{uuid.uuid4().hex}", file_hash="cafe",
+            state="parsed", total_rows=1, valid_rows=1, warning_rows=0, invalid_rows=0,
+            high_risk_rows=0,
+            # over_cap forces access to resolve from the row, which backs it.
+            authorization_footprint={"over_cap": True, "requirements": []},
+        )
+        db.add(job)
+        db.flush()
+        db.add(
+            WorkforceImportRow(
+                import_job_id=job.id, row_number=1, action="add",
+                external_workforce_id="x", normalized_identity=target_id,
+                parsed_values={"team_id": str(team_a)}, validation_result="valid",
+                risk_level="routine",
+            )
+        )
+        db.flush()
+        import_service.notify_pending_approvers(db, job)
+        db.commit()
+        job_id = job.id
+
+    with SessionLocal() as db:
+        def needs_review(user_id: uuid.UUID) -> list:
+            return [
+                n
+                for n in notifications_service.list_for_user(db, user_id)
+                if n.category == "workforce_import.needs_review"
+                and n.related_entity_id == job_id
+            ]
+
+        assert len(needs_review(leader_a)) == 1  # the team's leader can approve it
+        assert needs_review(leader_b) == []  # a capable but unauthorized leader is not pinged
+        assert needs_review(uploader_id) == []  # the uploader is excluded

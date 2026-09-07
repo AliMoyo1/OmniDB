@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models.base import utcnow
 from app.models.notifications import Notification
+from app.notifications import email as email_channel
 
 
 def notify(
@@ -39,6 +40,9 @@ def notify(
     )
     db.add(notification)
     db.flush()
+    # Offer it to the dormant email channel too (no-op unless switched on). The
+    # in-app row is the source of truth; email is an additional delivery.
+    email_channel.dispatch(db, notification)
     return notification
 
 

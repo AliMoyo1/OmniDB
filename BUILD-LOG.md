@@ -2268,3 +2268,43 @@ and refuses without recent step-up; web revoke drops the grant; a non-delegable
 capability is refused; and the guard - a capability held only via delegation
 cannot be re-delegated from the form, and the intended delegate gains nothing),
 unit suite 35, ruff/mypy clean, `docker build` clean. No migration.
+
+## 2026-09-07: Phase 5 - the two remaining notification gaps (email channel + routine broadcast)
+
+The two follow-ups noted at the end of PHASE-5-NOTIFICATIONS-PLAN.md, built as one
+small increment. Both additive, no schema change.
+
+Dormant email channel. A Phase 0 decision was "in-app inbox notifications and a
+dormant email capability." This adds that seam: `app/notifications/email.py` with a
+`dispatch(db, notification)` wired into `notifications.service.notify()` right after
+the in-app row is flushed. It is off by default (`email_notifications_enabled=False`),
+so the pilot delivers in-app only with literally zero extra work per notification (no
+recipient lookup when disabled). When switched on it resolves the recipient's address
+and hands the title and body to `_deliver`, the single function a future SMTP build
+replaces. That stub only logs its intent, on purpose: real delivery must be enqueued
+POST-COMMIT (a notification is created inside the unit of work that raised it and is
+not persisted if that work rolls back, so an email must never be sent inline), and the
+module docstring says so, so the future build wires the enqueue rather than an inline
+send. Two tests: dormant by default (in-app row created, sender never called); enabled
+hands the recipient's real address plus the title and body to the send point.
+
+Routine broadcast. The approver broadcast previously fired only for high-risk jobs
+(`high_risk_rows > 0`). But a routine-only job can still contain rows the uploader has
+no authority over, e.g. a team-membership add for a team they do not manage: the
+uploader cannot self-approve it, yet nobody was pinged, so it sat unseen on the only
+discovery screen. `notify_pending_high_risk_approvers` is now `notify_pending_approvers`
+and broadcasts when the job has high-risk rows OR is routine-only but the uploader lacks
+authority over its rows (new `_uploader_can_self_approve_routine`, built on the same
+`_authority_over_requirements` the live approve check uses). The high-risk count is
+tested first and is cheap, so a high-risk job never pays the routine row load; the
+routine load runs once at parse time, like the decision-time authority check, never on a
+hot path. The recipient set is unchanged: the coarse capability-holder set filtered
+through the very same `can_access_job` the decision endpoint enforces, so a broadcast
+still cannot reach someone who could not act on the job. One new test (a routine job
+whose uploader lacks authority pings that team's leader, not a capable leader of an
+unrelated team nor the uploader); the existing "manager uploads a users-create broadcasts
+nobody" test stays green (a user-creation row names no target, so its uploader can
+self-approve).
+
+Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 206 (+3),
+unit suite 35, ruff/mypy clean, `docker build` clean. No migration.

@@ -315,7 +315,7 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
     )
     # The job is now decidable and its footprint is set, so qualified approvers
     # can be resolved and pinged. Committed by the parse task alongside the rows.
-    notify_pending_high_risk_approvers(db, job)
+    notify_pending_approvers(db, job)
 
 
 def get_preview(db: Session, job: WorkforceImportJob) -> list[WorkforceImportRow]:
@@ -738,12 +738,32 @@ def _assert_qualified_high_risk_approver(
     _assert_rows_authorized(db, job, approver_id, risk_level="high_risk")
 
 
-def notify_pending_high_risk_approvers(db: Session, job: WorkforceImportJob) -> None:
-    """Tell the people who can actually approve a high-risk import that one is
-    waiting - the discovery half of the two-person rule (the list shows it, this
-    pushes it). Only high-risk jobs broadcast: those are the ones that require a
-    separate, non-uploader approver by the rule. A routine-only job the uploader
-    can carry themselves, so it makes no noise here.
+def _uploader_can_self_approve_routine(db: Session, job: WorkforceImportJob) -> bool:
+    """Whether the uploader holds authority over every routine committable row -
+    i.e. whether they could approve this routine work alone. A job with no routine
+    committable rows is vacuously self-approvable (nothing to approve; an all-invalid
+    file is unapprovable anyway, blocked by invalid_rows > 0), so it does not
+    broadcast. Only consulted for routine-only jobs, so the row load never happens
+    for a high-risk job (which short-circuits before this)."""
+    rows = _committable_rows(db, job, risk_level="routine")
+    requirements = [_row_requirement(job, row) for row in rows]
+    return _authority_over_requirements(db, job.uploader_id, requirements)
+
+
+def notify_pending_approvers(db: Session, job: WorkforceImportJob) -> None:
+    """Tell the people who can actually approve an import that one is waiting - the
+    discovery half of the approval workflow (the list shows it, this pushes it). A
+    job broadcasts when it genuinely needs someone other than the uploader:
+
+    - it has high-risk rows (the two-person rule requires a separate, non-uploader
+      approver), OR
+    - it is routine-only but the uploader does not hold authority over all of its
+      rows, so they cannot approve it alone (e.g. a team-membership add for a team
+      they do not manage).
+
+    A routine job the uploader can carry themselves makes no noise here. The
+    high-risk test is first and cheap (a count), so a high-risk job never pays the
+    routine row load.
 
     The recipient set is computed by filtering a coarse candidate set (everyone
     holding any import/approval capability - bounded by staff count, since agents
@@ -752,7 +772,17 @@ def notify_pending_high_risk_approvers(db: Session, job: WorkforceImportJob) -> 
     actually reach and approve the job, and never omit someone who could - the
     notify set is defined by the real authorization check, not a parallel
     reverse query that could drift from it."""
-    if job.high_risk_rows == 0:
+    if job.high_risk_rows > 0:
+        body = (
+            f"{job.high_risk_rows} high-risk row(s) require a second approver "
+            "who is not the uploader."
+        )
+    elif not _uploader_can_self_approve_routine(db, job):
+        body = (
+            "This import has rows the uploader is not authorized to approve, so it "
+            "needs an approver with authority over them."
+        )
+    else:
         return
     candidates = authz.users_with_any_capability(db, UPLOAD_CAPABILITIES)
     for candidate_id in candidates:
@@ -765,10 +795,7 @@ def notify_pending_high_risk_approvers(db: Session, job: WorkforceImportJob) -> 
             recipient_id=candidate_id,
             category="workforce_import.needs_review",
             title=f"An import needs your review: “{job.source_filename_display}”",
-            body=(
-                f"{job.high_risk_rows} high-risk row(s) require a second approver "
-                "who is not the uploader."
-            ),
+            body=body,
             related_entity_type="workforce_import_job",
             related_entity_id=job.id,
         )
