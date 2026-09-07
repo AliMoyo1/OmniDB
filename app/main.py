@@ -27,6 +27,7 @@ from app.web.audit import router as web_audit_router
 from app.web.auth_pages import router as web_auth_router
 from app.web.campaigns import router as web_campaigns_router
 from app.web.dashboard import router as web_dashboard_router
+from app.web.delegations import router as web_delegations_router
 from app.web.dependencies import InvalidFormCsrf, RedirectToLogin, RedirectToMfaEnrollment
 from app.web.flags import router as web_flags_router
 from app.web.notifications import router as web_notifications_router
@@ -100,6 +101,7 @@ app.include_router(web_workforce_imports_router)
 app.include_router(web_audit_router)
 app.include_router(web_flags_router)
 app.include_router(web_notifications_router)
+app.include_router(web_delegations_router)
 app.include_router(web_security_router)
 app.include_router(web_dashboard_router)
 

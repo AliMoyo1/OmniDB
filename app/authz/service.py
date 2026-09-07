@@ -83,6 +83,19 @@ def active_delegations(db: Session, user_id: uuid.UUID) -> list[Delegation]:
     )
 
 
+def _role_capability_grants(
+    db: Session, user_id: uuid.UUID, capability: str
+) -> list[_ScopedGrant]:
+    """The user's own role assignments that grant this capability - role-based
+    authority only, no delegations. This is the authority a user genuinely owns
+    (versus authority merely lent to them by a delegation)."""
+    return [
+        assignment
+        for assignment in effective_role_assignments(db, user_id)
+        if capability in ROLE_CAPABILITIES.get(assignment.role_code, set())
+    ]
+
+
 def _capability_grants(
     db: Session, user_id: uuid.UUID, capability: str
 ) -> list[_ScopedGrant]:
@@ -91,11 +104,7 @@ def _capability_grants(
     every check below (single or bulk) treats a delegated capability exactly
     like a role-granted one, at the delegation's scope; nothing here can honor a
     delegation in one path but miss it in another."""
-    grants: list[_ScopedGrant] = [
-        assignment
-        for assignment in effective_role_assignments(db, user_id)
-        if capability in ROLE_CAPABILITIES.get(assignment.role_code, set())
-    ]
+    grants: list[_ScopedGrant] = list(_role_capability_grants(db, user_id, capability))
     grants.extend(
         delegation
         for delegation in active_delegations(db, user_id)
@@ -249,6 +258,26 @@ def has_scope_capability(
     return any(
         _scope_assignment_covers_target(db, grant, scope_type, scope_id)
         for grant in _capability_grants(db, user_id, capability)
+    )
+
+
+def has_scope_capability_via_role(
+    db: Session,
+    user_id: uuid.UUID,
+    capability: str,
+    *,
+    scope_type: str,
+    scope_id: uuid.UUID | None,
+) -> bool:
+    """Like has_scope_capability, but honors ONLY the user's own role-based
+    authority - a capability held merely through a delegation does not count.
+    Used to gate the creation of a delegation: a delegate may exercise a
+    delegated capability, but may not re-delegate it, so authority to grant a
+    delegation must be genuinely owned. This keeps delegations one level deep and
+    avoids chains where revoking the first grant orphans a second."""
+    return any(
+        _scope_assignment_covers_target(db, grant, scope_type, scope_id)
+        for grant in _role_capability_grants(db, user_id, capability)
     )
 
 

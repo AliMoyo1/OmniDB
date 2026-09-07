@@ -981,6 +981,7 @@ textarea:focus { outline: none; border-color: var(--accent-mid); box-shadow: 0 0
 .campaign-create-form label, .import-form label, .disposition-form label, .assignment-form label, .decision-form label { display: flex; flex-direction: column; gap: 6px; color: var(--text-mid); font-size: 12px; font-weight: 700; }
 .campaign-create-form label span, .import-form label span, .disposition-form label span, .decision-form label span { color: var(--muted); font-weight: 400; }
 .campaign-create-form .wide { grid-column: 1 / -1; }
+.field-label { color: var(--text-mid); font-size: 12px; font-weight: 700; margin: 0 0 6px; }
 .create-submit { margin-top: 2px; }
 .create-submit p { margin: 0; color: var(--muted); font-size: 11px; }
 .back-link { display: inline-block; margin-bottom: 16px; color: var(--muted); font: 600 11px var(--mono); text-decoration: none; }

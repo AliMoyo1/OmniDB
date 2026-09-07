@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Delegations | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">Acting authority</p>
+      <h1>Delegations.</h1>
+      <p>Lend specific capabilities to a colleague for a scope and a time window, to cover an absent approver. A delegation never grants more than you hold, never elevates a role, and expires on its own. Times are UTC.</p>
+    </div>
+  </div>
+</div>
+
+{% if delegable_capabilities %}
+{% if not recently_reauthenticated %}
+<p class="flash">Granting a delegation needs a recent identity check. Confirm at <a href="/security/mfa">Account security</a>, then return here.</p>
+{% endif %}
+<section class="ops-form-card">
+  <div class="form-intro"><p class="eyebrow">Grant a delegation</p><h2>Lend authority</h2><p>Pick the colleague, the capabilities to lend, the scope, and the window. Leave the start blank to begin now; leave the end blank for no automatic expiry.</p></div>
+  <form method="post" action="/delegations" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Delegate to
+      <select name="delegate_id" required>
+        <option value="" disabled selected>Choose a colleague</option>
+        {% for c in candidates %}<option value="{{ c.id }}">{{ c.display_name }} ({{ c.workforce_id }})</option>{% endfor %}
+      </select>
+    </label>
+    <label>Scope type
+      <select name="scope_type" required>
+        <option value="team">team</option>
+        <option value="campaign">campaign</option>
+        <option value="organization">organization</option>
+        <option value="installation">installation</option>
+      </select>
+    </label>
+    <label>Team <span class="panel-note">(used when scope type is team)</span>
+      <select name="team_id">
+        <option value="">-</option>
+        {% for t in teams %}<option value="{{ t.id }}">{{ t.name }} ({{ t.external_code }})</option>{% endfor %}
+      </select>
+    </label>
+    <label>Campaign <span class="panel-note">(used when scope type is campaign)</span>
+      <select name="campaign_id">
+        <option value="">-</option>
+        {% for c in campaigns %}<option value="{{ c.id }}">{{ c.name }} ({{ c.external_code }})</option>{% endfor %}
+      </select>
+    </label>
+    <label>Starts (UTC)<input type="datetime-local" name="effective_from"></label>
+    <label>Ends (UTC)<input type="datetime-local" name="effective_to"></label>
+    <label>Reason<input type="text" name="reason_code" maxlength="200" placeholder="e.g. covering leave"></label>
+    <div class="wide">
+      <p class="field-label">Capabilities to lend</p>
+      <div class="checks">
+        {% for cap in delegable_capabilities %}
+        <label><input type="checkbox" name="capabilities" value="{{ cap }}"> {{ cap.replace('_', ' ') }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="wide create-submit">
+      <p class="panel-note">The delegate can exercise these capabilities but cannot re-delegate them. Their sessions refresh immediately.</p>
+      <button type="submit">Grant delegation</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">{{ granted|length }} granted</p><h2>Delegations you granted</h2></div></div>
+  {% if granted %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Delegate</th><th>Capabilities</th><th>Scope</th><th>Window</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for d in granted %}
+        <tr>
+          <td>{% set du = user_names.get(d.delegate_user_id) %}{{ du.display_name if du else d.delegate_user_id }}</td>
+          <td>{{ d.capability_set|map('replace', '_', ' ')|join(', ') }}</td>
+          <td>{% if d.scope_type in ('team', 'campaign') and d.scope_id %}{{ d.scope_type }}: {{ scope_names.get(d.scope_id, d.scope_id) }}{% else %}{{ d.scope_type }}{% endif %}</td>
+          <td>{{ d.effective_from.strftime("%Y-%m-%d %H:%M") }} &ndash; {{ d.effective_to.strftime("%Y-%m-%d %H:%M") if d.effective_to else "no end" }}</td>
+          <td><span class="badge {% if statuses.get(d.id) in ('revoked', 'expired') %}muted{% endif %}">{{ statuses.get(d.id) }}</span></td>
+          <td>
+            {% if statuses.get(d.id) in ('active', 'scheduled') %}
+            <form method="post" action="/delegations/{{ d.id }}/revoke" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="secondary">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="empty">You have not granted any delegations.</p>{% endif %}
+</section>
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">{{ held|length }} held</p><h2>Delegations you hold</h2></div><span class="panel-note">Authority lent to you by others.</span></div>
+  {% if held %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>From</th><th>Capabilities</th><th>Scope</th><th>Window</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for d in held %}
+        <tr>
+          <td>{% set gu = user_names.get(d.delegator_user_id) %}{{ gu.display_name if gu else d.delegator_user_id }}</td>
+          <td>{{ d.capability_set|map('replace', '_', ' ')|join(', ') }}</td>
+          <td>{% if d.scope_type in ('team', 'campaign') and d.scope_id %}{{ d.scope_type }}: {{ scope_names.get(d.scope_id, d.scope_id) }}{% else %}{{ d.scope_type }}{% endif %}</td>
+          <td>{{ d.effective_from.strftime("%Y-%m-%d %H:%M") }} &ndash; {{ d.effective_to.strftime("%Y-%m-%d %H:%M") if d.effective_to else "no end" }}</td>
+          <td><span class="badge {% if statuses.get(d.id) in ('revoked', 'expired') %}muted{% endif %}">{{ statuses.get(d.id) }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="empty">No one has delegated authority to you.</p>{% endif %}
+</section>
+{% endblock %}

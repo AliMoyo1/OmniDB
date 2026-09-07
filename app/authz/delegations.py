@@ -116,12 +116,15 @@ def create_delegation(
     if effective_to is not None and effective_to <= effective_from:
         raise InvalidDelegationWindow("effective_to must be after effective_from")
 
-    # The delegator can only pass on authority they actually hold, at this scope -
-    # a delegation is never an escalation path.
+    # The delegator can only pass on authority they genuinely own via a role, at
+    # this scope - a delegation is never an escalation path, and a capability held
+    # only through another delegation may not be re-delegated (that would create a
+    # chain a single revocation could orphan). So this checks role-based authority
+    # only, deliberately not honoring the delegator's own held delegations.
     lacking = [
         c
         for c in caps
-        if not authz.has_scope_capability(
+        if not authz.has_scope_capability_via_role(
             db, delegator_id, c, scope_type=scope_type, scope_id=scope_id
         )
     ]

@@ -2224,3 +2224,47 @@ lists, and revokes, requires step-up, and refuses to let a user delegate
 authority they don't hold), unit suite 35, `docker build` clean, ruff/mypy
 clean. No migration - the table has existed since the baseline. Web UI to
 grant/revoke/view is a noted increment-2 follow-up.
+
+## 2026-09-07: Phase 5 - acting-role / delegation, increment 2 (web console + re-delegation guard)
+
+The browser console over increment 1's service and API, plus one security
+hardening the UI made worth doing first.
+
+Hardening. Increment 1's authz refactor made `has_scope_capability` delegation-
+inclusive (correctly: a delegate must be able to *exercise* a delegated
+capability, so the import-approval and campaign checks honor it). But
+`create_delegation` used that same check for its authority gate, which meant a
+delegate could *re-delegate* a capability they held only through a delegation.
+That opens chains: A delegates to B, B to C; revoke A->B and C's grant is
+orphaned, since B->C's authority was verified only at creation. Fix: a delegate
+may exercise a delegated capability but not re-delegate it, so the grant gate
+must read genuinely-owned (role-based) authority. `_capability_grants` now
+composes a new `_role_capability_grants` (role assignments only) with the active
+delegations; a new `has_scope_capability_via_role` uses the role-only source, and
+`create_delegation`'s authority check switched to it. The five operational checks
+are unchanged (still delegation-inclusive), so no behavior moved except the one
+gate that should never have counted borrowed authority.
+
+Web (`app/web/delegations.py` + `delegations.html`). A personal page, like the
+inbox, no hard capability gate: it lists the delegations you granted (each with a
+Revoke button while active or scheduled) and the ones you hold (read-only), with a
+per-row status (active / scheduled / expired / revoked) computed from the same
+request-time window logic the authz core uses. The grant form appears only when
+you actually hold a delegable capability (`capabilities_for(effective_roles) -
+NON_DELEGABLE`): a delegate picker from `list_visible_users` (self excluded),
+those capabilities as checkboxes, a scope_type select with team and campaign
+pickers (campaigns scoped by `campaign_scope_filter(VIEW_CAMPAIGN)`), a UTC
+window, and a reason. Granting is a privilege change, so it enforces step-up the
+browser way: if the session was not recently re-authenticated, it redirects with
+a flash pointing to Account security (the API used
+require_recent_reauthentication). Revoke needs only CSRF, matching the API's
+DELETE. No inline JS (the CSP forbids it): `scope_id` is resolved server-side from
+the field matching the chosen scope_type, never a free-text UUID. A dock and
+side-nav entry, gated on `can_manage_workforce`.
+
+Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 203
+(+6: the page renders granted and held; web create grants a capability end-to-end
+and refuses without recent step-up; web revoke drops the grant; a non-delegable
+capability is refused; and the guard - a capability held only via delegation
+cannot be re-delegated from the form, and the intended delegate gains nothing),
+unit suite 35, ruff/mypy clean, `docker build` clean. No migration.

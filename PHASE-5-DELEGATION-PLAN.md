@@ -58,7 +58,48 @@ scope; revoke works + drops the grant; end-to-end (a delegate can now approve a
 scoped import / access a campaign they couldn't before); existing role tests
 unchanged.
 
-## Increment 2 (later): web UI to grant/revoke/view delegations.
+## Increment 2: web console to grant / revoke / view delegations  [STATUS: DONE 2026-09-07; integration 203, unit 35, ruff/mypy/docker clean; pending commit/CI]
+
+### Authz hardening (do first, before the UI widens exposure)
+The authz refactor made `has_scope_capability` delegation-inclusive, so
+increment 1's `create_delegation` (which used it for the authority check) would
+let a delegate RE-delegate a capability they only hold via a delegation. That
+creates chains: revoke A->B and B->C is orphaned (B->C's authority was checked
+only at creation). Fix: a delegate may EXERCISE a delegated capability but not
+re-delegate it, so the grant-authority check must read role-based authority only.
+- add `_role_capability_grants` (role assignments only) + `has_scope_capability_via_role`
+  in app/authz/service.py; `_capability_grants` now composes the role helper + delegations.
+- `create_delegation` authority check switches to `has_scope_capability_via_role`.
+- test: a delegate who holds a cap only via delegation cannot re-delegate it.
+
+### Web (app/web/delegations.py + app/templates/delegations.html)
+Personal page (like the inbox), no hard capability gate: it shows the user's own
+granted + held delegations. The create form appears only when the user actually
+holds a delegable capability.
+- GET /delegations: "Delegations you granted" (with a Revoke button each, unless
+  already revoked/expired) and "Delegations you hold" (read-only); a create form
+  populated from `list_visible_users` (delegate picker, self excluded), the
+  role-derived delegable caps (`capabilities_for(effective_roles) - NON_DELEGABLE`)
+  as checkboxes, a scope_type select with team + campaign pickers (campaigns
+  scoped by `campaign_scope_filter(VIEW_CAMPAIGN)`), a UTC effective window, and a
+  reason. A per-row status (active / scheduled / expired / revoked) computed in
+  Python. Resolve delegator/delegate names and team/campaign scope names into maps.
+- POST /delegations (verify_form_csrf): STEP-UP enforced - if not
+  is_recently_reauthenticated(session), redirect with a flash telling them to
+  confirm identity at Account security first (the API used
+  require_recent_reauthentication; this is the web equivalent). scope_id resolved
+  from the field matching scope_type (no free-text UUID; no inline JS - CSP forbids
+  it). Parse the datetime-local inputs as UTC-aware. Map DelegationError -> flash.
+- POST /delegations/{id}/revoke (verify_form_csrf): CSRF only (de-escalation, matches
+  the API's DELETE). Map DelegationNotFound / NotAuthorizedToRevoke -> flash.
+- Register the router in app/main.py; add a dock + side-nav entry (active_section
+  'delegations') gated on can_manage_workforce (the roles that own delegable authority).
+
+### Tests (tests/integration/test_delegation_web.py)
+Page renders granted + held; create grants (end-to-end: delegate gains the cap);
+create without recent reauth is refused (step-up); revoke drops the grant;
+non-delegable / unknown / self / cap-not-held rejected with a flash; a delegate
+cannot re-delegate a delegation-only capability.
 
 ## Verify
 ruff/mypy, no migration (table exists), full suite vs real Postgres (Docker;
