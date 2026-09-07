@@ -2345,12 +2345,17 @@ P1-3: the completed-campaign Excel export appended cells raw, so an operator-con
 disposition label or an agent display name beginning with a formula prefix (openpyxl
 stores "=1+1" as a live FORMULA) could execute when the Team Captain opened this
 privileged raw-PII export. Fixed by running every exported cell through the existing
-`sanitize_text` (app/imports/parser.py) at the write boundary - it prepends "'" to any
-value starting with = + - @ tab or CR, the same neutralization used on import. Applied
-uniformly (an E.164 phone begins with "+", so it too carries the guard: safe and
-consistent). Test: a workbook built from a campaign whose disposition labels and agent
-name begin with each dangerous prefix has no formula cells and every dangerous value
-neutralized.
+`sanitize_text` (app/imports/parser.py) - it prepends "'" to any value starting with
+= + - @ tab or CR, the same neutralization used on import. Test: a workbook built from a
+campaign whose disposition labels and agent name begin with each dangerous prefix has no
+formula cells and every dangerous value neutralized.
+  - Follow-up the same day: the guard is applied to the operator-controlled free text
+    (disposition label, agent display name) only, not uniformly to every cell. The
+    validated E.164 phone begins with "+" but is never a formula (openpyxl only formula-
+    izes a leading "="), and it is the export's primary reusable payload, so a leading
+    "'" on every number would corrupt it for downstream use while defending a vector that
+    does not exist for that field. The phone and the ISO timestamps are left exactly as-
+    is; the injection test asserts the phone stays bare while the free text is neutralized.
 
 Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 210 (+4),
 unit suite 35, ruff/mypy clean, `docker build` clean. No migration.

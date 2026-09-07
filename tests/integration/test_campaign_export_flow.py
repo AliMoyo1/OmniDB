@@ -87,10 +87,10 @@ def test_completed_campaign_exports_xlsx_with_contact_rows(manager_client):
     assert rows[0] == ("Phone", "Final disposition", "Agent", "Completed at", "Imported at")
     assert len(rows) == 2
     phone_cell, disposition_cell, agent_cell = rows[1][0], rows[1][1], rows[1][2]
-    # Raw number, decrypted - the audited exception. It carries a leading "'"
-    # because an E.164 number starts with "+", one of the formula-injection
-    # prefixes every exported cell is neutralized against (see the injection test).
-    assert phone_cell == "'" + phone
+    # Raw number, decrypted - the audited exception, left exactly as-is (a validated
+    # E.164 number is never a formula, so it is not neutralized; see the injection
+    # test for the operator-controlled fields that are).
+    assert phone_cell == phone
     assert disposition_cell == "Sale closed"  # the label, not the raw code
     assert agent_cell == agent_name
 
@@ -178,6 +178,10 @@ def test_export_neutralizes_spreadsheet_formula_injection():
     assert "\r" in guarded_prefixes or "\n" in guarded_prefixes
     # The malicious agent display name is neutralized too.
     assert {row[2].value for row in sheet.iter_rows(min_row=2)} == {"'=DANGER()"}
+    # The validated E.164 phone is deliberately left bare (it is never a formula),
+    # so the numbers stay clean and reusable rather than carrying a leading "'".
+    phone_cells = [row[0].value for row in sheet.iter_rows(min_row=2)]
+    assert all(v.startswith("+") for v in phone_cells), phone_cells
 
 
 def test_active_campaign_export_is_refused(manager_client):

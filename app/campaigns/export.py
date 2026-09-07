@@ -50,11 +50,17 @@ def _rows(db: Session, campaign_id: uuid.UUID) -> list[tuple[str, str, str, str,
     out: list[tuple[str, str, str, str, str]] = []
     for campaign_contact, contact, agent in records:
         code = campaign_contact.final_disposition_code or ""
+        # Neutralize spreadsheet-formula injection on the operator-controlled free
+        # text - a disposition label or an agent display name can reach here
+        # unsanitized, and openpyxl stores a value like "=1+1" as a live FORMULA
+        # that would run when the Team Captain opens this raw-PII export. The phone
+        # (validated E.164: "+" then digits, never a formula) and the ISO
+        # timestamps are left exactly as-is, so the numbers stay clean and reusable.
         out.append(
             (
                 decrypt(contact.phone_ciphertext),
-                disposition_labels.get(code, code),
-                agent.display_name if agent is not None else "",
+                sanitize_text(disposition_labels.get(code, code)),
+                sanitize_text(agent.display_name) if agent is not None else "",
                 campaign_contact.completed_at.isoformat() if campaign_contact.completed_at else "",
                 campaign_contact.imported_at.isoformat() if campaign_contact.imported_at else "",
             )
@@ -72,13 +78,7 @@ def build_export_workbook(db: Session, campaign: Campaign) -> bytes:
     sheet.title = "Contacts"
     sheet.append(_COLUMNS)
     for row in _rows(db, campaign.id):
-        # Neutralize spreadsheet-formula injection at the write boundary: a
-        # disposition label or agent display name is operator-controlled and can
-        # reach here unsanitized, and openpyxl stores a value like "=1+1" as a live
-        # FORMULA that would run when the Team Captain opens this raw-PII export.
-        # sanitize_text prepends "'" to any value starting with = + - @ tab or CR
-        # (the same neutralization applied on import).
-        sheet.append([sanitize_text(value) for value in row])
+        sheet.append(list(row))
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
