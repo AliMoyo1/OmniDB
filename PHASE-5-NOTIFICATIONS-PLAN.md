@@ -53,8 +53,15 @@ Committed + pushed (see BUILD-LOG.md). CI: pending.
 - [ ] ruff/mypy, migration up/down/reapply, full suite vs real Postgres (Docker),
       docker build. Commit, push, watch CI, confirm, record.
 
-## Follow-ups (later increments, NOT this one)
-- Notify-approvers broadcast (recipient set = users who can_access + hold
-  approval authority) when an import needs a decision.
-- Dormant email channel (a delivered_channels / email dispatch stub).
-- Then: acting-role/delegation wiring, then completed-campaign export+retention.
+## Follow-ups
+- [x] Notify-approvers broadcast (increment 2, 2026-09-02): high-risk parsed
+      jobs ping qualified non-uploader approvers, resolved by filtering a
+      staff-bounded candidate set through the real can_access_job (no parallel
+      reverse resolver). `authz.users_with_any_capability` +
+      `notify_pending_high_risk_approvers`, emitted from parse_job. 2 tests.
+      Verified real-PG (integration 172), committed.
+- [ ] Dormant email channel (a delivered_channels / email dispatch stub).
+- [ ] Optional: broadcast routine jobs whose uploader lacks per-row authority
+      to self-approve (high-risk-only for now).
+- [ ] Then: acting-role/delegation wiring, then completed-campaign
+      export+retention.

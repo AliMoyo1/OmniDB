@@ -313,6 +313,9 @@ def parse_job(db: Session, job_id: uuid.UUID) -> None:
         target_type="workforce_import_job", target_id=job.id,
         event_metadata={"total": total, "valid": valid, "invalid": invalid, "high_risk": high_risk},
     )
+    # The job is now decidable and its footprint is set, so qualified approvers
+    # can be resolved and pinged. Committed by the parse task alongside the rows.
+    notify_pending_high_risk_approvers(db, job)
 
 
 def get_preview(db: Session, job: WorkforceImportJob) -> list[WorkforceImportRow]:
@@ -733,6 +736,42 @@ def _assert_qualified_high_risk_approver(
     if approver_id == job.uploader_id:
         raise SelfApproval("the uploader cannot also approve a high-risk import")
     _assert_rows_authorized(db, job, approver_id, risk_level="high_risk")
+
+
+def notify_pending_high_risk_approvers(db: Session, job: WorkforceImportJob) -> None:
+    """Tell the people who can actually approve a high-risk import that one is
+    waiting - the discovery half of the two-person rule (the list shows it, this
+    pushes it). Only high-risk jobs broadcast: those are the ones that require a
+    separate, non-uploader approver by the rule. A routine-only job the uploader
+    can carry themselves, so it makes no noise here.
+
+    The recipient set is computed by filtering a coarse candidate set (everyone
+    holding any import/approval capability - bounded by staff count, since agents
+    and viewers hold none) through the very same can_access_job the decision
+    endpoint enforces. So a broadcast can never reach someone who could not
+    actually reach and approve the job, and never omit someone who could - the
+    notify set is defined by the real authorization check, not a parallel
+    reverse query that could drift from it."""
+    if job.high_risk_rows == 0:
+        return
+    candidates = authz.users_with_any_capability(db, UPLOAD_CAPABILITIES)
+    for candidate_id in candidates:
+        if candidate_id == job.uploader_id:
+            continue
+        if not can_access_job(db, candidate_id, job):
+            continue
+        notifications_service.notify(
+            db,
+            recipient_id=candidate_id,
+            category="workforce_import.needs_review",
+            title=f"An import needs your review: “{job.source_filename_display}”",
+            body=(
+                f"{job.high_risk_rows} high-risk row(s) require a second approver "
+                "who is not the uploader."
+            ),
+            related_entity_type="workforce_import_job",
+            related_entity_id=job.id,
+        )
 
 
 def record_decision(

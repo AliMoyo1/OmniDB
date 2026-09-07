@@ -165,3 +165,67 @@ def test_inbox_page_renders_and_mark_all_read_clears_the_badge():
     )
     assert cleared.status_code == 303
     assert owner.get("/api/v1/notifications/unread-count").json()["unread"] == 0
+
+
+def _needs_review(client: TestClient, job_id: str) -> list:
+    return [
+        n
+        for n in client.get("/api/v1/notifications").json()
+        if n["category"] == "workforce_import.needs_review" and n["related_entity_id"] == job_id
+    ]
+
+
+def test_high_risk_import_broadcasts_to_qualified_non_uploader_approvers():
+    """When a parsed import genuinely needs a second person (it has high-risk
+    rows), the people who can actually reach and approve it are pinged - the
+    push half of the two-person workflow. The uploader is excluded (separation
+    of duties), and someone with no approval capability is never a candidate."""
+    from app.authz.capabilities import ROLE_AGENT
+    from app.workforce import service as workforce_service
+
+    uploader, uploader_id = _manager(prefix="brdcstuploader")
+    up_headers = csrf_headers(uploader)
+
+    # A target holding an org-scoped agent role, so deactivating it is high-risk
+    # and approving it needs authority over that org scope.
+    twid = f"brdcst-target-{uuid.uuid4().hex[:8]}"
+    target_id = make_user(f"{twid}@example.com")
+    with SessionLocal() as db:
+        workforce_service.assign_role(
+            db, target_user_id=target_id, role_code=ROLE_AGENT, scope_type="organization",
+            scope_id=None, appointed_by=uuid.UUID(uploader_id), reason_code="test_setup",
+        )
+        db.commit()
+
+    # A second manager (org-wide authority -> can access + approve), created
+    # before the upload so the broadcast can reach them, and a plain agent who
+    # holds no approval capability at all.
+    approver, _ = _manager(prefix="brdcstapprover")
+    agent_email = f"brdcst-agent-{uuid.uuid4().hex[:8]}@example.com"
+    make_user_with_role(agent_email, "agent")
+    agent = _client_for(agent_email)
+
+    deact_csv = f"external_workforce_id,reason_code\r\n{twid},performance_review\r\n"
+    files = {"file": ("d.csv", deact_csv.encode("utf-8"), "text/csv")}
+    up = uploader.post(
+        "/api/v1/workforce/imports", files=files,
+        data={"import_type": "explicit_deactivations"}, headers=up_headers,
+    )
+    assert up.status_code == 200, up.text
+    job_id = up.json()["id"]
+    assert uploader.get(f"/api/v1/workforce/imports/{job_id}").json()["high_risk_rows"] == 1
+
+    assert len(_needs_review(approver, job_id)) == 1
+    assert _needs_review(uploader, job_id) == []  # uploader excluded (two-person rule)
+    assert _needs_review(agent, job_id) == []  # agent holds no approval capability
+
+
+def test_routine_only_import_does_not_broadcast_for_review():
+    """A routine-only import (no high-risk rows) needs no second person - the
+    uploader can carry it - so it pings nobody for review."""
+    watcher, _ = _manager(prefix="brdcstwatcher")
+    uploader, _ = _manager(prefix="brdcstroutine")
+    headers = csrf_headers(uploader)
+    job_id = _upload_users_create(uploader, headers)
+    assert uploader.get(f"/api/v1/workforce/imports/{job_id}").json()["high_risk_rows"] == 0
+    assert _needs_review(watcher, job_id) == []

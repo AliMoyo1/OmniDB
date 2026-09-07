@@ -96,6 +96,36 @@ def has_assigned_capability(db: Session, user_id: uuid.UUID, capability: str) ->
     )
 
 
+def users_with_any_capability(
+    db: Session, capabilities: Iterable[str]
+) -> set[uuid.UUID]:
+    """Every user who, through some active role, holds at least one of the given
+    capabilities - the reverse of has_assigned_capability, over all users. Scope
+    is deliberately NOT considered here: this is a coarse candidate set (e.g.
+    "who could conceivably approve an import"), bounded by staff count since the
+    capabilities in question are held only by appointing/campaign roles, never
+    by agents. Callers narrow it to a specific object with the real per-object
+    check (has_scope_capability / can_access_job); this only avoids scanning
+    every user in the system to find the handful that could possibly qualify."""
+    wanted = set(capabilities)
+    role_codes = {
+        role for role, granted in ROLE_CAPABILITIES.items() if granted & wanted
+    }
+    if not role_codes:
+        return set()
+    now = utcnow()
+    return set(
+        db.scalars(
+            select(RoleAssignment.user_id).where(
+                RoleAssignment.role_code.in_(role_codes),
+                RoleAssignment.status == "active",
+                RoleAssignment.effective_from <= now,
+                or_(RoleAssignment.effective_to.is_(None), RoleAssignment.effective_to > now),
+            )
+        )
+    )
+
+
 def _scope_covered_by_assignment(
     assignment: RoleAssignment,
     scope_type: str,

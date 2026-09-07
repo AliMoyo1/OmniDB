@@ -2032,3 +2032,34 @@ path, since the Browser pane can't clear Caddy's internal-CA cert). Local
 Redis ran on host port 16379 this round - a Docker Desktop restart put 6379
 and 6380 inside Windows' Hyper-V reserved TCP ranges; the container's own port
 and CI are unaffected.
+
+## 2026-09-02: notification inbox - approver broadcast (increment 2)
+
+The push complement to the inbox's first producer: when a parsed import
+genuinely needs a second person - it has high-risk rows, the only case the
+two-person rule mandates a separate approver for - the people who can actually
+reach and approve it are now notified, not left to discover it by opening the
+list. Routine-only jobs (no high-risk rows) the uploader can carry themselves,
+so they broadcast to nobody.
+
+The correctness risk here is computing *who* can approve - the reverse of the
+access check that took five review rounds to get right in the forward
+direction. So this does not build a parallel reverse-authorization resolver
+that could drift from the real gate: it takes a coarse candidate set (everyone
+holding any import/approval capability, via a new
+`authz.users_with_any_capability` - bounded by staff count, since agents and
+viewers hold none) and filters each candidate through the very same
+`can_access_job` the decision endpoint enforces. So the broadcast set is
+*defined by* the real authorization check - it can never reach someone who
+could not actually approve, nor omit someone who could. The uploader is
+excluded (separation of duties). Emitted at the end of `parse_job` (the moment
+the job becomes decidable and its footprint is set), committed by the parse
+task; idempotent, since `parse_job` only runs while the job is still
+quarantined.
+
+Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration`
+now 172 (+2: a high-risk import pings a qualified non-uploader manager while
+excluding the uploader and a plain agent; a routine-only import pings nobody),
+unit suite 35, `docker build` clean, ruff/mypy clean. A possible later
+extension noted in the plan: broadcasting routine jobs whose uploader lacks the
+per-row authority to self-approve.
