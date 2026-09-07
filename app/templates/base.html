@@ -59,6 +59,11 @@
       <span class="dock-item-label">Flags</span>
     </a>
     {% endif %}
+    <a class="dock-item {% if active_section == 'notifications' %}active{% endif %}" href="/notifications" title="Notifications">
+      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span class="dock-item-label">Inbox</span>
+      {% if unread_notifications %}<span class="dock-badge">{{ unread_notifications if unread_notifications < 100 else '99+' }}</span>{% endif %}
+    </a>
     <a class="dock-item {% if active_section == 'security' %}active{% endif %}" href="/security/mfa" title="Account security">
       <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z"/><path d="M9 11V9a3 3 0 0 1 6 0v2"/><rect x="8" y="11" width="8" height="6" rx="1.5"/></svg>
       <span class="dock-item-label">Security</span>
@@ -115,6 +120,11 @@
     </a>
     {% endif %}
     <div class="side-nav-label">Account</div>
+    <a href="/notifications">
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      Inbox
+      {% if unread_notifications %}<span class="count">{{ unread_notifications }}</span>{% endif %}
+    </a>
     <a href="/security/mfa">
       <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z"/><path d="M9 11V9a3 3 0 0 1 6 0v2"/><rect x="8" y="11" width="8" height="6" rx="1.5"/></svg>
       Account security

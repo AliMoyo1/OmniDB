@@ -16,6 +16,7 @@ from app.models.contact import CampaignContact, Contact, SuppressionEntry
 from app.models.flags import FeatureFlag
 from app.models.identity import Organization, Team, TeamMembership, User
 from app.models.imports import ImportDecision, ImportJob, ImportRow
+from app.models.notifications import Notification
 from app.models.session import Session
 from app.models.work import Batch, CallAttempt, WorkItem
 from app.models.workforce_imports import (
@@ -53,4 +54,5 @@ __all__ = [
     "WorkforceImportJob",
     "WorkforceImportRow",
     "WorkforceImportDecision",
+    "Notification",
 ]

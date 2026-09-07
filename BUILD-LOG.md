@@ -1986,3 +1986,49 @@ Confirmed green on `204f2c7`: build, security, quality, and integration
 all passed - the bulk `visible_jobs` resolution holds under CI's own fresh
 Postgres/Redis containers, matching local verification exactly. Five
 review rounds on this feature now closed.
+
+## 2026-09-02: Phase 5 operational workflows - notification inbox (increment 1)
+
+Phase 4B (bulk workforce import) is done and through five review rounds, so
+turning to the operational workflows the pilot needs. A reconciliation pass
+first: of the four (inbox, acting-role/delegation, completed-campaign export
++retention, infra drills), the inbox is fully greenfield, delegation has a
+dead `Delegation` model wired to nothing, retention has model fields
+(`Campaign.completed_at`/`retention_delete_after`) + a Celery beat schedule
+but no export/automation, and infra drills already have backup/restore/
+restore-test scripts + a runbook (an ops run, not a build). Starting with the
+inbox: greenfield, a Phase 0 decision ("in-app inbox notifications + dormant
+email capability"), and the natural complement to the just-hardened two-person
+import workflow - an approver/uploader should be *notified*, not only discover
+state by polling a list.
+
+Increment 1 (deliberately tight, per the 4B review history that small
+verifiable increments win): a new `Notification` model (migration 0016,
+additive) carrying no raw personal data - it references an entity by id and
+describes it with operator-chosen text (a filename), never contact PII, the
+same boundary the audit log holds. A service scoped entirely to one user's own
+rows (notify / list / unread_count / mark_read / mark_all_read - every read and
+mutation is per-recipient, never a shared capability, because a notification is
+private to its recipient). A JSON API and a server-rendered inbox with a
+mark-read / mark-all-read flow, plus an unread badge wired into the shared
+shell via `page_context` (one indexed COUNT per render, so every page's badge
+stays correct). And one real producer to prove it end to end: a workforce-
+import decision / commit / reverse by someone *other than the uploader*
+notifies the uploader, with a link back to the job - no self-notification when
+the uploader acts on their own import.
+
+`mark_read` is deliberately indistinguishable between "not found" and "belongs
+to someone else" (both 404 / no-op), so one user can never probe another's
+inbox by id.
+
+Verification: ruff/mypy clean repo-wide, OpenAPI registers all seven routes,
+migration 0016 applies/downgrades/reapplies cleanly, `docker build` succeeds,
+and the full suite is green against real Postgres 16 + Redis 7 -
+`pytest -m integration` now 170 (up from 166; +4 new: inbox privacy, the
+decision emitter, no-self-notify, and the rendered page + badge), unit suite
+35. The rendered inbox and the shell badge are asserted through the real
+Jinja/FastAPI stack in those tests (the codebase's established verification
+path, since the Browser pane can't clear Caddy's internal-CA cert). Local
+Redis ran on host port 16379 this round - a Docker Desktop restart put 6379
+and 6380 inside Windows' Hyper-V reserved TCP ranges; the container's own port
+and CI are unaffected.

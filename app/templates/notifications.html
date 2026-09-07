@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Inbox | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">Notifications</p>
+      <h1>Your inbox.</h1>
+      <p>Updates about your imports and the work you are responsible for. Nothing here contains contact data.</p>
+    </div>
+    {% if unread_notifications %}
+    <form method="post" action="/notifications/read-all" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="secondary">Mark all read ({{ unread_notifications }})</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">{{ notifications|length }} recent</p><h2>Messages</h2></div></div>
+  {% if notifications %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th></th><th>Message</th><th>When</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for n in notifications %}
+        <tr>
+          <td>{% if not n.read_at %}<span class="badge">new</span>{% endif %}</td>
+          <td>
+            <strong>{{ n.title }}</strong>
+            {% if n.body %}<div class="panel-note">{{ n.body }}</div>{% endif %}
+            {% if n.related_entity_type == "workforce_import_job" and n.related_entity_id %}
+            <div><a href="/workforce/imports/{{ n.related_entity_id }}">Open import</a></div>
+            {% endif %}
+          </td>
+          <td>{{ n.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td>
+            {% if not n.read_at %}
+            <form method="post" action="/notifications/{{ n.id }}/read" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="secondary">Mark read</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="empty">No notifications yet.</p>{% endif %}
+</section>
+{% endblock %}

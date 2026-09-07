@@ -22,6 +22,7 @@ from app.auth import csrf
 from app.authz import service as authz
 from app.authz.capabilities import MANAGE_ROLES, VIEW_AUDIT, VIEW_CAMPAIGN, WORK_QUEUE
 from app.models.identity import User
+from app.notifications import service as notifications_service
 from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
@@ -53,6 +54,11 @@ def page_context(request: Request, db: Session, user: User, **extra) -> dict:
         "user": user,
         "roles": roles,
         "csrf_token": request.cookies.get(csrf.CSRF_COOKIE, ""),
+        # The inbox link and its unread badge live in the shared shell, so every
+        # authenticated page needs the count (a single indexed COUNT, computed
+        # here for the same reason the nav flags are - a route that forgot it
+        # would silently render a wrong badge).
+        "unread_notifications": notifications_service.unread_count(db, user.id),
         **nav_flags(db, user),
     }
     context.update(extra)

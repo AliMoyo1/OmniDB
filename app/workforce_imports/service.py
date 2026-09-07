@@ -37,9 +37,12 @@ from app.models.workforce_imports import (
     WorkforceImportJob,
     WorkforceImportRow,
 )
+from app.notifications import service as notifications_service
 from app.workforce import service as workforce_service
 from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY, DuplicateIdentity
 from app.workforce_imports import classify
+
+_DECISION_PAST_TENSE = {"approve": "approved", "reject": "rejected", "cancel": "cancelled"}
 
 _PARSE_BATCH_SIZE = 500
 # Matches authz.service's own bulk-query chunk size, kept separate since that
@@ -808,6 +811,20 @@ def record_decision(
         target_type="workforce_import_job", target_id=job.id, reason_code=decision,
         event_metadata={"decision_tier": decision_tier},
     )
+    # Tell the uploader someone else acted on their import - the discovery
+    # complement to the two-person workflow. No self-notification: if the
+    # uploader recorded this decision themselves, they already know.
+    if decided_by != job.uploader_id:
+        past = _DECISION_PAST_TENSE.get(decision, decision)
+        notifications_service.notify(
+            db,
+            recipient_id=job.uploader_id,
+            category="workforce_import.decision",
+            title=f"Your import “{job.source_filename_display}” was {past}",
+            body=f"A {decision_tier.replace('_', '-')} decision was recorded on your bulk import.",
+            related_entity_type="workforce_import_job",
+            related_entity_id=job.id,
+        )
     return row
 
 
@@ -1241,6 +1258,16 @@ def commit_job(
         target_type="workforce_import_job", target_id=job.id,
         event_metadata={"import_type": job.import_type, "row_count": len(outcomes)},
     )
+    if actor_id != job.uploader_id:
+        notifications_service.notify(
+            db,
+            recipient_id=job.uploader_id,
+            category="workforce_import.commit",
+            title=f"Your import “{job.source_filename_display}” was committed",
+            body=f"{len(outcomes)} row(s) were applied.",
+            related_entity_type="workforce_import_job",
+            related_entity_id=job.id,
+        )
     return {**result, "activation_tokens": activations}
 
 
@@ -1485,6 +1512,16 @@ def reverse_job(db: Session, job_id: uuid.UUID, *, actor_id: uuid.UUID) -> dict:
         target_type="workforce_import_job", target_id=job.id,
         event_metadata={"reversed": len(reversed_rows), "skipped": len(skipped_rows)},
     )
+    if actor_id != job.uploader_id:
+        notifications_service.notify(
+            db,
+            recipient_id=job.uploader_id,
+            category="workforce_import.reverse",
+            title=f"Your import “{job.source_filename_display}” was reversed",
+            body=f"{len(reversed_rows)} row(s) were reverted, {len(skipped_rows)} left unchanged.",
+            related_entity_type="workforce_import_job",
+            related_entity_id=job.id,
+        )
     return {"job_id": str(job.id), "reversed": reversed_rows, "skipped": skipped_rows}
 
 

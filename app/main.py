@@ -12,6 +12,7 @@ from sqlalchemy import text
 from app.api.admin import router as admin_router
 from app.api.campaigns import campaigns_router, imports_router
 from app.api.flags import router as flags_router
+from app.api.notifications import router as notifications_router
 from app.api.work import agent_router, work_router
 from app.api.workforce import router as workforce_router
 from app.api.workforce_imports import router as workforce_imports_router
@@ -27,6 +28,7 @@ from app.web.campaigns import router as web_campaigns_router
 from app.web.dashboard import router as web_dashboard_router
 from app.web.dependencies import InvalidFormCsrf, RedirectToLogin, RedirectToMfaEnrollment
 from app.web.flags import router as web_flags_router
+from app.web.notifications import router as web_notifications_router
 from app.web.security import router as web_security_router
 from app.web.workforce import router as web_workforce_router
 from app.web.workforce_imports import router as web_workforce_imports_router
@@ -87,6 +89,7 @@ app.include_router(agent_router)
 app.include_router(workforce_router)
 app.include_router(workforce_imports_router)
 app.include_router(flags_router)
+app.include_router(notifications_router)
 app.include_router(web_auth_router)
 app.include_router(web_agent_work_router)
 app.include_router(web_campaigns_router)
@@ -94,6 +97,7 @@ app.include_router(web_workforce_router)
 app.include_router(web_workforce_imports_router)
 app.include_router(web_audit_router)
 app.include_router(web_flags_router)
+app.include_router(web_notifications_router)
 app.include_router(web_security_router)
 app.include_router(web_dashboard_router)
 
