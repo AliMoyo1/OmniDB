@@ -10,8 +10,10 @@ from __future__ import annotations
 from celery import Celery
 
 from app.config import get_settings
+from app.monitoring import configure_sentry
 
 _settings = get_settings()
+configure_sentry(_settings)
 
 celery_app = Celery("ciphercontact", broker=_settings.redis_url, backend=_settings.redis_url)
 

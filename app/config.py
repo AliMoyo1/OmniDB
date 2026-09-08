@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from sqlalchemy.engine import URL
 
@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # Operational
     log_level: str = "INFO"
     health_token: SecretStr = SecretStr("")
+    sentry_dsn: SecretStr = SecretStr("")
+    sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    sentry_release: str = ""
     # Set false only for local HTTP development; production is always HTTPS.
     cookie_secure: bool = True
 

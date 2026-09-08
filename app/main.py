@@ -22,6 +22,7 @@ from app.config import get_settings
 from app.db import engine
 from app.logging_setup import configure_logging
 from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from app.monitoring import configure_sentry
 from app.web.agent_work import router as web_agent_work_router
 from app.web.audit import router as web_audit_router
 from app.web.auth_pages import router as web_auth_router
@@ -35,7 +36,9 @@ from app.web.security import router as web_security_router
 from app.web.workforce import router as web_workforce_router
 from app.web.workforce_imports import router as web_workforce_imports_router
 
-configure_logging(get_settings().log_level)
+_settings = get_settings()
+configure_sentry(_settings)
+configure_logging(_settings.log_level)
 
 app = FastAPI(
     title="CipherContact",

@@ -55,3 +55,9 @@ def test_database_url_quotes_special_password_characters():
     settings = Settings(db_password=reserved_password)
 
     assert "p%40ss%3Aword%2Fwith%3Freserved%23characters" in settings.database_url
+
+
+@pytest.mark.parametrize("sample_rate", [-0.01, 1.01])
+def test_sentry_trace_sample_rate_must_be_between_zero_and_one(sample_rate: float):
+    with pytest.raises(ValidationError, match="sentry_traces_sample_rate"):
+        Settings(app_env="test", sentry_traces_sample_rate=sample_rate)
