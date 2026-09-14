@@ -70,6 +70,8 @@ def test_login_page_renders_and_has_a_form():
     assert '<form class="login-card" method="post" action="/login">' in resp.text
     assert 'class="login-scene"' in resp.text
     assert '/static/media/ciphercontact-login-ambient.mp4' in resp.text
+    assert '/static/css/base.css?v=20260914-brand' in resp.text
+    assert '/static/favicon.svg?v=20260914-brand' in resp.text
     assert 'class="login-brand-mark"' in resp.text
     assert resp.text.count('/static/brand/ciphercontact-mark.svg') == 1
 
