@@ -70,10 +70,17 @@ def test_login_page_renders_and_has_a_form():
     assert '<form class="login-card" method="post" action="/login">' in resp.text
     assert 'class="login-scene"' in resp.text
     assert '/static/media/ciphercontact-login-ambient.mp4' in resp.text
+    assert 'class="login-brand-mark"' in resp.text
+    assert resp.text.count('/static/brand/ciphercontact-mark.svg') == 1
 
     media = client.get("/static/media/ciphercontact-login-ambient.mp4")
     assert media.status_code == 200
     assert media.headers["content-type"].startswith("video/mp4")
+
+    logo = client.get("/static/brand/ciphercontact-mark.svg")
+    assert logo.status_code == 200
+    assert logo.headers["content-type"].startswith("image/svg+xml")
+    assert b'<circle cx="38" cy="32"' in logo.content
 
 
 def test_activation_page_renders_a_token_form():
@@ -88,6 +95,7 @@ def test_activation_page_renders_a_token_form():
     assert 'name="new_password"' in resp.text
     assert 'name="confirm_password"' in resp.text
     assert "one-time activation code" in resp.text.lower()
+    assert resp.text.count('/static/brand/ciphercontact-mark.svg') == 1
 
 
 def test_activation_form_sets_a_password_without_echoing_or_replaying_the_token():
@@ -184,6 +192,8 @@ def test_dashboard_shows_manager_sections():
     assert "Teams" in resp.text
     assert "Recent audit activity" in resp.text
     assert 'action="/dashboard/campaigns"' in resp.text
+    assert resp.text.count('/static/brand/ciphercontact-mark.svg') == 3
+    assert 'class="side-nav-wordmark"' in resp.text
 
 
 def test_agent_dashboard_redirects_to_workbench():

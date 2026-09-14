@@ -270,13 +270,14 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--signal-ink);
-  background: var(--signal);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.46) inset, 0 9px 24px -7px var(--accent-shadow);
-  font-weight: 800;
+  padding: 4px;
+  border: 1px solid rgba(38, 64, 44, 0.14);
+  background: rgba(250, 252, 247, 0.94);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.56) inset, 0 9px 24px -7px var(--accent-shadow);
   margin-bottom: 8px;
   flex-shrink: 0;
 }
+.brand-mark-image { display: block; width: 100%; height: 100%; }
 .dock-item {
   position: relative;
   width: 44px;
@@ -356,6 +357,34 @@ code {
   margin: 18px 0 8px;
 }
 .side-nav-label:first-child { margin-top: 4px; }
+.side-nav-product {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  margin: 0 4px 14px;
+}
+.side-nav-brand-mark,
+.topbar-brand-mark {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid rgba(38, 64, 44, 0.13);
+  background: rgba(250, 252, 247, 0.92);
+  box-shadow: 0 5px 14px rgba(31, 55, 38, 0.10);
+}
+.side-nav-brand-mark {
+  width: 32px;
+  height: 32px;
+  padding: 3px;
+  border-radius: 9px;
+}
+.side-nav-wordmark {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
 .side-nav a {
   display: flex;
   align-items: center;
@@ -399,9 +428,18 @@ header.topbar {
 }
 
 header.topbar .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
   font-weight: 800;
   font-size: 16px;
   letter-spacing: -0.01em;
+}
+.topbar-brand-mark {
+  width: 30px;
+  height: 30px;
+  padding: 2px;
+  border-radius: 9px;
 }
 .brand-accent { color: var(--accent-mid); }
 
@@ -663,25 +701,24 @@ button.danger { background: linear-gradient(135deg, var(--red), #a91d1d); box-sh
 .login-brand {
   display: inline-flex;
   align-items: center;
-  gap: 11px;
+  gap: 13px;
   color: #f5f7f1;
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 800;
-  letter-spacing: .06em;
-  text-transform: uppercase;
+  letter-spacing: -.025em;
 }
 .login-brand-mark {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 46px;
+  height: 46px;
   place-items: center;
-  border-radius: 10px;
-  color: #151810;
-  background: #c8f477;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, .72);
+  border-radius: 13px;
+  background: rgba(248, 251, 244, .94);
   box-shadow: 0 8px 24px rgba(200, 244, 119, .24);
-  font-family: var(--mono);
-  font-size: 18px;
 }
+.login-brand-wordmark span { color: #c8f477; }
 .login-copy { max-width: 610px; padding-bottom: 18px; }
 .login-kicker {
   margin: 0 0 12px;
