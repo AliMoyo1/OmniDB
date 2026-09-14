@@ -431,6 +431,26 @@ def test_manager_can_view_and_toggle_flags_via_web(manager_client):
     )
 
 
+def test_flags_web_rejects_overlong_reason_without_changing_flag(manager_client):
+    with SessionLocal() as db:
+        original = flags_service.is_enabled(db, "retention_execution_enabled")
+
+    resp = manager_client.post(
+        "/flags/retention_execution_enabled",
+        data={
+            "csrf_token": csrf_headers(manager_client)["x-csrf-token"],
+            "enabled": str(not original).lower(),
+            "reason_code": "x" * 51,
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert "flash_error=reason+must+be+50+characters+or+fewer" in resp.headers["location"]
+    with SessionLocal() as db:
+        assert flags_service.is_enabled(db, "retention_execution_enabled") is original
+
+
 def test_ai_enabled_cannot_be_toggled_on_via_web(manager_client):
     resp = manager_client.post(
         "/flags/ai_enabled",
@@ -469,6 +489,16 @@ def test_flags_json_api_rejects_ai_enabled(manager_client):
         "/api/v1/flags/ai_enabled", json={"enabled": True}, headers=csrf_headers(manager_client),
     )
     assert resp.status_code == 409
+
+
+def test_flags_json_api_rejects_overlong_reason(manager_client):
+    resp = manager_client.post(
+        "/api/v1/flags/analytics_enabled",
+        json={"enabled": True, "reason_code": "x" * 51},
+        headers=csrf_headers(manager_client),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "reason must be 50 characters or fewer"
 
 
 def test_flags_json_api_rejects_unknown_flag(manager_client):

@@ -35,7 +35,7 @@
             {% if flag.flag_key not in permanently_disabled %}
             <form method="post" action="/flags/{{ flag.flag_key }}" class="inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <input type="text" name="reason_code" placeholder="reason (optional)" size="16">
+              <input type="text" name="reason_code" maxlength="50" placeholder="reason (optional)" size="16">
               <input type="hidden" name="enabled" value="{{ 'false' if flag.enabled else 'true' }}">
               <button type="submit" class="secondary">{{ "Disable" if flag.enabled else "Enable" }}</button>
             </form>

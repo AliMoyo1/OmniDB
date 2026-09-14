@@ -180,6 +180,8 @@ def test_assign_role_then_end_it():
 
     detail = client.get(f"/workforce/users/{user_id}", follow_redirects=True)
     assert "agent" in detail.text
+    assert "&middot; manager" in detail.text
+    assert "RoleAssignment object" not in detail.text
 
     resp = client.post(
         f"/workforce/roles/{assignment_id}/end",

@@ -14,7 +14,7 @@ from app.authz import service as authz
 from app.authz.capabilities import MANAGE_ROLES
 from app.db import get_session
 from app.flags import service as flags_service
-from app.flags.service import PermanentlyDisabledFlag, UnknownFlag
+from app.flags.service import InvalidReasonCode, PermanentlyDisabledFlag, UnknownFlag
 from app.models.identity import User
 from app.web.dependencies import require_page_user, verify_form_csrf
 from app.web.templates import page_context, templates
@@ -64,7 +64,7 @@ def set_flag_action(
             db, flag_key, enabled == "true",
             actor_id=user.id, reason_code=reason_code.strip() or None,
         )
-    except (UnknownFlag, PermanentlyDisabledFlag) as exc:
+    except (InvalidReasonCode, UnknownFlag, PermanentlyDisabledFlag) as exc:
         db.rollback()
         return _redirect(error=str(exc))
     db.commit()

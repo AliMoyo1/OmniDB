@@ -155,7 +155,7 @@ def user_detail(
     if target is None or not workforce_service.can_manage_user(db, user.id, target.id):
         return _index_redirect(error="User not found or not authorized.")
 
-    roles = list(
+    target_roles = list(
         db.scalars(
             select(RoleAssignment)
             .where(RoleAssignment.user_id == target.id, RoleAssignment.status == "active")
@@ -195,7 +195,7 @@ def user_detail(
         request, db, user,
         active_section="workforce",
         target=target,
-        roles=roles,
+        target_roles=target_roles,
         memberships=memberships,
         reporting_line=reporting_line,
         appointable_roles=sorted(ROLE_APPOINTMENT_CAPABILITY.keys()),

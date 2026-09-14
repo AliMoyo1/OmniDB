@@ -16,7 +16,7 @@ from app.authz.capabilities import MANAGE_ROLES
 from app.db import get_session
 from app.flags import service as flags_service
 from app.flags.schemas import FlagOut, FlagSetRequest
-from app.flags.service import PermanentlyDisabledFlag, UnknownFlag
+from app.flags.service import InvalidReasonCode, PermanentlyDisabledFlag, UnknownFlag
 from app.models.flags import FeatureFlag
 from app.models.identity import User
 
@@ -63,5 +63,7 @@ def set_flag(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except PermanentlyDisabledFlag as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except InvalidReasonCode as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     db.commit()
     return _flag_out(flag)

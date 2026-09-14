@@ -15,9 +15,9 @@
 <div class="ops-grid">
   <section class="ops-panel">
     <div class="panel-heading"><div><p class="eyebrow">01 · Access</p><h2>Roles</h2></div><span class="panel-note">A role grants capability only at its own scope.</span></div>
-    {% if roles %}
+    {% if target_roles %}
     <div class="assignment-list">
-      {% for ra in roles %}
+      {% for ra in target_roles %}
       <div>
         <div><strong>{{ ra.role_code }}</strong><span>{{ ra.scope_type }}{% if ra.scope_id %} &middot; {{ ra.scope_id|string|truncate(8, True, "") }}{% endif %}</span></div>
         <span class="badge">{{ ra.status }}</span>

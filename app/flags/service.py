@@ -35,6 +35,8 @@ KNOWN_FLAGS = (
     "workforce_import_enabled",
 )
 
+MAX_REASON_CODE_LENGTH = 50
+
 
 class FeatureDisabledError(Exception):
     """Raised by a service-layer check when the governing flag is off."""
@@ -49,6 +51,10 @@ class UnknownFlag(Exception):
 
 
 class PermanentlyDisabledFlag(Exception):
+    pass
+
+
+class InvalidReasonCode(Exception):
     pass
 
 
@@ -79,6 +85,10 @@ def set_flag(
         raise UnknownFlag(f"{flag_key} is not a known flag")
     if enabled and flag_key in PERMANENTLY_DISABLED:
         raise PermanentlyDisabledFlag(f"{flag_key} is permanently disabled for MVP")
+    if reason_code is not None and len(reason_code) > MAX_REASON_CODE_LENGTH:
+        raise InvalidReasonCode(
+            f"reason must be {MAX_REASON_CODE_LENGTH} characters or fewer"
+        )
     flag = db.get(FeatureFlag, flag_key)
     if flag is None:
         flag = FeatureFlag(flag_key=flag_key, enabled=enabled)
