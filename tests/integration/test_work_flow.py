@@ -123,10 +123,11 @@ def test_lease_next_returns_one_contact_without_leaking_queue_size(
     body = resp.json()
     assert set(body.keys()) == {
         "work_item_id", "lease_id", "lease_expires_at", "campaign_id", "campaign_name",
-        "phone_e164", "contact_name", "approved_metadata", "is_callback",
+        "phone_e164", "contact_name", "approved_metadata", "is_callback", "lease_reason",
     }
     assert body["phone_e164"].startswith("+263")
     assert body["is_callback"] is False
+    assert body["lease_reason"] == "normal"
 
 
 def test_complete_work_item_is_idempotent(manager_client, agent_client):

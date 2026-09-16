@@ -33,6 +33,28 @@ from app.security.encryption import decrypt, encrypt
 
 _TERMINAL_STATES = ("completed", "suppressed", "cancelled")
 
+# Why a work item is (or was most recently) leased (phase 4D plan 6.3, 6.8).
+# Persisted on WorkItem.lease_reason at every transition into "leased" and
+# snapshotted onto CallAttempt.source_lease_reason at completion, since the
+# work item itself is mutable and gets re-leased under a new reason later.
+LEASE_REASON_NORMAL = "normal"
+LEASE_REASON_SCHEDULED_CALLBACK = "scheduled_callback"
+LEASE_REASON_DELAYED_RETRY = "delayed_retry"
+LEASE_REASON_IMMEDIATE_REDIAL = "immediate_redial"
+
+# What the agent should expect next after a completion (phase 4D plan 6.8).
+# A pure function of the work item's post-completion state - every branch in
+# complete_work_item() lands on exactly one of these keys.
+_NEXT_STEP_BY_STATE = {
+    "completed": "complete",
+    "retry_wait": "retry_scheduled",
+    "callback_wait": "callback_scheduled",
+    "leased": "redial_ready",
+    "review": "review",
+    "suppressed": "suppressed",
+    "queued": "retry_scheduled",
+}
+
 
 class WorkItemError(Exception):
     pass
@@ -54,6 +76,10 @@ class IdempotencyConflict(WorkItemError):
     pass
 
 
+class ReviewStateError(WorkItemError):
+    pass
+
+
 @dataclass(frozen=True)
 class LeaseResult:
     work_item_id: uuid.UUID
@@ -65,6 +91,7 @@ class LeaseResult:
     contact_name: str | None
     approved_metadata: dict | None
     is_callback: bool
+    lease_reason: str
 
 
 def _lease_result(
@@ -75,6 +102,7 @@ def _lease_result(
 ) -> LeaseResult:
     if work_item.lease_id is None or work_item.lease_expires_at is None:
         raise WorkItemError("leased work item is missing lease identity or expiry")
+    lease_reason = work_item.lease_reason or LEASE_REASON_NORMAL
     return LeaseResult(
         work_item_id=work_item.id,
         lease_id=work_item.lease_id,
@@ -84,7 +112,10 @@ def _lease_result(
         phone_e164=decrypt(contact.phone_ciphertext),
         contact_name=campaign_contact.campaign_name_value,
         approved_metadata=campaign_contact.approved_metadata,
-        is_callback=work_item.assigned_agent_id is not None,
+        # Retained during the compatibility rollout (plan 6.8), now derived
+        # from lease_reason rather than independently from assigned_agent_id.
+        is_callback=lease_reason == LEASE_REASON_SCHEDULED_CALLBACK,
+        lease_reason=lease_reason,
     )
 
 
@@ -225,6 +256,42 @@ def _next_queue_candidate(
     return _LeaseCandidate(*row) if row is not None else None
 
 
+def _next_due_retry_candidate(
+    db: Session,
+    campaign_id: uuid.UUID,
+    now: datetime,
+    excluded_work_item_ids: set[uuid.UUID],
+) -> _LeaseCandidate | None:
+    """Due shared-pool retries in one campaign, ordered oldest-due, then
+    highest-priority, then oldest-created (plan 5) - served by the partial
+    index migration 0020 adds on (due_at, priority, created_at)."""
+    not_suppressed = ~exists().where(
+        SuppressionEntry.phone_fingerprint == Contact.phone_fingerprint,
+        SuppressionEntry.status == "active",
+    )
+    stmt = (
+        select(
+            WorkItem.id,
+            Contact.phone_fingerprint,
+            CampaignContact.campaign_id,
+        )
+        .join(CampaignContact, WorkItem.campaign_contact_id == CampaignContact.id)
+        .join(Contact, CampaignContact.contact_id == Contact.id)
+        .where(
+            CampaignContact.campaign_id == campaign_id,
+            WorkItem.state == "retry_wait",
+            WorkItem.due_at <= now,
+            not_suppressed,
+        )
+        .order_by(WorkItem.due_at.asc(), WorkItem.priority.desc(), WorkItem.created_at.asc())
+        .limit(1)
+    )
+    if excluded_work_item_ids:
+        stmt = stmt.where(WorkItem.id.notin_(excluded_work_item_ids))
+    row = db.execute(stmt).one_or_none()
+    return _LeaseCandidate(*row) if row is not None else None
+
+
 def _lock_lease_candidate(
     db: Session,
     candidate: _LeaseCandidate,
@@ -232,6 +299,7 @@ def _lock_lease_candidate(
     agent_id: uuid.UUID,
     now: datetime,
     is_callback: bool,
+    is_due_retry: bool = False,
 ) -> tuple[WorkItem, CampaignContact, Contact] | None:
     # The phone lock comes before the work-row lock on every leasing path. Use the
     # nonblocking form so a busy phone does not stall unrelated queue records.
@@ -247,6 +315,8 @@ def _lock_lease_candidate(
                 WorkItem.due_at <= now,
             ]
         )
+    elif is_due_retry:
+        conditions.extend([WorkItem.state == "retry_wait", WorkItem.due_at <= now])
     else:
         conditions.append(WorkItem.state == "queued")
 
@@ -357,6 +427,7 @@ def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
     campaign_contact: CampaignContact | None = None
     contact: Contact | None = None
     assignment: CampaignUserAssignment | None = None
+    lease_reason = LEASE_REASON_NORMAL
     skipped_callback_ids: set[uuid.UUID] = set()
 
     # Due callbacks take priority, but raw contact data is returned only while an
@@ -378,6 +449,7 @@ def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
             skipped_callback_ids.add(candidate.work_item_id)
             continue
         work_item, campaign_contact, contact = locked
+        lease_reason = LEASE_REASON_SCHEDULED_CALLBACK
         break
 
     if work_item is None:
@@ -389,19 +461,37 @@ def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
         if campaign is None or campaign.status != "active":
             return None
 
-        skipped_queue_ids: set[uuid.UUID] = set()
+        # Due delayed retries outrank fresh queue items in the same campaign
+        # (plan 5) - both draw from the agent's one active primary campaign.
+        skipped_retry_ids: set[uuid.UUID] = set()
         while True:
-            candidate = _next_queue_candidate(db, campaign.id, skipped_queue_ids)
+            candidate = _next_due_retry_candidate(db, campaign.id, now, skipped_retry_ids)
             if candidate is None:
-                return None
+                break
             locked = _lock_lease_candidate(
-                db, candidate, agent_id=agent_id, now=now, is_callback=False
+                db, candidate, agent_id=agent_id, now=now, is_callback=False, is_due_retry=True,
             )
             if locked is None:
-                skipped_queue_ids.add(candidate.work_item_id)
+                skipped_retry_ids.add(candidate.work_item_id)
                 continue
             work_item, campaign_contact, contact = locked
+            lease_reason = LEASE_REASON_DELAYED_RETRY
             break
+
+        if work_item is None:
+            skipped_queue_ids: set[uuid.UUID] = set()
+            while True:
+                candidate = _next_queue_candidate(db, campaign.id, skipped_queue_ids)
+                if candidate is None:
+                    return None
+                locked = _lock_lease_candidate(
+                    db, candidate, agent_id=agent_id, now=now, is_callback=False
+                )
+                if locked is None:
+                    skipped_queue_ids.add(candidate.work_item_id)
+                    continue
+                work_item, campaign_contact, contact = locked
+                break
 
     if campaign_contact is None or contact is None or assignment is None:
         raise WorkItemError("lease candidate is missing required assignment data")
@@ -412,6 +502,7 @@ def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
     work_item.lease_owner_id = agent_id
     work_item.lease_id = lease_id
     work_item.lease_expires_at = now + timedelta(minutes=settings.lease_duration_minutes)
+    work_item.lease_reason = lease_reason
     work_item.campaign_user_assignment_id = assignment.id
     work_item.version += 1
     db.flush()
@@ -578,15 +669,27 @@ def _phone_fingerprint_for_work_item(
 
 
 def _result_from_existing_attempt(
-    existing: CallAttempt, work_item_id: uuid.UUID
+    db: Session, existing: CallAttempt, work_item_id: uuid.UUID
 ) -> CompletionResult:
     if existing.work_item_id != work_item_id:
         raise IdempotencyConflict("idempotency key was already used for another work item")
+    retry_at: datetime | None = None
+    if existing.resulting_work_item_state == "retry_wait":
+        disposition = db.get(CampaignDispositionDefinition, existing.disposition_definition_id)
+        if disposition is not None and disposition.retry_delay_minutes is not None:
+            # Recomputed, not stored: created_at was pinned to the same "now"
+            # used for the original due_at (see complete_work_item), so this
+            # reproduces it exactly without a dedicated column.
+            retry_at = existing.created_at + timedelta(minutes=disposition.retry_delay_minutes)
     return CompletionResult(
         attempt_id=existing.id,
         work_item_state=existing.resulting_work_item_state,
         semantic_outcome=existing.semantic_outcome,
         callback_at=existing.callback_at,
+        retry_at=retry_at,
+        redial_lease_id=existing.resulting_lease_id,
+        redial_lease_expires_at=existing.resulting_lease_expires_at,
+        next_step=_NEXT_STEP_BY_STATE[existing.resulting_work_item_state],
     )
 
 
@@ -647,6 +750,10 @@ class CompletionResult:
     work_item_state: str
     semantic_outcome: str
     callback_at: datetime | None
+    retry_at: datetime | None
+    redial_lease_id: uuid.UUID | None
+    redial_lease_expires_at: datetime | None
+    next_step: str
 
 
 def complete_work_item(
@@ -661,10 +768,11 @@ def complete_work_item(
     self_reported_duration_seconds: int | None,
     idempotency_key: str,
 ) -> CompletionResult:
+    now = utcnow()
     lock_idempotency_key(db, "work.complete", agent_id, idempotency_key)
     existing = _existing_attempt(db, agent_id, idempotency_key)
     if existing is not None:
-        return _result_from_existing_attempt(existing, work_item_id)
+        return _result_from_existing_attempt(db, existing, work_item_id)
 
     phone_fingerprint = _phone_fingerprint_for_work_item(db, work_item_id)
     if phone_fingerprint is None:
@@ -674,6 +782,10 @@ def complete_work_item(
     lock_phone_fingerprint(db, phone_fingerprint)
 
     work_item = _load_leased_item(db, work_item_id, agent_id, lease_id)
+    # Snapshot before any branch below re-leases this same row under a new
+    # reason (immediate_redial) - this attempt happened under the reason the
+    # item was ACTUALLY leased under, not whatever it becomes next.
+    original_lease_reason = work_item.lease_reason
     campaign_contact = db.get(CampaignContact, work_item.campaign_contact_id)
     if campaign_contact is None:
         raise WorkItemError("work item references a missing campaign contact")
@@ -711,6 +823,12 @@ def complete_work_item(
         explicit_dnc_requested=disposition.causes_dnc,
         callback_at=callback_at if disposition.requires_callback_time else None,
         idempotency_key=idempotency_key,
+        source_lease_reason=original_lease_reason,
+        # Pinned to the same "now" used below for due_at, so a retry_wait
+        # completion's retry_at can be recomputed exactly on idempotent
+        # replay (existing.created_at + retry_delay) without a dedicated
+        # stored column - see _result_from_existing_attempt.
+        created_at=now,
         # A query in DNC handling can autoflush this row before the final state is
         # known. Keep the column valid, then replace it with the committed result.
         resulting_work_item_state=work_item.state,
@@ -748,6 +866,41 @@ def complete_work_item(
             work_item.state = (
                 "review" if work_item.attempt_count >= work_item.max_attempts else "queued"
             )
+        elif next_action == "retry_wait":
+            if work_item.attempt_count >= work_item.max_attempts:
+                work_item.state = "review"
+            else:
+                retry_delay_minutes = disposition.retry_delay_minutes
+                if retry_delay_minutes is None:
+                    raise DispositionMismatch(
+                        "retry disposition is missing a configured retry delay"
+                    )
+                work_item.state = "retry_wait"
+                work_item.due_at = now + timedelta(minutes=retry_delay_minutes)
+                # A shared delayed retry always returns to the shared pool,
+                # even if this attempt happened on what was a callback lease
+                # (plan 6.2) - it is no longer that agent's to keep.
+                work_item.assigned_agent_id = None
+                record_audit(
+                    db, action="work.retry.schedule", result="success", actor_user_id=agent_id,
+                    target_type="work_item", target_id=work_item.id,
+                    event_metadata={"due_at": work_item.due_at.isoformat()},
+                )
+        elif next_action == "immediate_redial":
+            if work_item.attempt_count >= work_item.max_attempts:
+                work_item.state = "review"
+            else:
+                new_expiry = now + timedelta(minutes=get_settings().lease_duration_minutes)
+                work_item.state = "leased"
+                work_item.lease_owner_id = agent_id
+                work_item.lease_id = uuid.uuid4()
+                work_item.lease_expires_at = new_expiry
+                work_item.lease_reason = LEASE_REASON_IMMEDIATE_REDIAL
+                record_audit(
+                    db, action="work.redial.ready", result="success", actor_user_id=agent_id,
+                    target_type="work_item", target_id=work_item.id,
+                    event_metadata={"lease_expires_at": new_expiry.isoformat()},
+                )
         elif next_action == "complete":
             work_item.state = "completed"
             work_item.completed_at = utcnow()
@@ -758,7 +911,13 @@ def complete_work_item(
         else:
             raise DispositionMismatch("disposition has an unsupported next action")
 
+    retry_at = work_item.due_at if work_item.state == "retry_wait" else None
+    redial_lease_id = work_item.lease_id if work_item.state == "leased" else None
+    redial_lease_expires_at = work_item.lease_expires_at if work_item.state == "leased" else None
+
     attempt.resulting_work_item_state = work_item.state
+    attempt.resulting_lease_id = redial_lease_id
+    attempt.resulting_lease_expires_at = redial_lease_expires_at
 
     record_audit(
         db, action="work.complete", result="success", actor_user_id=agent_id,
@@ -771,6 +930,10 @@ def complete_work_item(
         work_item_state=work_item.state,
         semantic_outcome=attempt.semantic_outcome,
         callback_at=attempt.callback_at,
+        retry_at=retry_at,
+        redial_lease_id=redial_lease_id,
+        redial_lease_expires_at=redial_lease_expires_at,
+        next_step=_NEXT_STEP_BY_STATE[work_item.state],
     )
 
 
@@ -851,3 +1014,151 @@ def list_agent_callbacks(db: Session, agent_id: uuid.UUID) -> list[CallbackListI
             )
         )
     return results
+
+
+@dataclass(frozen=True)
+class ReviewItem:
+    work_item_id: uuid.UUID
+    campaign_id: uuid.UUID
+    campaign_name: str
+    reference: str
+    last_standard_outcome: str | None
+    attempt_count: int
+    max_attempts: int
+    last_attempt_at: datetime | None
+
+
+def list_review_items(db: Session, campaign_id: uuid.UUID) -> list[ReviewItem]:
+    """Attempt-ceiling items awaiting a reviewer's decision (plan 6.6). Masked
+    references only, same as list_agent_callbacks - never a phone number.
+    Calling the number still requires the normal lease path."""
+    rows = db.execute(
+        select(WorkItem, CampaignContact, Campaign)
+        .join(CampaignContact, WorkItem.campaign_contact_id == CampaignContact.id)
+        .join(Campaign, CampaignContact.campaign_id == Campaign.id)
+        .where(WorkItem.state == "review", CampaignContact.campaign_id == campaign_id)
+        .order_by(WorkItem.updated_at.asc())
+    )
+    items = []
+    for work_item, campaign_contact, campaign in rows:
+        last_attempt = db.scalar(
+            select(CallAttempt)
+            .where(CallAttempt.work_item_id == work_item.id)
+            .order_by(CallAttempt.created_at.desc())
+            .limit(1)
+        )
+        reference = campaign_contact.campaign_name_value or f"Contact #{str(work_item.id)[:8]}"
+        items.append(
+            ReviewItem(
+                work_item_id=work_item.id,
+                campaign_id=campaign.id,
+                campaign_name=campaign.name,
+                reference=reference,
+                last_standard_outcome=last_attempt.semantic_outcome if last_attempt else None,
+                attempt_count=work_item.attempt_count,
+                max_attempts=work_item.max_attempts,
+                last_attempt_at=last_attempt.created_at if last_attempt else None,
+            )
+        )
+    return items
+
+
+def _load_review_item(db: Session, work_item_id: uuid.UUID) -> WorkItem:
+    work_item = db.execute(
+        select(WorkItem).where(WorkItem.id == work_item_id).with_for_update()
+    ).scalar_one_or_none()
+    if work_item is None or work_item.state != "review":
+        raise ReviewStateError("work item is not awaiting review")
+    return work_item
+
+
+def reschedule_review_item(
+    db: Session, work_item_id: uuid.UUID, *, actor_id: uuid.UUID, retry_at: datetime, reason: str
+) -> WorkItem:
+    """"Try again later" (plan 8.4): one more shared-pool attempt at a
+    reviewer-chosen future time, without raising the attempt ceiling. Never
+    creates a CallAttempt - only an agent's own completion ever does that."""
+    if not reason or not reason.strip():
+        raise MissingRequiredField("a reason is required to reschedule a review item")
+    if retry_at <= utcnow():
+        raise MissingRequiredField("retry time must be in the future")
+    work_item = _load_review_item(db, work_item_id)
+    work_item.state = "retry_wait"
+    work_item.due_at = retry_at
+    work_item.assigned_agent_id = None
+    work_item.version += 1
+    record_audit(
+        db, action="work.review.retry", result="success", actor_user_id=actor_id,
+        target_type="work_item", target_id=work_item.id, reason_code=reason[:50],
+        event_metadata={"retry_at": retry_at.isoformat()},
+    )
+    return work_item
+
+
+def increase_review_item_attempts(
+    db: Session,
+    work_item_id: uuid.UUID,
+    *,
+    actor_id: uuid.UUID,
+    new_max_attempts: int,
+    reason: str,
+) -> WorkItem:
+    """"Allow more attempts" (plan 8.4): raise the ceiling and make the item
+    immediately eligible in the shared pool again."""
+    if not reason or not reason.strip():
+        raise MissingRequiredField("a reason is required to allow more attempts")
+    work_item = _load_review_item(db, work_item_id)
+    if new_max_attempts <= work_item.attempt_count:
+        raise MissingRequiredField(
+            f"new maximum must be greater than the current attempt count "
+            f"({work_item.attempt_count})"
+        )
+    work_item.max_attempts = new_max_attempts
+    work_item.state = "retry_wait"
+    work_item.due_at = utcnow()
+    work_item.assigned_agent_id = None
+    work_item.version += 1
+    record_audit(
+        db, action="work.review.retry", result="success", actor_user_id=actor_id,
+        target_type="work_item", target_id=work_item.id, reason_code=reason[:50],
+        event_metadata={"new_max_attempts": new_max_attempts},
+    )
+    return work_item
+
+
+def close_review_item(
+    db: Session, work_item_id: uuid.UUID, *, actor_id: uuid.UUID, reason: str
+) -> WorkItem:
+    """"Close after repeated attempts" (plan 8.4): terminate using the last
+    agent-recorded standard outcome. The reviewer is audited as the closer,
+    never substituted as the calling agent (plan 6.6)."""
+    if not reason or not reason.strip():
+        raise MissingRequiredField("a reason is required to close a review item")
+    work_item = _load_review_item(db, work_item_id)
+    last_attempt = db.scalar(
+        select(CallAttempt)
+        .where(CallAttempt.work_item_id == work_item.id)
+        .order_by(CallAttempt.created_at.desc())
+        .limit(1)
+    )
+    if last_attempt is None:
+        raise WorkItemError("cannot close a review item with no recorded attempts")
+    campaign_contact = db.get(CampaignContact, work_item.campaign_contact_id)
+    if campaign_contact is None:
+        raise WorkItemError("work item references a missing campaign contact")
+
+    now = utcnow()
+    work_item.state = "completed"
+    work_item.completed_at = now
+    work_item.version += 1
+    campaign_contact.status = "completed"
+    campaign_contact.completed_at = now
+    campaign_contact.completed_by_agent_id = last_attempt.agent_id
+    campaign_contact.final_disposition_code = last_attempt.semantic_outcome
+
+    record_audit(
+        db, action="work.review.close", result="success", actor_user_id=actor_id,
+        target_type="work_item", target_id=work_item.id, reason_code=reason[:50],
+        event_metadata={"final_disposition_code": last_attempt.semantic_outcome},
+    )
+    return work_item

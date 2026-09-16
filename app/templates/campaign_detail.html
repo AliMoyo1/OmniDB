@@ -30,6 +30,7 @@
   <div><span>Valid timezone</span><strong>{{ campaign.timezone }}</strong></div>
   <div><span>Launch rule</span><strong>Approved contacts required</strong></div>
   {% if stats %}<div><span>Contacts</span><strong>{{ stats.total_contacts }}</strong></div>{% endif %}
+  {% if can_manage_campaign %}<div><span>Awaiting review</span><strong><a href="/campaigns/{{ campaign.id }}/review">{{ review_items|length }}</a></strong></div>{% endif %}
 </section>
 
 <div class="ops-grid">
@@ -64,10 +65,53 @@
   </section>
 
   <section class="ops-panel configuration-panel">
+    {% if is_standard_policy %}
+    <div class="panel-heading"><div><p class="eyebrow">02 · Outcomes</p><h2>Call outcome policy</h2></div><span class="panel-note">Policy version {{ campaign.disposition_policy_version }} · labels and codes are locked</span></div>
+    {% if standard_policy_validation and not standard_policy_validation.valid %}
+    <div class="dnc-warning" role="alert"><strong>This policy cannot launch as configured:</strong><ul>{% for error in standard_policy_validation.errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
+    {% elif standard_policy_validation %}
+    <p class="valid-summary">✓ Valid — all seven standard outcomes are configured correctly.</p>
+    {% endif %}
+    <div class="standard-policy-list">
+      {% for item in standard_policy_rows %}
+      <div class="standard-policy-row">
+        <div><strong>{{ item.entry.label }}</strong><code>{{ item.entry.stable_semantic_code }}</code></div>
+        <span>{{ item.help_text }}</span>
+        {% if item.entry.retry_delay_editable %}
+          {% if can_manage_campaign and campaign.status == "draft" %}
+          <form method="post" action="/campaigns/{{ campaign.id }}/disposition-policy/retries" class="retry-delay-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="stable_semantic_code" value="{{ item.entry.stable_semantic_code }}">
+            <label>Retry delay (minutes)<input type="number" name="retry_delay_minutes" min="{{ min_retry_delay_minutes }}" max="{{ max_retry_delay_minutes }}" value="{{ item.retry_delay_minutes }}" required></label>
+            <button type="submit" class="secondary">Update</button>
+          </form>
+          {% else %}
+          <span class="badge muted">{{ item.retry_delay_minutes }} min</span>
+          {% endif %}
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
     <div class="panel-heading"><div><p class="eyebrow">02 · Outcomes</p><h2>Disposition set</h2></div><span class="panel-note">Stable codes protect reports and DNC rules.</span></div>
     {% if dispositions %}<div class="disposition-list">{% for disposition in dispositions %}<div><strong>{{ disposition.label }}</strong><code>{{ disposition.stable_semantic_code }}</code><span>{% if disposition.causes_dnc %}Global DNC{% elif disposition.requires_callback_time %}Callback required{% elif disposition.requires_notes %}Notes required{% else %}{{ disposition.next_action or 'complete' }}{% endif %}</span></div>{% endfor %}</div>{% else %}<p class="empty">No outcomes have been configured.</p>{% endif %}
+    {% if can_install_standard_policy %}
+    <div class="review-drawer">
+      <h3>Use the standard call outcomes instead?</h3>
+      <p class="invalid-summary">Installs the locked seven-outcome set (Connected, No Answer, Call Back Later, Hung Up, Number Disconnected, Do Not Call, Unavailable) in place of adding outcomes one at a time.</p>
+      <form method="post" action="/campaigns/{{ campaign.id }}/disposition-policy/install">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="mapping-grid">
+          <label>No Answer retry (minutes) <span>default 60</span><input type="number" name="no_answer_retry_minutes" min="{{ min_retry_delay_minutes }}" max="{{ max_retry_delay_minutes }}" placeholder="60"></label>
+          <label>Unavailable retry (minutes) <span>default 30</span><input type="number" name="unavailable_retry_minutes" min="{{ min_retry_delay_minutes }}" max="{{ max_retry_delay_minutes }}" placeholder="30"></label>
+        </div>
+        <button type="submit">Install standard call outcomes</button>
+      </form>
+    </div>
+    {% endif %}
     {% if can_manage_campaign %}
     <form method="post" action="/campaigns/{{ campaign.id }}/dispositions" class="disposition-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><div class="mapping-grid"><label>Label<input name="label" maxlength="100" required></label><label>Stable code<input name="stable_semantic_code" maxlength="50" required></label></div><label>After outcome<select name="next_action"><option value="complete">Complete contact</option><option value="requeue">Return to queue</option><option value="review">Send to review</option></select></label><div class="checks"><label><input type="checkbox" name="requires_notes"> Require notes</label><label><input type="checkbox" name="requires_callback_time"> Require callback time</label><label><input type="checkbox" name="counts_as_connected"> Counts as connected</label><label><input type="checkbox" name="counts_as_conversion"> Counts as conversion</label><label><input type="checkbox" name="causes_dnc" value="true"> Explicit DNC <small>requires code `explicit_dnc`</small></label></div><button type="submit" class="secondary">Add disposition</button></form>
+    {% endif %}
     {% endif %}
   </section>
 

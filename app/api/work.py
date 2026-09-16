@@ -16,7 +16,9 @@ from app.auth.dependencies import require_csrf
 from app.authz.capabilities import WORK_QUEUE
 from app.authz.dependencies import require_capability
 from app.db import get_session
+from app.flags import service as flags
 from app.flags.service import FeatureDisabledError
+from app.gamification.tasks import refresh_agent_achievements_task
 from app.models.identity import User
 from app.reporting import agent_stats
 from app.work import service as work_service
@@ -54,6 +56,7 @@ def _lease_out(result: work_service.LeaseResult) -> LeaseOut:
         contact_name=result.contact_name,
         approved_metadata=result.approved_metadata,
         is_callback=result.is_callback,
+        lease_reason=result.lease_reason,
     )
 
 
@@ -110,9 +113,17 @@ def complete_work_item(
     except FeatureDisabledError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()
+    # Enqueued only after commit (plan 7.5) - a failure here is a
+    # gamification delay, never a reason to roll back the disposition itself.
+    if flags.is_enabled(db, "agent_gamification_enabled"):
+        refresh_agent_achievements_task.delay(str(user.id))
     return CompleteOut(
         attempt_id=str(result.attempt_id), work_item_state=result.work_item_state,
         semantic_outcome=result.semantic_outcome, callback_at=result.callback_at,
+        retry_at=result.retry_at,
+        redial_lease_id=str(result.redial_lease_id) if result.redial_lease_id else None,
+        redial_lease_expires_at=result.redial_lease_expires_at,
+        next_step=result.next_step,
     )
 
 

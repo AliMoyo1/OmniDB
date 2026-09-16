@@ -14,6 +14,7 @@ from app.models.campaign import (
 )
 from app.models.contact import CampaignContact, Contact, SuppressionEntry
 from app.models.flags import FeatureFlag
+from app.models.gamification import AgentAchievement, AgentGamificationPreference
 from app.models.identity import Organization, Team, TeamMembership, User
 from app.models.imports import ImportDecision, ImportJob, ImportRow
 from app.models.notifications import Notification
@@ -55,4 +56,6 @@ __all__ = [
     "WorkforceImportRow",
     "WorkforceImportDecision",
     "Notification",
+    "AgentGamificationPreference",
+    "AgentAchievement",
 ]

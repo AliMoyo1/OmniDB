@@ -876,12 +876,16 @@ kbd { padding: 2px 6px; border: 1px solid var(--border2); border-bottom-width: 2
 .contact-stage h2 { margin: 7px 0 4px; font-size: 28px; }
 .phone-number { display: inline-block; color: var(--accent-mid); font: 700 clamp(25px, 5vw, 40px)/1.2 var(--mono); letter-spacing: .03em; text-decoration: none; }
 .phone-number:hover { text-decoration: underline; }
+.redial-note { margin: 0 0 6px; color: var(--amber); font-weight: 600; font-size: 13px; }
+.phone-number.redial-ready { color: var(--amber); }
+.redial-label { display: block; font: 700 13px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.outcome-help { margin: -8px 0 0; padding: 8px 10px; border-radius: var(--radius); background: var(--surface2); color: var(--text-mid); font-size: 12px; }
 .contact-metadata { margin: 24px auto 0; max-width: 680px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; text-align: left; }
 .contact-metadata div { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface2); }
 .contact-metadata dt { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .contact-metadata dd { margin: 3px 0 0; font-weight: 600; overflow-wrap: anywhere; }
 .disposition-panel { padding: 24px 30px; border-top: 1px solid var(--border); display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; }
-.disposition-panel > label, .disposition-panel > select, .disposition-panel > .dnc-warning, .work-actions { grid-column: 1 / -1; }
+.disposition-panel > label, .disposition-panel > select, .disposition-panel > .dnc-warning, .disposition-panel > .outcome-help, .work-actions { grid-column: 1 / -1; }
 .disposition-panel label, #skip-form label { display: block; margin-bottom: 6px; color: var(--text-mid); font-weight: 700; font-size: 12px; }
 .disposition-panel label span { color: var(--muted); font-weight: 400; }
 .disposition-panel select, .disposition-panel textarea, .disposition-panel input { width: 100%; }
@@ -1071,9 +1075,36 @@ textarea:focus { outline: none; border-color: var(--accent-mid); box-shadow: 0 0
 .checks label { display: block; color: var(--text-mid); font-weight: 500; }.checks input { margin-right: 5px; }.checks small { color: var(--muted); }
 .assignment-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }.assignment-list strong, .assignment-list span { display: block; }.assignment-list strong { font-size: 12px; }.assignment-list > div > div > span { color: var(--muted); font-size: 10px; }
 .permission-note { color: var(--muted); font-size: 12px; padding: 16px 0; }
+.readiness-strip a { color: var(--accent-mid); text-decoration: none; }
+.readiness-strip a:hover { text-decoration: underline; }
+
+/* Standard disposition policy panel (phase 4D) */
+.standard-policy-list { display: flex; flex-direction: column; gap: 4px; padding: 14px 0; }
+.standard-policy-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.standard-policy-row:last-child { border-bottom: 0; }
+.standard-policy-row > div:first-child { display: flex; align-items: baseline; gap: 8px; }
+.standard-policy-row strong { font-size: 12px; }
+.standard-policy-row code { color: var(--accent-mid); font-size: 10px; }
+.standard-policy-row > span:not(.badge) { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+.retry-delay-form { display: flex; align-items: end; gap: 8px; }
+.retry-delay-form label { margin: 0; color: var(--text-mid); font-size: 11px; font-weight: 700; }
+.retry-delay-form input { width: 80px; }
+.dnc-warning ul { margin: 6px 0 0; padding-left: 18px; }
+
+/* Attempt-limit review screen (phase 4D) */
+.review-item-list { display: flex; flex-direction: column; gap: 14px; padding-top: 6px; }
+.review-item { padding: 16px; border: 1px solid var(--border2); border-radius: var(--radius); background: var(--surface2); }
+.review-item-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.review-item-meta { margin: 6px 0 14px; color: var(--muted); font-size: 12px; }
+.review-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.review-action-form { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.review-action-title { margin: 0; font-size: 11px; font-weight: 700; color: var(--text-mid); text-transform: uppercase; letter-spacing: .04em; }
+.review-action-form label { display: flex; flex-direction: column; gap: 4px; margin: 0; color: var(--text-mid); font-size: 11px; font-weight: 600; }
+.review-action-form label span { color: var(--muted); font-weight: 400; }
 
 @media (max-width: 900px) {
   .ops-form-card, .ops-grid { grid-template-columns: 1fr; }.import-panel { grid-row: auto; }.campaign-detail-head, .ops-heading { align-items: flex-start; flex-direction: column; }.lifecycle-stack { justify-content: flex-start; }.panel-note { text-align: left; max-width: none; }.decision-form { grid-template-columns: 1fr; }
+  .review-actions { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
   .campaign-create-form, .mapping-grid, .checks { grid-template-columns: 1fr; }.create-submit { align-items: stretch; flex-direction: column; }.readiness-strip { gap: 10px; }.ops-panel, .ops-form-card { padding: 18px; }
@@ -1263,4 +1294,27 @@ textarea:focus { outline: none; border-color: var(--accent-mid); box-shadow: 0 0
   .security-card { padding: 20px; }
   .security-enabled-card { flex-direction: column; }
   .mfa-secret { font-size: 15px; letter-spacing: .05em; }
+}
+
+/* Agent gamification (phase 4D) - private progress, badges, shared milestones */
+.gamification-panel { display: flex; flex-direction: column; gap: 14px; }
+.celebration-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: var(--radius); background: var(--green-bg); color: var(--green-status); font-weight: 600; font-size: 13px; }
+.celebration-banner button { background: transparent; border: 1px solid currentColor; color: inherit; padding: 4px 10px; font-size: 11px; box-shadow: none; }
+.progress-numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.progress-numbers div { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface2); }
+.progress-numbers span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.progress-numbers strong { font: 800 20px var(--mono); }
+.goal-bar, .campaign-progress-bar { position: relative; height: 10px; border-radius: 999px; background: var(--surface3); overflow: hidden; }
+.goal-bar-fill, .campaign-progress-fill { height: 100%; border-radius: 999px; background: var(--accent-mid); transition: width .3s ease; }
+.campaign-progress-bar .progress-marker { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(0, 0, 0, .15); }
+.goal-caption { margin: 0; color: var(--muted); font-size: 11px; }
+.badge-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.toggle-row { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text-mid); }
+.toggle-row input { margin: 0; }
+.preferences-form { display: flex; flex-direction: column; gap: 16px; max-width: 480px; }
+.preferences-form label:not(.toggle-row) { display: flex; flex-direction: column; gap: 6px; color: var(--text-mid); font-size: 12px; font-weight: 700; }
+.preferences-form label span { color: var(--muted); font-weight: 400; }
+
+@media (prefers-reduced-motion: reduce) {
+  .goal-bar-fill, .campaign-progress-fill { transition: none; }
 }

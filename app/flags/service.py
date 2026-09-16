@@ -34,6 +34,8 @@ KNOWN_FLAGS = (
     "ai_enabled",
     "workforce_import_enabled",
     "deferred_bulk_activation_enabled",
+    "standard_dispositions_enabled",
+    "agent_gamification_enabled",
 )
 
 MAX_REASON_CODE_LENGTH = 50

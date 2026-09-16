@@ -5,7 +5,16 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
@@ -42,6 +51,10 @@ class Campaign(UUIDMixin, TimestampMixin, Base):
     retention_delete_after: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Set to 1 once install_standard_dispositions() installs the version-1
+    # manifest (phase 4D plan 6.1). Null means this campaign still uses
+    # free-form legacy dispositions.
+    disposition_policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class CampaignTeamAssignment(UUIDMixin, TimestampMixin, Base):
@@ -83,6 +96,15 @@ class CampaignDispositionDefinition(UUIDMixin, TimestampMixin, Base):
         UniqueConstraint(
             "campaign_id", "stable_semantic_code", name="uq_disposition_campaign_code"
         ),
+        CheckConstraint(
+            "retry_delay_minutes IS NULL OR "
+            "(retry_delay_minutes >= 5 AND retry_delay_minutes <= 10080)",
+            name="ck_campaign_disposition_definitions_retry_delay_range",
+        ),
+        CheckConstraint(
+            "NOT (immediate_redial AND (requires_callback_time OR causes_dnc))",
+            name="ck_campaign_disposition_definitions_immediate_redial_exclusive",
+        ),
     )
 
     campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
@@ -97,3 +119,9 @@ class CampaignDispositionDefinition(UUIDMixin, TimestampMixin, Base):
     causes_dnc: Mapped[bool] = mapped_column(Boolean, default=False)
     display_order: Mapped[int] = mapped_column(Integer, default=0)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Standard-dispositions manifest fields (phase 4D plan 6.1) - unused by
+    # legacy free-form dispositions, which leave these at their defaults.
+    is_standard: Mapped[bool] = mapped_column(Boolean, default=False)
+    retry_delay_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    immediate_redial: Mapped[bool] = mapped_column(Boolean, default=False)
+    policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)

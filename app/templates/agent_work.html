@@ -21,6 +21,49 @@
   <div class="stat-card"><div class="stat-label">DNC requests</div><div class="stat-value">{{ stats.dnc_requests }}</div></div>
 </div>
 
+{% if gamification_active %}
+<section class="card gamification-panel" aria-label="Your private progress">
+  {% if recent_achievement and gamification_preference.celebrations_enabled %}
+  <div class="celebration-banner" role="status">
+    <span>New badge: {{ achievement_catalogue[recent_achievement.achievement_code].display_name if recent_achievement.achievement_code in achievement_catalogue else recent_achievement.achievement_code }}</span>
+    <button type="button" class="dismiss-celebration" aria-label="Dismiss this message">Dismiss</button>
+  </div>
+  {% endif %}
+
+  <div class="section-title-row"><div><p class="eyebrow">Private · only you can see this</p><h2>Today</h2></div><a class="back-link" href="/agent/work/preferences">Preferences</a></div>
+  <div class="progress-numbers">
+    <div><span>Unique contacts handled</span><strong>{{ daily_progress.unique_contacts_handled_today }}</strong></div>
+    <div><span>Attempts recorded</span><strong>{{ daily_progress.attempts_recorded_today }}</strong></div>
+  </div>
+  {% if daily_progress.daily_goal %}
+  <div class="goal-bar" role="progressbar" aria-valuenow="{{ daily_progress.unique_contacts_handled_today }}" aria-valuemin="0" aria-valuemax="{{ daily_progress.daily_goal }}" aria-label="{{ daily_progress.unique_contacts_handled_today }} of your daily goal of {{ daily_progress.daily_goal }} contacts">
+    <div class="goal-bar-fill" style="width: {{ daily_goal_percent }}%"></div>
+  </div>
+  <p class="goal-caption">{{ daily_progress.unique_contacts_handled_today }} of {{ daily_progress.daily_goal }} today</p>
+  {% endif %}
+
+  <p class="field-label">Badges earned</p>
+  {% if achievements %}
+  <div class="badge-list">
+    {% for achievement in achievements %}
+    <span class="badge muted">{{ achievement_catalogue[achievement.achievement_code].display_name if achievement.achievement_code in achievement_catalogue else achievement.achievement_code }}</span>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No badges yet - they will appear here automatically as you work.</p>
+  {% endif %}
+
+  {% if campaign_progress %}
+  <div class="section-title-row"><div><p class="eyebrow">Shared · everyone on this campaign sees the same total</p><h2>{{ campaign_progress.campaign_name }} progress</h2></div><span class="badge muted">{{ campaign_progress.progress_percent }}%</span></div>
+  <div class="campaign-progress-bar" role="progressbar" aria-valuenow="{{ campaign_progress.progress_percent }}" aria-valuemin="0" aria-valuemax="100" aria-label="{{ campaign_progress.campaign_name }} is {{ campaign_progress.progress_percent }} percent resolved">
+    <div class="campaign-progress-fill" style="width: {{ campaign_progress.progress_percent }}%"></div>
+    <span class="progress-marker" style="left:25%"></span><span class="progress-marker" style="left:50%"></span><span class="progress-marker" style="left:75%"></span>
+  </div>
+  <p class="goal-caption">{{ campaign_progress.resolved_contacts }} of {{ campaign_progress.total_contacts }} resolved</p>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if lease %}
 <section class="work-card" data-lease-expires="{{ lease.lease_expires_at.isoformat() }}">
   <div class="contact-rail">
@@ -30,14 +73,17 @@
     </div>
     <div class="lease-clock" role="status" aria-live="polite">
       <span class="pulse-dot"></span>
-      Secure hold <strong id="lease-countdown">--:--</strong>
+      {{ "Redial hold" if lease.lease_reason == "immediate_redial" else "Secure hold" }} <strong id="lease-countdown">--:--</strong>
     </div>
   </div>
 
   <div class="contact-stage">
     <p class="contact-kicker">Current contact</p>
     <h2>{{ lease.contact_name or "Unnamed contact" }}</h2>
-    <a class="phone-number" href="tel:{{ lease.phone_e164 }}">{{ lease.phone_e164 }}</a>
+    {% if lease.lease_reason == "immediate_redial" %}
+    <p class="redial-note" role="status">Outcome saved. This number is held for you - press Redial now when ready.</p>
+    {% endif %}
+    <a class="phone-number{% if lease.lease_reason == "immediate_redial" %} redial-ready{% endif %}" href="tel:{{ lease.phone_e164 }}">{% if lease.lease_reason == "immediate_redial" %}<span class="redial-label">Redial now</span> {% endif %}{{ lease.phone_e164 }}</a>
     {% if lease.approved_metadata %}
     <dl class="contact-metadata">
       {% for key, value in lease.approved_metadata.items() %}
@@ -53,15 +99,16 @@
     <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
     <input id="duration-seconds" type="hidden" name="duration_seconds" value="0">
 
-    <label for="disposition-id">Call outcome</label>
+    <label for="disposition-id">Call outcome {% if is_standard_policy %}<span>standard set, in order</span>{% endif %}</label>
     <select id="disposition-id" name="disposition_id" required>
       <option value="">Select an outcome</option>
       {% for disposition in dispositions %}
-      <option value="{{ disposition.id }}" data-notes="{{ 'true' if disposition.requires_notes else 'false' }}" data-callback="{{ 'true' if disposition.requires_callback_time else 'false' }}" data-dnc="{{ 'true' if disposition.causes_dnc else 'false' }}">{{ disposition.label }}</option>
+      <option value="{{ disposition.id }}" data-notes="{{ 'true' if disposition.requires_notes else 'false' }}" data-callback="{{ 'true' if disposition.requires_callback_time else 'false' }}" data-dnc="{{ 'true' if disposition.causes_dnc else 'false' }}" data-help="{{ disposition_help.get(disposition.id, '') }}">{{ disposition.label }}</option>
       {% endfor %}
     </select>
+    <p id="outcome-help" class="outcome-help" role="status" aria-live="polite" hidden></p>
 
-    <div id="dnc-warning" class="dnc-warning" hidden>
+    <div id="dnc-warning" class="dnc-warning" role="alert" hidden>
       This records an explicit do-not-call request and suppresses this number across active campaigns.
     </div>
 

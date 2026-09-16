@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Review · {{ campaign.name }} | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-detail-head">
+  <div><a class="back-link" href="/campaigns/{{ campaign.id }}">← {{ campaign.name }}</a><p class="eyebrow">Attempt-limit review</p><h1>Numbers awaiting a decision</h1><p>These numbers reached their attempt ceiling. No phone number is ever shown here — calling one still requires the normal lease path.</p></div>
+</div>
+
+<section class="card">
+  <div class="section-title-row"><div><p class="eyebrow">Review queue</p><h2>{{ campaign.name }}</h2></div><span class="badge {% if not review_items %}muted{% endif %}">{{ review_items|length }} awaiting review</span></div>
+
+  {% if review_items %}
+  <div class="review-item-list">
+    {% for item in review_items %}
+    <div class="review-item">
+      <div class="review-item-head">
+        <strong>{{ item.reference }}</strong>
+        <span class="badge muted">{{ item.attempt_count }} / {{ item.max_attempts }} attempts</span>
+      </div>
+      <p class="review-item-meta">Last outcome: <strong>{{ item.last_standard_outcome or "unknown" }}</strong> · Last attempt: {{ item.last_attempt_at.strftime("%d %b %Y, %H:%M") if item.last_attempt_at else "never" }}</p>
+
+      <div class="review-actions">
+        <form method="post" action="/campaigns/{{ campaign.id }}/review/{{ item.work_item_id }}/retry" class="review-action-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <p class="review-action-title">Try again later</p>
+          <label>Date and time <span>({{ campaign.timezone }})</span><input type="datetime-local" name="retry_at" required></label>
+          <label>Reason <input name="reason" maxlength="200" required placeholder="Why this number deserves one more try"></label>
+          <button type="submit" class="secondary">Schedule retry</button>
+        </form>
+
+        <form method="post" action="/campaigns/{{ campaign.id }}/review/{{ item.work_item_id }}/allow-more" class="review-action-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <p class="review-action-title">Allow more attempts</p>
+          <label>New maximum <span>currently {{ item.max_attempts }}</span><input type="number" name="new_max_attempts" min="{{ item.attempt_count + 1 }}" value="{{ item.attempt_count + 1 }}" required></label>
+          <label>Reason <input name="reason" maxlength="200" required placeholder="Why raise the ceiling"></label>
+          <button type="submit" class="secondary">Allow more attempts</button>
+        </form>
+
+        <form method="post" action="/campaigns/{{ campaign.id }}/review/{{ item.work_item_id }}/close" class="review-action-form" onsubmit="return confirm('Close this contact using its last recorded outcome ({{ item.last_standard_outcome or "unknown" }})? This cannot be undone.');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <p class="review-action-title">Close after repeated attempts</p>
+          <label>Reason <input name="reason" maxlength="200" required placeholder="Why close instead of retry"></label>
+          <button type="submit" class="quiet-danger">Close contact</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No numbers are currently awaiting review.</p>
+  {% endif %}
+</section>
+{% endblock %}

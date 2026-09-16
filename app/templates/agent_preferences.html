@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Game Preferences | CipherContact{% endblock %}
+{% block content %}
+<div class="workbench-heading">
+  <div>
+    <a class="back-link" href="/agent/work">← Workbench</a>
+    <p class="eyebrow">Agent workspace</p>
+    <h1>Game preferences</h1>
+    <p class="workbench-subtitle">Entirely optional and private to you. Nothing here changes your calling permissions, campaign assignments, or outcomes.</p>
+  </div>
+</div>
+
+{% if not gamification_flag_enabled %}
+<section class="ops-empty">
+  <div class="empty-mark">i</div>
+  <h2>Not available yet</h2>
+  <p>This feature has not been enabled for your installation.</p>
+</section>
+{% else %}
+<section class="card">
+  <h2>Your preferences</h2>
+  <form method="post" action="/agent/work/preferences" class="preferences-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="toggle-row"><input type="checkbox" name="enabled" value="true" {% if gamification_preference and gamification_preference.enabled %}checked{% endif %}> Show my private progress and badges on the workbench</label>
+    <label class="toggle-row"><input type="checkbox" name="celebrations_enabled" value="true" {% if not gamification_preference or gamification_preference.celebrations_enabled %}checked{% endif %}> Show a brief celebration when I earn a badge</label>
+    <label>Daily goal <span>optional, {{ min_daily_goal }}-{{ max_daily_goal }} contacts, visible only to you</span>
+      <input type="number" name="daily_goal" min="{{ min_daily_goal }}" max="{{ max_daily_goal }}" value="{{ gamification_preference.daily_goal if gamification_preference and gamification_preference.daily_goal else '' }}" placeholder="No goal set">
+    </label>
+    <p class="permission-note">Your device's reduced-motion setting is always respected automatically, regardless of the celebration setting above.</p>
+    <button type="submit">Save preferences</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

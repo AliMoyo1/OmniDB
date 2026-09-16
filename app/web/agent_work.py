@@ -8,7 +8,8 @@ JSON API so authorization, DNC handling, idempotency, and lease rules cannot dri
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from datetime import tzinfo as TZInfo
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,8 +20,13 @@ from sqlalchemy.orm import Session
 
 from app.authz import service as authz
 from app.authz.capabilities import WORK_QUEUE
+from app.campaigns.standard_dispositions import DISPOSITION_HELP_TEXT, POLICY_VERSION
 from app.db import get_session
+from app.flags import service as flags
 from app.flags.service import FeatureDisabledError
+from app.gamification import service as gamification_service
+from app.gamification.service import GamificationPolicyError
+from app.gamification.tasks import refresh_agent_achievements_task
 from app.models.campaign import Campaign, CampaignDispositionDefinition
 from app.models.identity import User
 from app.reporting import agent_stats
@@ -28,6 +34,7 @@ from app.web.dependencies import require_page_user, verify_form_csrf
 from app.web.templates import page_context, templates
 from app.work import service as work_service
 from app.work.service import (
+    CompletionResult,
     DispositionMismatch,
     IdempotencyConflict,
     LeaseConflict,
@@ -38,11 +45,13 @@ from app.work.service import (
 router = APIRouter(prefix="/agent/work", tags=["web-agent-work"])
 
 
-def _redirect(*, success: str | None = None, error: str | None = None) -> RedirectResponse:
+def _redirect(
+    *, success: str | None = None, error: str | None = None, path: str = "/agent/work"
+) -> RedirectResponse:
     params = {
         key: value for key, value in (("flash_success", success), ("flash_error", error)) if value
     }
-    url = "/agent/work" + ("?" + urlencode(params) if params else "")
+    url = path + ("?" + urlencode(params) if params else "")
     return RedirectResponse(url, status_code=303)
 
 
@@ -61,6 +70,42 @@ def _parse_callback(value: str, timezone_name: str) -> datetime | None:
     if local_value.tzinfo is None:
         local_value = local_value.replace(tzinfo=timezone)
     return local_value.astimezone(UTC)
+
+
+def _disposition_help_text(disposition: CampaignDispositionDefinition) -> str:
+    template = DISPOSITION_HELP_TEXT.get(disposition.stable_semantic_code)
+    if template is None:
+        return ""
+    if "{minutes}" in template and disposition.retry_delay_minutes is not None:
+        return template.format(minutes=disposition.retry_delay_minutes)
+    return template
+
+
+def _completion_message(result: CompletionResult, timezone_name: str) -> str:
+    zone: TZInfo
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        zone = UTC
+    if result.next_step == "suppressed":
+        return "Do-not-call recorded. This number will not be called again."
+    if result.next_step == "callback_scheduled":
+        if result.callback_at is not None:
+            local = result.callback_at.astimezone(zone)
+            return f"Callback scheduled for {local.strftime('%d %b %Y, %H:%M')}."
+        return "Callback scheduled."
+    if result.next_step == "retry_scheduled":
+        if result.retry_at is not None:
+            local = result.retry_at.astimezone(zone)
+            return f"This number will return to the pool at {local.strftime('%d %b %Y, %H:%M')}."
+        return "Returned to the shared queue."
+    if result.next_step == "redial_ready":
+        return "Outcome saved. This contact is ready for immediate redial - press Redial now."
+    if result.next_step == "review":
+        return "Attempt limit reached. This number has gone to manager review."
+    if result.next_step == "complete":
+        return "Number completed."
+    return "Disposition saved."
 
 
 @router.get("")
@@ -96,6 +141,40 @@ def workbench(
             )
         )
 
+    gamification_flag_enabled = flags.is_enabled(db, "agent_gamification_enabled")
+    gamification_preference = (
+        gamification_service.get_preference(db, user.id) if gamification_flag_enabled else None
+    )
+    gamification_active = (
+        gamification_flag_enabled
+        and gamification_preference is not None
+        and gamification_preference.enabled
+    )
+    daily_progress = None
+    daily_goal_percent = None
+    campaign_progress = None
+    achievements: list = []
+    recent_achievement = None
+    if gamification_active:
+        daily_progress = gamification_service.get_daily_progress(db, user.id)
+        if daily_progress.daily_goal:
+            daily_goal_percent = min(
+                100,
+                int(daily_progress.unique_contacts_handled_today / daily_progress.daily_goal * 100),
+            )
+        active_campaign = campaign or gamification_service.get_agent_primary_campaign(
+            db, user.id
+        )
+        if active_campaign is not None:
+            campaign_progress = gamification_service.get_campaign_progress(
+                db, active_campaign.id
+            )
+        achievements = gamification_service.list_achievements(db, user.id)
+        if achievements and achievements[0].awarded_at >= datetime.now(UTC) - timedelta(
+            minutes=2
+        ):
+            recent_achievement = achievements[0]
+
     context = page_context(
         request,
         db,
@@ -104,8 +183,21 @@ def workbench(
         lease=lease,
         campaign=campaign,
         dispositions=dispositions,
+        is_standard_policy=(
+            campaign is not None and campaign.disposition_policy_version == POLICY_VERSION
+        ),
+        disposition_help={d.id: _disposition_help_text(d) for d in dispositions},
         callbacks=work_service.list_agent_callbacks(db, user.id),
         stats=agent_stats.get_today_stats(db, user.id),
+        gamification_flag_enabled=gamification_flag_enabled,
+        gamification_preference=gamification_preference,
+        gamification_active=gamification_active,
+        daily_progress=daily_progress,
+        daily_goal_percent=daily_goal_percent,
+        campaign_progress=campaign_progress,
+        achievements=achievements,
+        recent_achievement=recent_achievement,
+        achievement_catalogue=gamification_service.ACHIEVEMENTS_BY_CODE,
         idempotency_key=str(uuid.uuid4()),
         flash_error=request.query_params.get("flash_error"),
         flash_success=request.query_params.get("flash_success"),
@@ -170,8 +262,9 @@ def complete_contact(
         db.rollback()
         return _redirect(error=str(exc))
     db.commit()
-    message = "Callback scheduled." if result.callback_at else "Disposition saved."
-    return _redirect(success=message)
+    if flags.is_enabled(db, "agent_gamification_enabled"):
+        refresh_agent_achievements_task.delay(str(user.id))
+    return _redirect(success=_completion_message(result, campaign.timezone if campaign else "UTC"))
 
 
 @router.post("/{work_item_id}/skip", dependencies=[Depends(verify_form_csrf)])
@@ -215,3 +308,59 @@ def renew_contact(
         return _redirect(error=str(exc))
     db.commit()
     return _redirect(success="Contact hold extended.")
+
+
+@router.get("/preferences")
+def preferences(
+    request: Request,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+):
+    if not _authorized(db, user):
+        return RedirectResponse("/dashboard?flash_error=Not+authorized+for+agent+work.", 303)
+    context = page_context(
+        request,
+        db,
+        user,
+        active_section="workbench",
+        gamification_flag_enabled=flags.is_enabled(db, "agent_gamification_enabled"),
+        gamification_preference=gamification_service.get_preference(db, user.id),
+        min_daily_goal=gamification_service.MIN_DAILY_GOAL,
+        max_daily_goal=gamification_service.MAX_DAILY_GOAL,
+        flash_error=request.query_params.get("flash_error"),
+        flash_success=request.query_params.get("flash_success"),
+    )
+    return templates.TemplateResponse(request, "agent_preferences.html", context)
+
+
+@router.post("/preferences", dependencies=[Depends(verify_form_csrf)])
+def update_preferences(
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+    enabled: str = Form(""),
+    celebrations_enabled: str = Form(""),
+    daily_goal: str = Form(""),
+):
+    if not _authorized(db, user):
+        return _redirect(error="Not authorized for agent work.", path="/agent/work/preferences")
+    goal_text = daily_goal.strip()
+    try:
+        goal_value = int(goal_text) if goal_text else None
+    except ValueError:
+        return _redirect(
+            error="Daily goal must be a whole number.", path="/agent/work/preferences"
+        )
+    try:
+        gamification_service.set_preference(
+            db,
+            user.id,
+            enabled=enabled == "true",
+            celebrations_enabled=celebrations_enabled == "true",
+            daily_goal=goal_value,
+            clear_daily_goal=goal_value is None,
+        )
+    except GamificationPolicyError as exc:
+        db.rollback()
+        return _redirect(error=str(exc), path="/agent/work/preferences")
+    db.commit()
+    return _redirect(success="Preferences updated.", path="/agent/work/preferences")

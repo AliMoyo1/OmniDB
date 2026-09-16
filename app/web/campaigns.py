@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Generator
-from datetime import date
+from datetime import UTC, date, datetime
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
@@ -41,6 +42,13 @@ from app.campaigns.service import (
     DuplicateCampaignCode,
     InvalidCampaignCode,
 )
+from app.campaigns.standard_dispositions import (
+    DISPOSITION_HELP_TEXT,
+    MAX_RETRY_DELAY_MINUTES,
+    MIN_RETRY_DELAY_MINUTES,
+    POLICY_VERSION,
+    STANDARD_DISPOSITIONS,
+)
 from app.db import get_session
 from app.flags.service import FeatureDisabledError
 from app.imports import service as import_service
@@ -52,11 +60,15 @@ from app.imports.service import (
 )
 from app.imports.tasks import parse_import_job_task
 from app.models.campaign import Campaign, CampaignDispositionDefinition, CampaignUserAssignment
+from app.models.contact import CampaignContact
 from app.models.identity import User
 from app.models.imports import ImportDecision, ImportJob
+from app.models.work import WorkItem
 from app.reporting import campaign_stats
 from app.web.dependencies import require_page_user, verify_form_csrf
 from app.web.templates import page_context, templates
+from app.work import service as work_service
+from app.work.service import MissingRequiredField, ReviewStateError, WorkItemError
 from app.workforce import service as workforce_service
 
 router = APIRouter(prefix="/campaigns", tags=["web-campaigns"])
@@ -99,6 +111,50 @@ def _campaign_redirect(
 
 def _can_access(db: Session, user: User, capability: str, campaign: Campaign) -> bool:
     return authz.has_campaign_capability(db, user.id, capability, campaign.id)
+
+
+def _parse_local_datetime(value: str, timezone_name: str) -> datetime:
+    try:
+        local_value = datetime.fromisoformat(value)
+        timezone = ZoneInfo(timezone_name)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise MissingRequiredField("date and time is invalid") from exc
+    if local_value.tzinfo is None:
+        local_value = local_value.replace(tzinfo=timezone)
+    return local_value.astimezone(UTC)
+
+
+def _review_item_in_campaign(db: Session, work_item_id: uuid.UUID, campaign_id: uuid.UUID) -> bool:
+    return (
+        db.scalar(
+            select(WorkItem.id)
+            .join(CampaignContact, WorkItem.campaign_contact_id == CampaignContact.id)
+            .where(WorkItem.id == work_item_id, CampaignContact.campaign_id == campaign_id)
+        )
+        is not None
+    )
+
+
+def _standard_policy_rows(
+    db: Session, campaign: Campaign, dispositions: list[CampaignDispositionDefinition]
+) -> list[dict]:
+    installed = {row.stable_semantic_code: row for row in dispositions}
+    rows = []
+    for entry in STANDARD_DISPOSITIONS:
+        row = installed.get(entry.stable_semantic_code)
+        minutes = row.retry_delay_minutes if row is not None else entry.default_retry_delay_minutes
+        help_text = DISPOSITION_HELP_TEXT[entry.stable_semantic_code]
+        if minutes is not None:
+            help_text = help_text.format(minutes=minutes)
+        rows.append(
+            {
+                "entry": entry,
+                "row": row,
+                "help_text": help_text,
+                "retry_delay_minutes": minutes,
+            }
+        )
+    return rows
 
 
 def _read_chunks(fileobj) -> Generator[bytes, None, None]:
@@ -253,6 +309,19 @@ def campaign_detail(
             if candidate.active and ROLE_AGENT in authz.effective_roles(db, candidate.id):
                 agents.append(candidate)
 
+    dispositions = list(
+        db.scalars(
+            select(CampaignDispositionDefinition)
+            .where(CampaignDispositionDefinition.campaign_id == campaign.id)
+            .order_by(
+                CampaignDispositionDefinition.display_order,
+                CampaignDispositionDefinition.label,
+            )
+        )
+    )
+    is_standard_policy = campaign.disposition_policy_version == POLICY_VERSION
+    review_items = work_service.list_review_items(db, campaign.id) if can_manage else []
+
     context = page_context(
         request,
         db,
@@ -276,16 +345,22 @@ def campaign_detail(
             import_service.get_preview(db, selected_job) if selected_job and can_manage else []
         ),
         latest_decisions=latest_decisions,
-        dispositions=list(
-            db.scalars(
-                select(CampaignDispositionDefinition)
-                .where(CampaignDispositionDefinition.campaign_id == campaign.id)
-                .order_by(
-                    CampaignDispositionDefinition.display_order,
-                    CampaignDispositionDefinition.label,
-                )
-            )
+        dispositions=dispositions,
+        is_standard_policy=is_standard_policy,
+        standard_policy_rows=(
+            _standard_policy_rows(db, campaign, dispositions) if is_standard_policy else None
         ),
+        standard_policy_validation=(
+            campaign_service.validate_standard_dispositions(db, campaign)
+            if is_standard_policy else None
+        ),
+        can_install_standard_policy=(
+            can_manage and campaign.disposition_policy_version is None
+            and campaign.status == "draft" and not dispositions
+        ),
+        min_retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+        max_retry_delay_minutes=MAX_RETRY_DELAY_MINUTES,
+        review_items=review_items,
         assignments=assignments,
         available_agents=agents,
         retention_days_remaining=campaign_retention.retention_days_remaining(campaign),
@@ -491,6 +566,175 @@ def create_disposition(
         return _campaign_redirect(campaign_id, error=str(exc))
     db.commit()
     return _campaign_redirect(campaign_id, success="Disposition added.")
+
+
+@router.post(
+    "/{campaign_id}/disposition-policy/install", dependencies=[Depends(verify_form_csrf)]
+)
+def install_standard_policy(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+    no_answer_retry_minutes: str = Form(""),
+    unavailable_retry_minutes: str = Form(""),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None or not _can_access(db, user, MANAGE_CAMPAIGN, campaign):
+        return _campaign_redirect(campaign_id, error="Not authorized to configure dispositions.")
+    try:
+        no_answer_minutes = (
+            int(no_answer_retry_minutes) if no_answer_retry_minutes.strip() else None
+        )
+        unavailable_minutes = (
+            int(unavailable_retry_minutes) if unavailable_retry_minutes.strip() else None
+        )
+    except ValueError:
+        return _campaign_redirect(
+            campaign_id, error="Retry delays must be whole numbers of minutes."
+        )
+    try:
+        campaign_service.install_standard_dispositions(
+            db, campaign, actor_id=user.id,
+            no_answer_retry_minutes=no_answer_minutes,
+            unavailable_retry_minutes=unavailable_minutes,
+        )
+    except DispositionPolicyError as exc:
+        db.rollback()
+        return _campaign_redirect(campaign_id, error=str(exc))
+    db.commit()
+    return _campaign_redirect(campaign_id, success="Standard call outcomes installed.")
+
+
+@router.post(
+    "/{campaign_id}/disposition-policy/retries", dependencies=[Depends(verify_form_csrf)]
+)
+def update_retry_policy(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+    stable_semantic_code: str = Form(...),
+    retry_delay_minutes: int = Form(...),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None or not _can_access(db, user, MANAGE_CAMPAIGN, campaign):
+        return _campaign_redirect(campaign_id, error="Not authorized to configure dispositions.")
+    try:
+        campaign_service.update_retry_policy(
+            db, campaign, stable_semantic_code, retry_delay_minutes, actor_id=user.id,
+        )
+    except (DispositionPolicyError, CampaignStateError) as exc:
+        db.rollback()
+        return _campaign_redirect(campaign_id, error=str(exc))
+    db.commit()
+    return _campaign_redirect(campaign_id, success="Retry delay updated.")
+
+
+@router.get("/{campaign_id}/review")
+def review_screen(
+    campaign_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None or not _can_access(db, user, MANAGE_CAMPAIGN, campaign):
+        return _index_redirect(error="Campaign not found or not authorized.")
+    context = page_context(
+        request,
+        db,
+        user,
+        active_section="campaigns",
+        campaign=campaign,
+        review_items=work_service.list_review_items(db, campaign.id),
+        flash_error=request.query_params.get("flash_error"),
+        flash_success=request.query_params.get("flash_success"),
+    )
+    return templates.TemplateResponse(request, "campaign_review.html", context)
+
+
+@router.post(
+    "/{campaign_id}/review/{work_item_id}/retry", dependencies=[Depends(verify_form_csrf)]
+)
+def retry_review_item(
+    campaign_id: uuid.UUID,
+    work_item_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+    retry_at: str = Form(...),
+    reason: str = Form(...),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None or not _can_access(db, user, MANAGE_CAMPAIGN, campaign):
+        return _index_redirect(error="Campaign not found or not authorized.")
+    if not _review_item_in_campaign(db, work_item_id, campaign_id):
+        return _redirect(f"/campaigns/{campaign_id}/review", error="Review item not found.")
+    try:
+        parsed_retry_at = _parse_local_datetime(retry_at, campaign.timezone)
+        work_service.reschedule_review_item(
+            db, work_item_id, actor_id=user.id, retry_at=parsed_retry_at, reason=reason.strip(),
+        )
+    except (MissingRequiredField, ReviewStateError) as exc:
+        db.rollback()
+        return _redirect(f"/campaigns/{campaign_id}/review", error=str(exc))
+    db.commit()
+    return _redirect(f"/campaigns/{campaign_id}/review", success="Retry scheduled.")
+
+
+@router.post(
+    "/{campaign_id}/review/{work_item_id}/allow-more", dependencies=[Depends(verify_form_csrf)]
+)
+def allow_more_review_attempts(
+    campaign_id: uuid.UUID,
+    work_item_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+    new_max_attempts: int = Form(...),
+    reason: str = Form(...),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None or not _can_access(db, user, MANAGE_CAMPAIGN, campaign):
+        return _index_redirect(error="Campaign not found or not authorized.")
+    if not _review_item_in_campaign(db, work_item_id, campaign_id):
+        return _redirect(f"/campaigns/{campaign_id}/review", error="Review item not found.")
+    try:
+        work_service.increase_review_item_attempts(
+            db, work_item_id, actor_id=user.id,
+            new_max_attempts=new_max_attempts, reason=reason.strip(),
+        )
+    except (MissingRequiredField, ReviewStateError) as exc:
+        db.rollback()
+        return _redirect(f"/campaigns/{campaign_id}/review", error=str(exc))
+    db.commit()
+    return _redirect(
+        f"/campaigns/{campaign_id}/review",
+        success="Attempt limit increased; back in the shared pool now.",
+    )
+
+
+@router.post(
+    "/{campaign_id}/review/{work_item_id}/close", dependencies=[Depends(verify_form_csrf)]
+)
+def close_review_item_action(
+    campaign_id: uuid.UUID,
+    work_item_id: uuid.UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_page_user),
+    reason: str = Form(...),
+):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None or not _can_access(db, user, MANAGE_CAMPAIGN, campaign):
+        return _index_redirect(error="Campaign not found or not authorized.")
+    if not _review_item_in_campaign(db, work_item_id, campaign_id):
+        return _redirect(f"/campaigns/{campaign_id}/review", error="Review item not found.")
+    try:
+        work_service.close_review_item(db, work_item_id, actor_id=user.id, reason=reason.strip())
+    except (MissingRequiredField, ReviewStateError, WorkItemError) as exc:
+        db.rollback()
+        return _redirect(f"/campaigns/{campaign_id}/review", error=str(exc))
+    db.commit()
+    return _redirect(
+        f"/campaigns/{campaign_id}/review", success="Contact closed after repeated attempts."
+    )
 
 
 @router.post("/{campaign_id}/assignments", dependencies=[Depends(verify_form_csrf)])

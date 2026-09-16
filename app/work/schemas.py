@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field
 
@@ -18,6 +19,7 @@ class LeaseOut(BaseModel):
     contact_name: str | None
     approved_metadata: dict | None
     is_callback: bool
+    lease_reason: Literal["normal", "scheduled_callback", "delayed_retry", "immediate_redial"]
 
 
 class CompleteRequest(BaseModel):
@@ -34,6 +36,12 @@ class CompleteOut(BaseModel):
     work_item_state: str
     semantic_outcome: str
     callback_at: datetime | None
+    retry_at: datetime | None
+    redial_lease_id: str | None
+    redial_lease_expires_at: datetime | None
+    next_step: Literal[
+        "complete", "retry_scheduled", "callback_scheduled", "redial_ready", "review", "suppressed"
+    ]
 
 
 class SkipRequest(BaseModel):

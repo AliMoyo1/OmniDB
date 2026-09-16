@@ -8,11 +8,19 @@ a custom disposition label cannot silently acquire that behavior.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
+from app.campaigns.standard_dispositions import (
+    MAX_RETRY_DELAY_MINUTES,
+    MIN_RETRY_DELAY_MINUTES,
+    POLICY_VERSION,
+    STANDARD_DISPOSITIONS,
+    STANDARD_DISPOSITIONS_BY_CODE,
+)
 from app.flags import service as flags
 from app.models.base import utcnow
 from app.models.campaign import (
@@ -367,6 +375,12 @@ def launch_campaign(db: Session, campaign: Campaign, *, actor_id: uuid.UUID) -> 
     )
     if not contact_count:
         raise CampaignStateError("cannot launch a campaign with no committed imported contacts")
+    if campaign.disposition_policy_version == POLICY_VERSION:
+        validation = validate_standard_dispositions(db, campaign)
+        if not validation.valid:
+            raise CampaignStateError(
+                "standard disposition policy is invalid: " + "; ".join(validation.errors)
+            )
 
     campaign.status = "active"
     campaign.launched_at = utcnow()
@@ -443,3 +457,196 @@ def create_disposition(
         event_metadata={"stable_semantic_code": stable_semantic_code, "causes_dnc": causes_dnc},
     )
     return disposition
+
+
+@dataclass(frozen=True)
+class StandardPolicyValidation:
+    valid: bool
+    errors: tuple[str, ...]
+
+
+def _validate_retry_delay(minutes: int) -> None:
+    if not (MIN_RETRY_DELAY_MINUTES <= minutes <= MAX_RETRY_DELAY_MINUTES):
+        raise DispositionPolicyError(
+            f"retry delay must be between {MIN_RETRY_DELAY_MINUTES} and "
+            f"{MAX_RETRY_DELAY_MINUTES} minutes"
+        )
+
+
+def install_standard_dispositions(
+    db: Session,
+    campaign: Campaign,
+    *,
+    actor_id: uuid.UUID,
+    no_answer_retry_minutes: int | None = None,
+    unavailable_retry_minutes: int | None = None,
+) -> list[CampaignDispositionDefinition]:
+    """Install the locked version-1 manifest (plan 4.1) on a draft campaign
+    that has no dispositions of its own yet. Legacy free-form dispositions
+    remain untouched on every other campaign - nothing here changes them."""
+    if campaign.status != "draft":
+        raise DispositionPolicyError(
+            "standard dispositions may only be installed on a draft campaign"
+        )
+    if campaign.disposition_policy_version is not None:
+        raise DispositionPolicyError("this campaign already has a disposition policy installed")
+    existing_count = db.scalar(
+        select(func.count(CampaignDispositionDefinition.id)).where(
+            CampaignDispositionDefinition.campaign_id == campaign.id
+        )
+    )
+    if existing_count:
+        raise DispositionPolicyError(
+            "standard dispositions require a campaign with no existing dispositions"
+        )
+
+    retry_overrides = {
+        "no_answer": no_answer_retry_minutes,
+        "unavailable": unavailable_retry_minutes,
+    }
+    for override in retry_overrides.values():
+        if override is not None:
+            _validate_retry_delay(override)
+
+    created: list[CampaignDispositionDefinition] = []
+    for entry in STANDARD_DISPOSITIONS:
+        retry_delay = entry.default_retry_delay_minutes
+        if entry.retry_delay_editable:
+            override = retry_overrides.get(entry.stable_semantic_code)
+            if override is not None:
+                retry_delay = override
+        row = CampaignDispositionDefinition(
+            campaign_id=campaign.id,
+            label=entry.label,
+            stable_semantic_code=entry.stable_semantic_code,
+            next_action=entry.next_action,
+            requires_notes=False,
+            requires_callback_time=entry.requires_callback_time,
+            counts_as_connected=entry.counts_as_connected,
+            counts_as_conversion=False,
+            causes_dnc=entry.causes_dnc,
+            display_order=entry.order,
+            active=True,
+            is_standard=True,
+            retry_delay_minutes=retry_delay,
+            immediate_redial=entry.immediate_redial,
+            policy_version=POLICY_VERSION,
+        )
+        db.add(row)
+        created.append(row)
+
+    campaign.disposition_policy_version = POLICY_VERSION
+    db.flush()
+    installed_by_code = {row.stable_semantic_code: row for row in created}
+    record_audit(
+        db, action="campaign.disposition_policy.install", result="success", actor_user_id=actor_id,
+        target_type="campaign", target_id=campaign.id,
+        event_metadata={
+            "policy_version": POLICY_VERSION,
+            "no_answer_retry_minutes": installed_by_code["no_answer"].retry_delay_minutes,
+            "unavailable_retry_minutes": installed_by_code["unavailable"].retry_delay_minutes,
+        },
+    )
+    return created
+
+
+def validate_standard_dispositions(db: Session, campaign: Campaign) -> StandardPolicyValidation:
+    """Check a campaign's active dispositions against the version-1 manifest.
+    Non-raising by design (plan 6.7 callers - launch preflight, a policy
+    status panel - decide separately what an invalid result should do)."""
+    rows = db.scalars(
+        select(CampaignDispositionDefinition).where(
+            CampaignDispositionDefinition.campaign_id == campaign.id,
+            CampaignDispositionDefinition.active.is_(True),
+        )
+    ).all()
+    by_code = {row.stable_semantic_code: row for row in rows}
+    errors: list[str] = []
+
+    unexpected = set(by_code) - set(STANDARD_DISPOSITIONS_BY_CODE)
+    for code in sorted(unexpected):
+        errors.append(f"unexpected active disposition present: '{code}'")
+
+    for entry in STANDARD_DISPOSITIONS:
+        row = by_code.get(entry.stable_semantic_code)
+        if row is None:
+            errors.append(f"required outcome '{entry.stable_semantic_code}' is missing or inactive")
+            continue
+        if row.label != entry.label:
+            errors.append(f"'{entry.stable_semantic_code}' label must be '{entry.label}'")
+        if row.display_order != entry.order:
+            errors.append(f"'{entry.stable_semantic_code}' display order must be {entry.order}")
+        if not row.is_standard:
+            errors.append(
+                f"'{entry.stable_semantic_code}' must be marked as a standard disposition"
+            )
+        if row.next_action != entry.next_action:
+            errors.append(
+                f"'{entry.stable_semantic_code}' next action must be {entry.next_action!r}"
+            )
+        if row.causes_dnc != entry.causes_dnc:
+            errors.append(f"'{entry.stable_semantic_code}' causes_dnc must be {entry.causes_dnc}")
+        if row.requires_callback_time != entry.requires_callback_time:
+            errors.append(
+                f"'{entry.stable_semantic_code}' requires_callback_time must be "
+                f"{entry.requires_callback_time}"
+            )
+        if row.counts_as_connected != entry.counts_as_connected:
+            errors.append(
+                f"'{entry.stable_semantic_code}' counts_as_connected must be "
+                f"{entry.counts_as_connected}"
+            )
+        if row.immediate_redial != entry.immediate_redial:
+            errors.append(
+                f"'{entry.stable_semantic_code}' immediate_redial must be {entry.immediate_redial}"
+            )
+        if entry.retry_delay_editable:
+            if row.retry_delay_minutes is None or not (
+                MIN_RETRY_DELAY_MINUTES <= row.retry_delay_minutes <= MAX_RETRY_DELAY_MINUTES
+            ):
+                errors.append(
+                    f"'{entry.stable_semantic_code}' retry delay must be between "
+                    f"{MIN_RETRY_DELAY_MINUTES} and {MAX_RETRY_DELAY_MINUTES} minutes"
+                )
+        elif row.retry_delay_minutes is not None:
+            errors.append(f"'{entry.stable_semantic_code}' must not have a retry delay set")
+
+    return StandardPolicyValidation(valid=not errors, errors=tuple(errors))
+
+
+def update_retry_policy(
+    db: Session, campaign: Campaign, stable_semantic_code: str, retry_delay_minutes: int,
+    *, actor_id: uuid.UUID,
+) -> CampaignDispositionDefinition:
+    """Change one of the two manager-adjustable retry delays (plan 4.2) before
+    a standard campaign launches."""
+    entry = STANDARD_DISPOSITIONS_BY_CODE.get(stable_semantic_code)
+    if entry is None or not entry.retry_delay_editable:
+        raise DispositionPolicyError(
+            f"'{stable_semantic_code}' does not have a configurable retry delay"
+        )
+    if campaign.status != "draft":
+        raise CampaignStateError("retry delay may only be changed on a draft campaign")
+    _validate_retry_delay(retry_delay_minutes)
+
+    row = db.scalar(
+        select(CampaignDispositionDefinition).where(
+            CampaignDispositionDefinition.campaign_id == campaign.id,
+            CampaignDispositionDefinition.stable_semantic_code == stable_semantic_code,
+        )
+    )
+    if row is None:
+        raise DispositionPolicyError(
+            f"'{stable_semantic_code}' is not configured for this campaign"
+        )
+
+    row.retry_delay_minutes = retry_delay_minutes
+    record_audit(
+        db, action="campaign.retry_policy.update", result="success", actor_user_id=actor_id,
+        target_type="campaign", target_id=campaign.id,
+        event_metadata={
+            "stable_semantic_code": stable_semantic_code,
+            "retry_delay_minutes": retry_delay_minutes,
+        },
+    )
+    return row

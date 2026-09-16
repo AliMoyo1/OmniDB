@@ -9,6 +9,7 @@
   const notes = document.getElementById("notes");
   const notesHint = document.getElementById("notes-hint");
   const dncWarning = document.getElementById("dnc-warning");
+  const outcomeHelp = document.getElementById("outcome-help");
 
   function syncDisposition() {
     if (!disposition) return;
@@ -21,6 +22,11 @@
     callbackField.hidden = !needsCallback;
     callbackInput.required = needsCallback;
     dncWarning.hidden = !causesDnc;
+    if (outcomeHelp) {
+      const help = option?.dataset.help || "";
+      outcomeHelp.textContent = help;
+      outcomeHelp.hidden = !help;
+    }
   }
   disposition?.addEventListener("change", syncDisposition);
   syncDisposition();
@@ -53,5 +59,12 @@
     if (key === "s") disposition?.focus();
     if (event.key === "Enter") completeForm?.requestSubmit();
     if (key === "k") document.getElementById("skip-reason")?.focus();
+  });
+
+  // Celebration banner: brief, dismissible, never blocking (plan 8.6). No
+  // animation is added here beyond what CSS already gates behind
+  // prefers-reduced-motion, so there is nothing extra to suppress in JS.
+  document.querySelector(".dismiss-celebration")?.addEventListener("click", (event) => {
+    event.target.closest(".celebration-banner")?.setAttribute("hidden", "");
   });
 })();

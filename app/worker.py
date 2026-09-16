@@ -58,8 +58,15 @@ celery_app.conf.beat_schedule = {
         "task": "app.campaigns.tasks.purge_expired_campaign_data_task",
         "schedule": 3600.0,
     },
+    # Recovers any missed achievement award from a dropped enqueue or a
+    # worker outage; refresh itself is idempotent, so re-running often is
+    # safe, not just tolerated.
+    "reconcile-agent-achievements": {
+        "task": "app.gamification.tasks.reconcile_agent_achievements_task",
+        "schedule": 900.0,
+    },
 }
 
 celery_app.autodiscover_tasks(
-    ["app.imports", "app.work", "app.workforce_imports", "app.campaigns"]
+    ["app.imports", "app.work", "app.workforce_imports", "app.campaigns", "app.gamification"]
 )
