@@ -3,6 +3,7 @@
 {% block content %}
 <section class="card">
   <h2>Import committed</h2>
+  {% if commit_result.activation_tokens %}
   <p>{{ job.source_filename_display }} created {{ commit_result.activation_tokens|length }} new user{{ '' if commit_result.activation_tokens|length == 1 else 's' }} with no password yet.</p>
   <p>Hand each one-time activation token to its user through an approved offline channel (D-23). They will not be shown again:</p>
   <div class="table-wrap">
@@ -15,6 +16,11 @@
       </tbody>
     </table>
   </div>
+  {% else %}
+  <p>{{ job.source_filename_display }} created {{ created_count }} new user{{ '' if created_count == 1 else 's' }} with no password and no activation code issued yet.</p>
+  <p>No bulk codes were issued (deferred activation). Issue each person's one-time code individually, when they're ready to onboard, from the user directory:</p>
+  <p><a href="/admin/users?activation_state=activation_not_issued">View users awaiting activation &rarr;</a></p>
+  {% endif %}
   <p><a href="/workforce/imports/{{ job.id }}">Back to this import</a></p>
 </section>
 {% endblock %}

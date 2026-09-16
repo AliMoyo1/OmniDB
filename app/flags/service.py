@@ -33,6 +33,7 @@ KNOWN_FLAGS = (
     "analytics_enabled",
     "ai_enabled",
     "workforce_import_enabled",
+    "deferred_bulk_activation_enabled",
 )
 
 MAX_REASON_CODE_LENGTH = 50

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
-from app.auth import csrf, ratelimit, service
+from app.auth import csrf, password_policy, ratelimit, service
 from app.auth import sessions as sess
 from app.auth import totp as totp_mod
 from app.auth.dependencies import (
@@ -35,8 +35,6 @@ from app.models.identity import User
 from app.models.session import Session as SessionModel
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
-
-_MIN_PASSWORD_LENGTH = 12
 
 
 def _client_ip(request: Request) -> str | None:
@@ -311,17 +309,33 @@ def totp_verify(
 @router.post("/activate")
 def activate(
     payload: ActivateRequest,
+    request: Request,
     db: Session = Depends(get_session),
 ) -> dict[str, str]:
-    if len(payload.new_password) < _MIN_PASSWORD_LENGTH:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"password must be at least {_MIN_PASSWORD_LENGTH} characters",
+    if not ratelimit.check_and_increment_activation(_client_ip(request)):
+        record_audit(
+            db, action="auth.activate", result="denied", reason_code="rate_limited",
+            source_ip=_client_ip(request), user_agent_summary=_source_summary(request),
         )
+        db.commit()
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many attempts")
+    try:
+        password_policy.validate_password_strength(payload.new_password)
+    except password_policy.WeakPassword as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     user = service.activate_user_password(db, payload.token, payload.new_password)
     if user is None:
+        record_audit(
+            db, action="auth.activate", result="failure",
+            reason_code="invalid_or_expired_token",
+            source_ip=_client_ip(request), user_agent_summary=_source_summary(request),
+        )
+        db.commit()
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
     sess.revoke_all_for_user(db, user.id)
-    record_audit(db, action="auth.activate", result="success", actor_user_id=user.id)
+    record_audit(
+        db, action="auth.activate", result="success", actor_user_id=user.id,
+        source_ip=_client_ip(request), user_agent_summary=_source_summary(request),
+    )
     db.commit()
     return {"status": "ok"}

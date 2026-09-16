@@ -16,9 +16,9 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
-from app.auth import ratelimit, service
+from app.auth import password_policy, ratelimit, service
 from app.auth import sessions as sess
-from app.auth.router import _MIN_PASSWORD_LENGTH, clear_auth_cookies, set_auth_cookies
+from app.auth.router import clear_auth_cookies, set_auth_cookies
 from app.auth.service import AuthError
 from app.db import get_session
 from app.models.base import utcnow
@@ -133,7 +133,7 @@ def activate_form(request: Request, db: Session = Depends(get_session)):
     if redirect is not None:
         return redirect
     return templates.TemplateResponse(
-        request, "activate.html", {"password_min_length": _MIN_PASSWORD_LENGTH}
+        request, "activate.html", {"password_min_length": password_policy.MIN_PASSWORD_LENGTH}
     )
 
 
@@ -145,11 +145,23 @@ def activate_submit(
     new_password: str = Form(...),
     confirm_password: str = Form(...),
 ):
-    context: dict[str, object] = {"password_min_length": _MIN_PASSWORD_LENGTH}
-    if len(new_password) < _MIN_PASSWORD_LENGTH:
-        context["flash_error"] = (
-            f"Password must be at least {_MIN_PASSWORD_LENGTH} characters long."
+    context: dict[str, object] = {"password_min_length": password_policy.MIN_PASSWORD_LENGTH}
+    if not ratelimit.check_and_increment_activation(_client_ip(request)):
+        record_audit(
+            db,
+            action="auth.activate",
+            result="denied",
+            reason_code="rate_limited",
+            source_ip=_client_ip(request),
+            user_agent_summary=request.headers.get("user-agent", "")[:255],
         )
+        db.commit()
+        context["flash_error"] = "Too many attempts. Wait before trying again."
+        return templates.TemplateResponse(request, "activate.html", context, status_code=429)
+    try:
+        password_policy.validate_password_strength(new_password)
+    except password_policy.WeakPassword as exc:
+        context["flash_error"] = str(exc).capitalize() + "."
         return templates.TemplateResponse(request, "activate.html", context, status_code=400)
     if new_password != confirm_password:
         context["flash_error"] = "Passwords do not match."

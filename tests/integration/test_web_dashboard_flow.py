@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.auth import service as auth_service
 from app.db import SessionLocal
+from app.models.audit import AuditEvent
 from app.models.authz import RoleAssignment
 from app.models.identity import User
 from app.security.passwords import verify_password
@@ -70,7 +71,7 @@ def test_login_page_renders_and_has_a_form():
     assert '<form class="login-card" method="post" action="/login">' in resp.text
     assert 'class="login-scene"' in resp.text
     assert '/static/media/ciphercontact-login-ambient.mp4' in resp.text
-    assert '/static/css/base.css?v=20260914-brand' in resp.text
+    assert '/static/css/base.css?v=20260916-admin-users' in resp.text
     assert '/static/favicon.svg?v=20260914-brand' in resp.text
     assert 'class="login-brand-mark"' in resp.text
     assert resp.text.count('/static/brand/ciphercontact-mark.svg') == 1
@@ -152,6 +153,78 @@ def test_activation_form_sets_a_password_without_echoing_or_replaying_the_token(
         user = db.get(User, user_id)
         assert user is not None and user.password_hash is not None
         assert verify_password(new_password, user.password_hash)
+
+
+def test_web_activation_enforces_shared_password_policy():
+    """Plan 8.1: the browser route must reject exactly what the API route does
+    - both call app.auth.password_policy, not two independent checks."""
+    from app.main import app
+
+    email = f"webweakpw-{uuid.uuid4().hex[:8]}@example.com"
+    user_id = make_user(email)
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        assert user is not None
+        user.password_hash = None
+        token = auth_service.issue_activation_token(db, user.id)
+        db.commit()
+
+    client = TestClient(app, follow_redirects=False)
+    weak = client.post(
+        "/activate",
+        data={
+            "activation_token": token,
+            "new_password": "correcthorsebatterystaple",
+            "confirm_password": "correcthorsebatterystaple",
+        },
+    )
+    assert weak.status_code == 400
+    assert "common" in weak.text.lower()
+
+    strong = client.post(
+        "/activate",
+        data={
+            "activation_token": token,
+            "new_password": "a genuinely unlikely passphrase",
+            "confirm_password": "a genuinely unlikely passphrase",
+        },
+    )
+    assert strong.status_code == 200, strong.text
+
+
+def test_web_activation_denied_when_rate_limited(monkeypatch):
+    """Plan 8.2: same dedicated activation limiter, wired into the browser
+    route too - denied before the token is touched, audited without it."""
+    from app.main import app
+    from app.web import auth_pages
+
+    monkeypatch.setattr(auth_pages.ratelimit, "check_and_increment_activation", lambda _: False)
+
+    client = TestClient(app, follow_redirects=False)
+    submitted_token = "web-token-value-that-must-not-appear-in-audit-or-response"
+    resp = client.post(
+        "/activate",
+        data={
+            "activation_token": submitted_token,
+            "new_password": "irrelevant but long enough",
+            "confirm_password": "irrelevant but long enough",
+        },
+    )
+    assert resp.status_code == 429
+    assert "Too many attempts" in resp.text
+    assert submitted_token not in resp.text
+
+    with SessionLocal() as db:
+        event = db.scalar(
+            select(AuditEvent)
+            .where(AuditEvent.action == "auth.activate", AuditEvent.result == "denied")
+            .order_by(AuditEvent.occurred_at.desc())
+        )
+        assert event is not None
+        assert event.reason_code == "rate_limited"
+        serialized = f"{event.event_metadata} {event.reason_code}"
+        assert submitted_token not in serialized
+
 
 def test_login_success_sets_cookies_and_redirects_to_dashboard():
     from app.main import app

@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}User administration | CipherContact{% endblock %}
+{% block content %}
+<div class="campaign-control-hero">
+  <div class="ops-heading">
+    <div>
+      <p class="eyebrow">User administration</p>
+      <h1>Every account you're authorized to see.</h1>
+      <p>Scoped to your own authority - your team's users, your organization's, or everyone's, depending on your role. Filters narrow this view; they never widen it.</p>
+    </div>
+    {% if can_manage_workforce %}<a class="button-link" href="#bulk-import">Start bulk account import</a>{% endif %}
+  </div>
+</div>
+
+{% if can_manage_workforce %}
+<section id="bulk-import" class="ops-form-card">
+  <div class="form-intro">
+    <p class="eyebrow">Bulk account creation</p>
+    <h2>Import users from CSV or Excel</h2>
+    <p>Posts to the same staged import pipeline as <a href="/workforce/imports">Bulk import</a> - quarantine, validation, preview, and approval all apply here too. Download the <a href="/workforce/imports/templates/users.csv">users template</a>, fill it in, then upload it below.</p>
+  </div>
+  <form method="post" action="/workforce/imports" enctype="multipart/form-data" class="campaign-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="import_type" value="users">
+    <label>File (.csv or .xlsx)<input type="file" name="file" accept=".csv,.xlsx" required></label>
+    <div class="wide create-submit"><p>You'll be taken to the import's validation result next.</p><button type="submit">Upload</button></div>
+  </form>
+</section>
+{% endif %}
+
+<div class="stat-row">
+  <div class="stat-card"><div class="stat-label">Total</div><div class="stat-value">{{ summary.total }}</div></div>
+  <div class="stat-card"><div class="stat-label">Active</div><div class="stat-value">{{ summary.active }}</div></div>
+  <div class="stat-card"><div class="stat-label">Inactive</div><div class="stat-value">{{ summary.inactive }}</div></div>
+  <div class="stat-card"><div class="stat-label">Awaiting activation</div><div class="stat-value">{{ summary.awaiting_activation }}</div></div>
+  <div class="stat-card"><div class="stat-label">MFA setup required</div><div class="stat-value">{{ summary.mfa_setup_required }}</div></div>
+  <div class="stat-card"><div class="stat-label">Never logged in</div><div class="stat-value">{{ summary.never_logged_in }}</div></div>
+</div>
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Narrow the view</p><h2>Search and filters</h2></div><span class="panel-note">Filters narrow your visible scope, never widen it.</span></div>
+  <form method="get" action="/admin/users" class="disposition-form">
+    <div class="mapping-grid">
+      <label>Search<input type="text" name="q" value="{{ filter_q }}" placeholder="Name, email, or workforce ID"></label>
+      <label>Status<select name="status">
+        <option value="" {% if not filter_status %}selected{% endif %}>Any</option>
+        <option value="active" {% if filter_status == "active" %}selected{% endif %}>Active</option>
+        <option value="inactive" {% if filter_status == "inactive" %}selected{% endif %}>Inactive</option>
+      </select></label>
+    </div>
+    <div class="mapping-grid">
+      <label>Activation state<select name="activation_state">
+        <option value="" {% if not filter_activation_state %}selected{% endif %}>Any</option>
+        {% for code, label in activation_states.items() %}
+        <option value="{{ code }}" {% if filter_activation_state == code %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select></label>
+      <label>Role<select name="role">
+        <option value="" {% if not filter_role %}selected{% endif %}>Any</option>
+        {% for code in appointable_roles %}
+        <option value="{{ code }}" {% if filter_role == code %}selected{% endif %}>{{ code.replace('_', ' ') }}</option>
+        {% endfor %}
+      </select></label>
+    </div>
+    <div class="mapping-grid">
+      <label>Team<select name="team_id">
+        <option value="" {% if not filter_team_id %}selected{% endif %}>Any</option>
+        {% for t in teams %}
+        <option value="{{ t.id }}" {% if filter_team_id == t.id|string %}selected{% endif %}>{{ t.name }}</option>
+        {% endfor %}
+      </select></label>
+      <label>Sort<select name="sort">
+        <option value="name" {% if sort == "name" %}selected{% endif %}>Name</option>
+        <option value="recent" {% if sort == "recent" %}selected{% endif %}>Most recently created</option>
+      </select></label>
+    </div>
+    <button type="submit" class="secondary">Apply filters</button>
+    {% if filter_q or filter_status or filter_activation_state or filter_role or filter_team_id or sort != "name" %}<a class="back-link" href="/admin/users">Clear filters</a>{% endif %}
+  </form>
+</section>
+
+<section class="ops-panel">
+  <div class="panel-heading"><div><p class="eyebrow">{{ directory.total_count }} user{{ '' if directory.total_count == 1 else 's' }} in view</p><h2>Directory</h2></div><span class="panel-note">Page {{ page }} of {{ total_pages }}.</span></div>
+  {% if directory.rows %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Workforce ID</th><th>Status</th><th>Activation</th><th>Roles</th><th>Teams</th><th>Last login</th><th>Created</th></tr></thead>
+      <tbody>
+        {% for row in directory.rows %}
+        <tr>
+          <td><a href="/admin/users/{{ row.user.id }}">{{ row.user.display_name }}</a></td>
+          <td>{{ row.user.email }}</td>
+          <td><code>{{ row.user.workforce_id }}</code></td>
+          <td><span class="badge {% if not row.user.active %}muted{% endif %}">{{ "active" if row.user.active else "inactive" }}</span></td>
+          <td><span class="badge {% if row.activation_state not in ("ready",) %}muted{% endif %}">{{ activation_states.get(row.activation_state, row.activation_state) }}</span></td>
+          <td>{{ row.roles|join(", ") or "No roles yet" }}</td>
+          <td>{{ row.teams|join(", ") or "—" }}</td>
+          <td>{{ row.user.last_login_at.strftime("%Y-%m-%d %H:%M") if row.user.last_login_at else "Never" }}</td>
+          <td>{{ row.user.created_at.strftime("%Y-%m-%d") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <span>{{ page_size }} per page</span>
+    <a {% if page <= 1 %}class="disabled"{% endif %} href="/admin/users?{{ filters_qs }}{{ '&' if filters_qs }}page={{ page - 1 }}">&larr; Previous</a>
+    <span>Page {{ page }} of {{ total_pages }}</span>
+    <a {% if page >= total_pages %}class="disabled"{% endif %} href="/admin/users?{{ filters_qs }}{{ '&' if filters_qs }}page={{ page + 1 }}">Next &rarr;</a>
+  </div>
+  {% else %}
+  <div class="ops-empty"><div class="empty-mark">+</div><h2>No users match this view</h2><p>Try clearing a filter, or check that you have authority over this scope.</p></div>
+  {% endif %}
+</section>
+{% endblock %}

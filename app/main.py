@@ -23,6 +23,7 @@ from app.db import engine
 from app.logging_setup import configure_logging
 from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from app.monitoring import configure_sentry
+from app.web.admin_users import router as web_admin_users_router
 from app.web.agent_work import router as web_agent_work_router
 from app.web.audit import router as web_audit_router
 from app.web.auth_pages import router as web_auth_router
@@ -101,6 +102,7 @@ app.include_router(web_agent_work_router)
 app.include_router(web_campaigns_router)
 app.include_router(web_workforce_router)
 app.include_router(web_workforce_imports_router)
+app.include_router(web_admin_users_router)
 app.include_router(web_audit_router)
 app.include_router(web_flags_router)
 app.include_router(web_notifications_router)

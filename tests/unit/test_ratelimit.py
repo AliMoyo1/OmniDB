@@ -72,3 +72,48 @@ def test_successful_login_resets_only_hashed_account_signal(monkeypatch):
     assert len(client.deleted) == 1
     assert client.deleted[0].startswith("login_attempts:account:")
     assert "person@example.com" not in client.deleted[0]
+
+
+def test_activation_rate_limit_uses_hashed_source_and_global_signals(monkeypatch):
+    client = _FakeRedis()
+    monkeypatch.setattr(ratelimit, "_client", lambda: client)
+
+    assert ratelimit.check_and_increment_activation("192.0.2.4")
+
+    keys = set(client.counts)
+    assert "activation_attempts:global" in keys
+    assert all("192.0.2.4" not in key for key in keys)
+    # Source and global only - no account tier (plan 8.2: a token is not a
+    # stable per-person identifier the way an email is, and must never itself
+    # become a rate-limit key).
+    assert len(keys) == 2
+    assert all(not key.startswith("login_attempts:") for key in keys)
+
+
+def test_activation_rate_limit_denies_after_source_threshold(monkeypatch):
+    client = _FakeRedis()
+    monkeypatch.setattr(ratelimit, "_client", lambda: client)
+
+    decisions = [
+        ratelimit.check_and_increment_activation("192.0.2.4")
+        for _ in range(ratelimit._ACTIVATION_SOURCE_LIMIT + 1)
+    ]
+
+    assert decisions[: ratelimit._ACTIVATION_SOURCE_LIMIT] == (
+        [True] * ratelimit._ACTIVATION_SOURCE_LIMIT
+    )
+    assert decisions[ratelimit._ACTIVATION_SOURCE_LIMIT] is False
+
+
+def test_activation_rate_limit_fails_closed_only_in_production(monkeypatch):
+    monkeypatch.setattr(ratelimit, "_client", lambda: _UnavailableRedis())
+
+    monkeypatch.setattr(
+        ratelimit, "get_settings", lambda: SimpleNamespace(app_env="production")
+    )
+    assert not ratelimit.check_and_increment_activation("192.0.2.4")
+
+    monkeypatch.setattr(
+        ratelimit, "get_settings", lambda: SimpleNamespace(app_env="development")
+    )
+    assert ratelimit.check_and_increment_activation("192.0.2.4")

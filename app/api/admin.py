@@ -9,14 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from app.audit.service import record_audit
-from app.auth import sessions as sess
+from app.auth import service as auth_service
 from app.auth.dependencies import (
     get_current_user,
     require_csrf,
     require_recent_reauthentication,
 )
-from app.auth.service import issue_activation_token
 from app.authz import service as authz
 from app.authz.capabilities import RESET_USER_AUTH, ROLE_CAPABILITIES, VIEW_AUDIT
 from app.authz.dependencies import require_capability
@@ -65,13 +63,11 @@ def reset_2fa(
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
     _assert_not_self(actor.id, target.id)
-    target.totp_secret_ciphertext = None
-    target.totp_enrolled = False
-    sess.revoke_all_for_user(db, target.id)
-    record_audit(
-        db, action="admin.reset_2fa", result="success", actor_user_id=actor.id,
-        target_type="user", target_id=target.id,
-    )
+    try:
+        auth_service.reset_mfa(db, target, actor_id=actor.id)
+    except auth_service.AccountNotEligible as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()
     return {"status": "ok"}
 
@@ -89,13 +85,11 @@ def reset_password(
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
     _assert_not_self(actor.id, target.id)
-    target.password_hash = None  # cleared; the user must re-activate
-    sess.revoke_all_for_user(db, target.id)
-    token = issue_activation_token(db, target.id, created_by=actor.id)
-    record_audit(
-        db, action="admin.reset_password", result="success", actor_user_id=actor.id,
-        target_type="user", target_id=target.id,
-    )
+    try:
+        token, _expires_at = auth_service.reset_password(db, target, actor_id=actor.id)
+    except auth_service.AccountNotEligible as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()
     # The activation token is handed to the user through an approved offline process (D-23).
     return {"status": "ok", "activation_token": token}

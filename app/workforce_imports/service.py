@@ -942,10 +942,17 @@ def _commit_users_row(
 ) -> _RowOutcome | None:
     values = row.parsed_values or {}
     if row.action == "create":
+        # Plan 6.5: while the flag is off, bulk-created users keep getting an
+        # immediate token exactly as before. Once on, identities are created
+        # without one - "Activation not issued" until an administrator issues
+        # one on demand, rather than committing hundreds of short-lived codes
+        # nobody may be ready to use yet (plan 4.2).
+        deferred = flags.is_enabled(db, "deferred_bulk_activation_enabled")
         try:
             user, token = workforce_service.create_user(
                 db, email=values["login_identifier"], display_name=values["display_name"],
                 workforce_id=row.external_workforce_id, created_by=actor_id,
+                issue_activation=not deferred,
             )
         except DuplicateIdentity:
             row.conflict_type = "already_exists"

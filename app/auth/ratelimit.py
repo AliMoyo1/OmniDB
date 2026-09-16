@@ -22,6 +22,18 @@ _ACCOUNT_LIMIT = 10
 _SOURCE_LIMIT = 500
 _GLOBAL_LIMIT = 5_000
 
+# A dedicated limiter for activation-token attempts (plan 8.2), kept in its own
+# Redis key namespace rather than overloading the login keys above - a burst of
+# activation guesses (or vice versa, a burst of logins) must not quietly ride on
+# the other flow's budget. No account tier: unlike a login, an activation
+# attempt has no stable per-person identifier available before the token is
+# validated (the token itself must never become a rate-limit key - that would
+# let each new guess buy itself a fresh budget). Same headroom lesson as
+# _SOURCE_LIMIT/_GLOBAL_LIMIT above: generous enough that normal test-suite
+# volume against one "unknown" TestClient source never trips it.
+_ACTIVATION_SOURCE_LIMIT = 50
+_ACTIVATION_GLOBAL_LIMIT = 500
+
 _INCREMENT_SCRIPT = """
 local count = redis.call('INCR', KEYS[1])
 if count == 1 then
@@ -37,9 +49,12 @@ def _client() -> redis.Redis:
     return redis.Redis.from_url(get_settings().redis_url)
 
 
-def _key(signal: str, value: str) -> str:
-    digest = hashlib.sha256(value.encode()).hexdigest()
-    return f"login_attempts:{signal}:{digest}"
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _key(signal: str, value: str, *, namespace: str = "login_attempts") -> str:
+    return f"{namespace}:{signal}:{_digest(value)}"
 
 
 def _increment(client: redis.Redis, key: str, limit: int) -> bool:
@@ -71,3 +86,23 @@ def reset_account(account: str) -> None:
     except Exception:
         logger.exception("could not reset account login rate limit")
         return
+
+
+def check_and_increment_activation(source: str | None) -> bool:
+    """Source and global tiers only - see the module-level comment on
+    _ACTIVATION_SOURCE_LIMIT for why there is no account tier. Fails closed in
+    production if Redis is unavailable, same as check_and_increment."""
+    try:
+        client = _client()
+        decisions = (
+            _increment(
+                client,
+                _key("source", source or "unknown", namespace="activation_attempts"),
+                _ACTIVATION_SOURCE_LIMIT,
+            ),
+            _increment(client, "activation_attempts:global", _ACTIVATION_GLOBAL_LIMIT),
+        )
+        return all(decisions)
+    except Exception:
+        logger.exception("activation rate limiter unavailable")
+        return get_settings().app_env != "production"

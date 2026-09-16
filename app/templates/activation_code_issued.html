@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Activation code | CipherContact{% endblock %}
+{% block content %}
+<section class="ops-form-card">
+  <div class="form-intro">
+    <p class="eyebrow">One-time code</p>
+    <h2>Activation code for {{ target.display_name }}</h2>
+    <p>{{ target.email }} &middot; workforce ID <code>{{ target.workforce_id }}</code></p>
+  </div>
+
+  <p class="flash error" role="status">
+    This code is shown once and will not be shown again. Hand it to {{ target.display_name }}
+    through an approved private channel after confirming their identity.
+  </p>
+
+  <p style="font: 700 22px var(--mono); letter-spacing: .04em;" id="activation-code">{{ activation_token }}</p>
+
+  <p>Expires <strong>{{ expires_at_local.strftime("%Y-%m-%d %H:%M") }} {{ timezone_name }}</strong>. Single-use -
+    issuing a replacement invalidates this code immediately.</p>
+
+  <div class="wide create-submit">
+    <button type="button" id="copy-activation-code">Copy code</button>
+    <a class="button-link" href="/admin/users/{{ target.id }}">Done</a>
+  </div>
+</section>
+
+<script>
+(function () {
+  var button = document.getElementById("copy-activation-code");
+  var code = document.getElementById("activation-code");
+  if (!button || !code) { return; }
+  button.addEventListener("click", function () {
+    var text = code.textContent.trim();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        button.textContent = "Copied";
+        setTimeout(function () { button.textContent = "Copy code"; }, 2000);
+      });
+    }
+  });
+})();
+</script>
+{% endblock %}

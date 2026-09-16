@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ target.display_name }} | User administration{% endblock %}
+{% block content %}
+<div class="campaign-detail-head">
+  <div>
+    <a class="back-link" href="/admin/users">&larr; All users</a>
+    <p class="eyebrow">User administration</p>
+    <h1>{{ target.display_name }}</h1>
+    <p>{{ target.email }} &middot; {{ target.workforce_id }}</p>
+  </div>
+  <div class="lifecycle-stack">
+    <span class="status-chip status-{{ 'active' if target.active else 'archived' }}">{{ "active" if target.active else "inactive" }}</span>
+    <span class="badge {% if activation_state not in ("ready",) %}muted{% endif %}">{{ activation_state_label }}</span>
+  </div>
+</div>
+
+<section class="readiness-strip" aria-label="Account state">
+  <div><span>Status</span><strong>{{ "Active" if target.active else "Inactive" }}</strong></div>
+  <div><span>Activation</span><strong>{{ activation_state_label }}</strong></div>
+  <div><span>Last login</span><strong>{{ target.last_login_at.strftime("%Y-%m-%d %H:%M") if target.last_login_at else "Never" }}</strong></div>
+  <div><span>Created</span><strong>{{ target.created_at.strftime("%Y-%m-%d") }}</strong></div>
+</section>
+
+<div class="ops-grid">
+  <section class="ops-panel">
+    <div class="panel-heading"><div><p class="eyebrow">01 &middot; Access</p><h2>Roles and teams</h2></div><span class="panel-note">Metadata only - never a password or TOTP secret.</span></div>
+    <p><strong>Roles</strong><br>{{ roles|join(", ") if roles else "No roles yet" }}</p>
+    <p><strong>Teams</strong><br>{{ teams|join(", ") if teams else "No team memberships" }}</p>
+    {% if can_manage_workforce_profile %}
+    <p><a href="/workforce/users/{{ target.id }}">Manage roles, teams, and enable/disable at the workforce profile &rarr;</a></p>
+    {% endif %}
+  </section>
+
+  {% if has_reset_capability %}
+  <section class="ops-panel">
+    <div class="panel-heading"><div><p class="eyebrow">02 &middot; Credentials</p><h2>Security actions</h2></div><span class="panel-note">Revokes active sessions. Requires a recent identity check.</span></div>
+    {% if is_self %}
+    <p class="empty">You hold credential-reset authority, but cannot use it on your own account. Ask another authorized administrator.</p>
+    {% else %}
+    {% if not recently_reauthenticated %}
+    <p class="empty">Confirm your identity at <a href="/security/mfa">Account security</a> within the last few minutes before using these actions.</p>
+    {% endif %}
+    <div class="assignment-list">
+      {% if activation_state in ("activation_not_issued", "activation_code_active", "activation_code_expired") %}
+      <div>
+        <div><strong>Issue or replace activation code</strong><span>Invalidates any unused code already issued.</span></div>
+        <form method="post" action="/admin/users/{{ target.id }}/activation-code"
+              onsubmit="return confirm('Issue a new activation code for {{ target.display_name }}? Any unused code they already have will stop working.');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="secondary">Issue code</button>
+        </form>
+      </div>
+      {% endif %}
+      <div>
+        <div><strong>Reset password</strong><span>Clears the password, signs them out everywhere, and issues a new activation code.</span></div>
+        <form method="post" action="/admin/users/{{ target.id }}/reset-password"
+              onsubmit="return confirm('Reset the password for {{ target.display_name }}? This signs them out everywhere and they will need a new activation code.');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="quiet-danger">Reset password</button>
+        </form>
+      </div>
+      <div>
+        <div><strong>Reset MFA</strong><span>Clears authenticator enrollment and signs them out everywhere.</span></div>
+        <form method="post" action="/admin/users/{{ target.id }}/reset-mfa"
+              onsubmit="return confirm('Reset MFA for {{ target.display_name }}? This signs them out everywhere and they must re-enroll.');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="quiet-danger">Reset MFA</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from app.auth import service as auth_service
 from app.authz.capabilities import ROLE_SUPER_ADMIN
 from app.db import SessionLocal
+from app.models.audit import AuditEvent
 from app.models.base import utcnow
 from app.models.identity import User
 from app.models.session import Session
@@ -109,6 +110,62 @@ def test_activation_token_is_single_use(client: TestClient):
         user = db.get(User, user_id)
         assert user is not None and user.password_hash is not None
         assert verify_password(new_password, user.password_hash)
+
+
+@pytest.mark.integration
+def test_api_activation_enforces_shared_password_policy(client: TestClient):
+    """Plan 8.1: the API activation route must reject the same weak passwords
+    the browser route does - both call app.auth.password_policy directly, not
+    two independent length checks that could quietly drift apart."""
+    email = f"weakpw-{uuid.uuid4().hex[:8]}@example.com"
+    user_id = make_user(email)
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        assert user is not None
+        user.password_hash = None
+        token = auth_service.issue_activation_token(db, user.id)
+        db.commit()
+
+    weak = client.post(
+        "/api/v1/auth/activate",
+        json={"token": token, "new_password": "correcthorsebatterystaple"},
+    )
+    assert weak.status_code == 400
+    assert "common" in weak.text.lower()
+
+    strong = client.post(
+        "/api/v1/auth/activate",
+        json={"token": token, "new_password": "a genuinely unlikely passphrase"},
+    )
+    assert strong.status_code == 200, strong.text
+
+
+@pytest.mark.integration
+def test_api_activation_denied_when_rate_limited(client: TestClient, monkeypatch):
+    """Plan 8.2: a dedicated activation limiter, checked before the token is
+    ever touched - denied without consuming or revealing anything about the
+    token, and audited without the submitted token appearing anywhere."""
+    from app.auth import router as auth_router
+
+    monkeypatch.setattr(auth_router.ratelimit, "check_and_increment_activation", lambda _: False)
+
+    submitted_token = "some-token-value-that-must-not-appear-in-audit"
+    resp = client.post(
+        "/api/v1/auth/activate",
+        json={"token": submitted_token, "new_password": "irrelevant but long enough"},
+    )
+    assert resp.status_code == 429
+
+    with SessionLocal() as db:
+        event = db.scalar(
+            select(AuditEvent)
+            .where(AuditEvent.action == "auth.activate", AuditEvent.result == "denied")
+            .order_by(AuditEvent.occurred_at.desc())
+        )
+        assert event is not None
+        assert event.reason_code == "rate_limited"
+        serialized = f"{event.event_metadata} {event.reason_code}"
+        assert submitted_token not in serialized
 
 
 @pytest.mark.integration

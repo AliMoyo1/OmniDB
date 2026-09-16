@@ -1023,6 +1023,11 @@ textarea:focus { outline: none; border-color: var(--accent-mid); box-shadow: 0 0
 .create-submit p { margin: 0; color: var(--muted); font-size: 11px; }
 .back-link { display: inline-block; margin-bottom: 16px; color: var(--muted); font: 600 11px var(--mono); text-decoration: none; }
 .back-link:hover { color: var(--accent-mid); }
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding-top: 16px; }
+.pager span { color: var(--muted); font: 600 11px var(--mono); }
+.pager a { color: var(--muted); font: 600 11px var(--mono); text-decoration: none; }
+.pager a:hover { color: var(--accent-mid); }
+.pager .disabled { opacity: .35; pointer-events: none; }
 .campaign-detail-head { align-items: end; }
 .lifecycle-stack { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .lifecycle-stack form { margin: 0; }

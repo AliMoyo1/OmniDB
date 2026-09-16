@@ -245,6 +245,76 @@ def test_users_create_update_reactivate_flow_end_to_end():
     assert updated.start_date.isoformat() == "2026-01-01"
 
 
+def _set_deferred_activation(enabled: bool) -> None:
+    toggler_id = make_user(f"wfi-defertoggler-{uuid.uuid4().hex[:8]}@example.com")
+    with SessionLocal() as db:
+        flags_service.set_flag(
+            db, "deferred_bulk_activation_enabled", enabled, actor_id=toggler_id,
+            reason_code="test_setup",
+        )
+        db.commit()
+
+
+def test_deferred_activation_enabled_creates_identities_without_codes():
+    """Admin user management plan 6.5: with deferred_bulk_activation_enabled on,
+    bulk-created users get no activation token at commit - the directory (plan
+    5.2/6.2) must derive "Activation not issued" for them from the absence of
+    any token row, not from a bulk secrets table (plan 4.3).
+
+    This flag is a shared row in the same never-rolled-back test database every
+    other test in this file runs against, so it must always be turned back off
+    before returning - a fixture-based reset would be cleaner, but the flag is
+    only ever flipped by this one test, and try/finally here keeps that fact
+    visible right next to the flip instead of in a fixture far above."""
+    from app.models.activation import ActivationToken
+    from app.workforce import service as workforce_service
+
+    client, actor_id = _manager()
+    headers = csrf_headers(client)
+    _set_deferred_activation(True)
+    try:
+        wid = f"wfidefer-{uuid.uuid4().hex[:8]}"
+        csv_text = (
+            "action,external_workforce_id,login_identifier,display_name,start_date,end_date\r\n"
+            f"create,{wid},{wid}@example.com,Deferred User,,\r\n"
+        )
+        upload = _upload(client, headers, "users", csv_text)
+        assert upload.status_code == 200, upload.text
+        job_id = upload.json()["id"]
+        version = _decide(client, headers, job_id, tier="standard").json()["decision_version"]
+
+        commit = _commit(client, headers, job_id, version)
+        assert commit.status_code == 200, commit.text
+        result = commit.json()
+        assert result["outcomes"] == [{"row_number": 1, "outcome": "created"}]
+        # The whole point: no token anywhere in the commit response.
+        assert result["activation_tokens"] == {}
+
+        created = _user_row(wid)
+        assert created is not None
+        assert created.password_hash is None
+        with SessionLocal() as db:
+            assert (
+                db.scalar(select(ActivationToken).where(ActivationToken.user_id == created.id))
+                is None
+            )
+            state = workforce_service.activation_state_for_user(db, created.id)
+            assert state == workforce_service.STATE_ACTIVATION_NOT_ISSUED
+
+            # This suite's database is shared and never rolled back between test
+            # runs, so an unfiltered listing at manager (sees_everyone) scope could
+            # have many more than one page of "activation not issued" users ahead
+            # of this one alphabetically - search for the exact workforce ID.
+            directory = workforce_service.list_user_directory(
+                db, uuid.UUID(actor_id),
+                activation_state=workforce_service.STATE_ACTIVATION_NOT_ISSUED,
+                search=wid,
+            )
+            assert created.id in {row.user.id for row in directory.rows}
+    finally:
+        _set_deferred_activation(False)
+
+
 def test_users_wrong_action_and_duplicate_in_file_are_invalid():
     client, _ = _manager()
     headers = csrf_headers(client)

@@ -247,12 +247,16 @@ def commit_workforce_import(
         import_service.cleanup_committed_source(job)
     except OSError:
         pass
-    if not result["activation_tokens"]:
+    created_count = sum(1 for outcome in result["outcomes"] if outcome["outcome"] == "created")
+    if created_count == 0:
         return _job_redirect(job_id, success="Import committed.")
     # Rendered directly, not redirected: one-time secrets do not belong in a URL
-    # query string even for a moment (same reasoning as user_created.html).
+    # query string even for a moment (same reasoning as user_created.html). Still
+    # rendered when deferred activation left activation_tokens empty (plan 6.5) -
+    # the administrator still needs the created-count and the directory link.
     context = page_context(
         request, db, user, active_section="workforce_imports", job=job, commit_result=result,
+        created_count=created_count,
     )
     return templates.TemplateResponse(request, "workforce_import_committed.html", context)
 

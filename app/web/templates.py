@@ -23,6 +23,7 @@ from app.authz import service as authz
 from app.authz.capabilities import MANAGE_ROLES, VIEW_AUDIT, VIEW_CAMPAIGN, WORK_QUEUE
 from app.models.identity import User
 from app.notifications import service as notifications_service
+from app.workforce import service as workforce_service
 from app.workforce.service import ROLE_APPOINTMENT_CAPABILITY
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
@@ -41,6 +42,7 @@ def nav_flags(db: Session, user: User) -> dict:
         "can_manage_teams": can_manage_teams,
         "can_view_teams_nav": can_manage_teams or can_manage_workforce,
         "can_view_audit": authz.has_assigned_capability(db, user.id, VIEW_AUDIT),
+        "can_view_admin_users": workforce_service.can_view_admin_directory(db, user.id),
     }
 
 

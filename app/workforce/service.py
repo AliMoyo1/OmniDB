@@ -10,8 +10,10 @@ build was created outside the app.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
@@ -23,6 +25,7 @@ from app.authz.capabilities import (
     CREATE_AGENT,
     CREATE_MANAGER,
     MANAGE_ROLES,
+    RESET_USER_AUTH,
     ROLE_AGENT,
     ROLE_CAPABILITIES,
     ROLE_MANAGER,
@@ -31,6 +34,7 @@ from app.authz.capabilities import (
     ROLE_VIEWER,
 )
 from app.flags import service as flags
+from app.models.activation import ActivationToken
 from app.models.authz import ReportingAssignment, RoleAssignment
 from app.models.base import utcnow
 from app.models.identity import Organization, Team, TeamMembership, User
@@ -156,10 +160,18 @@ def create_user(
     display_name: str,
     workforce_id: str | None,
     created_by: uuid.UUID,
-) -> tuple[User, str]:
+    issue_activation: bool = True,
+) -> tuple[User, str | None]:
     """Create an identity with no password and no role (ADR-005C: workforce_id is the
     email's local part, immutable once set). Returns (user, activation_token) - the
-    same one-time-activation pattern already used for a Super Admin password reset."""
+    same one-time-activation pattern already used for a Super Admin password reset.
+
+    issue_activation=True is the default so every existing single-user caller
+    keeps issuing a token exactly as before. Bulk-import commit is the only
+    caller expected to pass issue_activation=False, and only once the
+    deferred-activation flag is enabled (plan 6.3/6.5) - a deferred identity is
+    marked "Activation not issued" until an administrator issues one on demand
+    (app/auth/service.py's issue_or_replace_activation_code)."""
     derived_id = workforce_id or email.split("@")[0]
     existing = db.scalar(
         select(User.id).where(or_(User.email == email, User.workforce_id == derived_id))
@@ -169,11 +181,20 @@ def create_user(
     user = User(workforce_id=derived_id, email=email, display_name=display_name)
     db.add(user)
     db.flush()
-    token = issue_activation_token(db, user.id, created_by=created_by)
     record_audit(
         db, action="workforce.user.create", result="success", actor_user_id=created_by,
         target_type="user", target_id=user.id,
     )
+    token: str | None = None
+    if issue_activation:
+        token = issue_activation_token(db, user.id, created_by=created_by)
+        # Separate from the identity-creation event above (plan 6.3): a later
+        # reader should be able to tell "an identity was created" apart from
+        # "a code was issued" without inferring it from token presence alone.
+        record_audit(
+            db, action="workforce.user.activation_issued", result="success",
+            actor_user_id=created_by, target_type="user", target_id=user.id,
+        )
     return user, token
 
 
@@ -468,3 +489,359 @@ def end_reporting_line(
         event_metadata={"supervisor_user_id": str(line.supervisor_user_id)},
     )
     return line
+
+
+# --- Administrative user directory (admin user management plan, phase A) -----------
+#
+# One shared scoped/filtered/paginated query and one shared activation-state
+# expression, reused by both the row-level page and the summary aggregate so the
+# two can never quietly drift apart (the same principle as list_visible_users
+# above and list_visible_audit_events in app/api/admin.py).
+
+STATE_DISABLED = "disabled"
+STATE_ACTIVATION_NOT_ISSUED = "activation_not_issued"
+STATE_ACTIVATION_CODE_ACTIVE = "activation_code_active"
+STATE_ACTIVATION_CODE_EXPIRED = "activation_code_expired"
+STATE_MFA_SETUP_REQUIRED = "mfa_setup_required"
+STATE_READY = "ready"
+
+ACTIVATION_STATE_LABELS: dict[str, str] = {
+    STATE_DISABLED: "Disabled",
+    STATE_ACTIVATION_NOT_ISSUED: "Activation not issued",
+    STATE_ACTIVATION_CODE_ACTIVE: "Activation code active",
+    STATE_ACTIVATION_CODE_EXPIRED: "Activation code expired",
+    STATE_MFA_SETUP_REQUIRED: "MFA setup required",
+    STATE_READY: "Ready",
+}
+
+_AWAITING_ACTIVATION_STATES = (
+    STATE_ACTIVATION_NOT_ISSUED,
+    STATE_ACTIVATION_CODE_ACTIVE,
+    STATE_ACTIVATION_CODE_EXPIRED,
+)
+
+DIRECTORY_PAGE_SIZE_DEFAULT = 50
+DIRECTORY_PAGE_SIZE_MAX = 100
+DIRECTORY_SORTS = ("name", "recent")
+
+
+@dataclass
+class DirectoryRow:
+    user: User
+    roles: list[str]
+    teams: list[str]
+    activation_state: str
+
+
+@dataclass
+class DirectoryPage:
+    rows: list[DirectoryRow]
+    total_count: int
+    sees_everyone: bool
+
+
+@dataclass
+class DirectorySummary:
+    total: int
+    active: int
+    inactive: int
+    awaiting_activation: int
+    mfa_setup_required: int
+    never_logged_in: int
+
+
+def can_view_admin_directory(db: Session, actor_id: uuid.UUID) -> bool:
+    """Plan 5.1: the /admin/users directory may be opened by anyone holding
+    credential-administration authority (RESET_USER_AUTH) or an applicable
+    workforce appointment capability - shared by the nav-visibility flag and the
+    route itself so they can't drift apart."""
+    if authz.has_assigned_capability(db, actor_id, RESET_USER_AUTH):
+        return True
+    return any(
+        authz.has_assigned_capability(db, actor_id, capability)
+        for capability in ROLE_APPOINTMENT_CAPABILITY.values()
+    )
+
+
+def _directory_scope(db: Session, actor_id: uuid.UUID) -> tuple[bool, set[uuid.UUID]]:
+    """Plan 6.1: Super Administrator visibility is RESET_USER_AUTH; every other
+    role reuses the same team-scoped visibility already used for the workforce
+    list (visible_team_ids). A filter narrows this; it must never widen it."""
+    sees_everyone, team_ids = visible_team_ids(db, actor_id)
+    if not sees_everyone and authz.has_assigned_capability(db, actor_id, RESET_USER_AUTH):
+        sees_everyone = True
+    return sees_everyone, team_ids
+
+
+def _activation_state_expression(now: datetime):
+    """A single CASE expression, reused by both the row-level query and the
+    summary aggregate below. Priority order matches plan 5.2 exactly: disabled
+    overrides everything, then password/MFA state, then the pre-password
+    activation-token state. Issuing a new token invalidates every prior unused
+    one (issue_activation_token), so at most one unused token can exist per user
+    - this correlated subquery only needs its latest row."""
+    unused_token_expiry = (
+        select(ActivationToken.expires_at)
+        .where(
+            ActivationToken.user_id == User.id,
+            ActivationToken.used_at.is_(None),
+            ActivationToken.purpose == "password_activation",
+        )
+        .order_by(ActivationToken.expires_at.desc())
+        .limit(1)
+        .correlate(User)
+        .scalar_subquery()
+    )
+    return case(
+        (User.active.is_(False), STATE_DISABLED),
+        (and_(User.password_hash.is_not(None), User.totp_enrolled.is_(True)), STATE_READY),
+        (User.password_hash.is_not(None), STATE_MFA_SETUP_REQUIRED),
+        (unused_token_expiry.is_(None), STATE_ACTIVATION_NOT_ISSUED),
+        (unused_token_expiry > now, STATE_ACTIVATION_CODE_ACTIVE),
+        else_=STATE_ACTIVATION_CODE_EXPIRED,
+    )
+
+
+def _effective_role_window(now: datetime) -> tuple:
+    return (
+        RoleAssignment.status == "active",
+        RoleAssignment.effective_from <= now,
+        or_(RoleAssignment.effective_to.is_(None), RoleAssignment.effective_to > now),
+    )
+
+
+def _roles_for_users(
+    db: Session, user_ids: list[uuid.UUID], now: datetime
+) -> dict[uuid.UUID, list[str]]:
+    """One bounded query for the whole page, never one per row (plan 5.2/12)."""
+    rows = db.execute(
+        select(
+            RoleAssignment.user_id,
+            RoleAssignment.role_code,
+            RoleAssignment.scope_type,
+            RoleAssignment.scope_id,
+        ).where(RoleAssignment.user_id.in_(user_ids), *_effective_role_window(now))
+    ).all()
+    team_scope_ids = {row.scope_id for row in rows if row.scope_type == "team" and row.scope_id}
+    team_names: dict[uuid.UUID, str] = {
+        team_row.id: team_row.name
+        for team_row in db.execute(select(Team.id, Team.name).where(Team.id.in_(team_scope_ids)))
+    }
+    result: dict[uuid.UUID, list[str]] = {}
+    for row in rows:
+        if row.scope_type == "team" and row.scope_id:
+            label = f"{row.role_code} ({team_names.get(row.scope_id, 'unknown team')})"
+        elif row.scope_type == "organization" and row.scope_id:
+            label = f"{row.role_code} (org-scoped)"
+        else:
+            label = row.role_code
+        result.setdefault(row.user_id, []).append(label)
+    return result
+
+
+def _teams_for_users(db: Session, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
+    """One bounded query for the whole page, never one per row (plan 5.2/12)."""
+    rows = db.execute(
+        select(TeamMembership.user_id, Team.name)
+        .join(Team, TeamMembership.team_id == Team.id)
+        .where(
+            TeamMembership.user_id.in_(user_ids),
+            TeamMembership.membership_status == "active",
+        )
+        .order_by(Team.name)
+    ).all()
+    result: dict[uuid.UUID, list[str]] = {}
+    for user_id, team_name in rows:
+        result.setdefault(user_id, []).append(team_name)
+    return result
+
+
+def list_user_directory(
+    db: Session,
+    actor_id: uuid.UUID,
+    *,
+    search: str | None = None,
+    status: str | None = None,
+    activation_state: str | None = None,
+    role: str | None = None,
+    team_id: uuid.UUID | None = None,
+    page: int = 1,
+    page_size: int = DIRECTORY_PAGE_SIZE_DEFAULT,
+    sort: str = "name",
+) -> DirectoryPage:
+    """The shared scoped, filtered, paginated directory query (plan 6.1). Begins
+    with the actor's own authorized scope and only narrows from there - a filter
+    must never be able to widen it back out. Sorting is always (key, id) so a
+    person is never duplicated or skipped while paging (plan 5.1)."""
+    sees_everyone, team_ids = _directory_scope(db, actor_id)
+    if not sees_everyone and not team_ids:
+        return DirectoryPage(rows=[], total_count=0, sees_everyone=False)
+
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), DIRECTORY_PAGE_SIZE_MAX)
+    now = utcnow()
+    state_expr = _activation_state_expression(now)
+
+    stmt = select(User)
+    if not sees_everyone:
+        stmt = (
+            stmt.join(TeamMembership, TeamMembership.user_id == User.id)
+            .where(
+                TeamMembership.team_id.in_(team_ids),
+                TeamMembership.membership_status == "active",
+            )
+            .distinct()
+        )
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                User.display_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.workforce_id.ilike(pattern),
+            )
+        )
+    if status in ("active", "inactive"):
+        stmt = stmt.where(User.active.is_(status == "active"))
+    if role and role in ROLE_CAPABILITIES:
+        stmt = stmt.where(
+            User.id.in_(
+                select(RoleAssignment.user_id).where(
+                    RoleAssignment.role_code == role, *_effective_role_window(now)
+                )
+            )
+        )
+    if team_id is not None:
+        stmt = stmt.where(
+            User.id.in_(
+                select(TeamMembership.user_id).where(
+                    TeamMembership.team_id == team_id,
+                    TeamMembership.membership_status == "active",
+                )
+            )
+        )
+    if activation_state in ACTIVATION_STATE_LABELS:
+        stmt = stmt.where(state_expr == activation_state)
+
+    total_count = (
+        db.scalar(select(func.count()).select_from(stmt.with_only_columns(User.id).subquery()))
+        or 0
+    )
+
+    order_cols = (
+        (User.created_at.desc(), User.id.desc())
+        if sort == "recent"
+        else (User.display_name.asc(), User.id.asc())
+    )
+    rows_stmt = (
+        stmt.add_columns(state_expr.label("activation_state"))
+        .order_by(*order_cols)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    page_rows = db.execute(rows_stmt).all()
+    if not page_rows:
+        return DirectoryPage(rows=[], total_count=total_count, sees_everyone=sees_everyone)
+
+    page_ids = [row.User.id for row in page_rows]
+    roles_by_user = _roles_for_users(db, page_ids, now)
+    teams_by_user = _teams_for_users(db, page_ids)
+    rows = [
+        DirectoryRow(
+            user=row.User,
+            roles=roles_by_user.get(row.User.id, []),
+            teams=teams_by_user.get(row.User.id, []),
+            activation_state=row.activation_state,
+        )
+        for row in page_rows
+    ]
+    return DirectoryPage(rows=rows, total_count=total_count, sees_everyone=sees_everyone)
+
+
+def directory_summary(db: Session, actor_id: uuid.UUID) -> DirectorySummary:
+    """Plan 5.1's summary cards: one aggregate query over the actor's full visible
+    scope, independent of whatever the table's filters currently narrow to."""
+    sees_everyone, team_ids = _directory_scope(db, actor_id)
+    if not sees_everyone and not team_ids:
+        return DirectorySummary(0, 0, 0, 0, 0, 0)
+
+    now = utcnow()
+    state_expr = _activation_state_expression(now)
+    base = select(
+        User.id.label("id"),
+        User.active.label("active"),
+        User.last_login_at.label("last_login_at"),
+        state_expr.label("state"),
+    )
+    if not sees_everyone:
+        base = base.join(TeamMembership, TeamMembership.user_id == User.id).where(
+            TeamMembership.team_id.in_(team_ids),
+            TeamMembership.membership_status == "active",
+        )
+    sub = base.distinct().subquery()
+    aggregate = select(
+        func.count().label("total"),
+        func.sum(case((sub.c.active.is_(True), 1), else_=0)).label("active"),
+        func.sum(case((sub.c.active.is_(False), 1), else_=0)).label("inactive"),
+        func.sum(case((sub.c.state.in_(_AWAITING_ACTIVATION_STATES), 1), else_=0)).label(
+            "awaiting_activation"
+        ),
+        func.sum(case((sub.c.state == STATE_MFA_SETUP_REQUIRED, 1), else_=0)).label(
+            "mfa_setup_required"
+        ),
+        func.sum(case((sub.c.last_login_at.is_(None), 1), else_=0)).label("never_logged_in"),
+    ).select_from(sub)
+    row = db.execute(aggregate).one()
+    return DirectorySummary(
+        total=row.total or 0,
+        active=row.active or 0,
+        inactive=row.inactive or 0,
+        awaiting_activation=row.awaiting_activation or 0,
+        mfa_setup_required=row.mfa_setup_required or 0,
+        never_logged_in=row.never_logged_in or 0,
+    )
+
+
+def user_in_admin_scope(db: Session, actor_id: uuid.UUID, target_id: uuid.UUID) -> bool:
+    """Whether target_id falls within actor_id's directory scope (plan 6.1) - the
+    same check the detail page uses to decide whether to show a target at all,
+    so a route can return the same response for "inaccessible" and "nonexistent"
+    (plan 5.3/9.5) without a second, potentially drifting scope implementation."""
+    sees_everyone, team_ids = _directory_scope(db, actor_id)
+    if sees_everyone:
+        return True
+    if not team_ids:
+        return False
+    return (
+        db.scalar(
+            select(TeamMembership.id).where(
+                TeamMembership.user_id == target_id,
+                TeamMembership.team_id.in_(team_ids),
+                TeamMembership.membership_status == "active",
+            )
+        )
+        is not None
+    )
+
+
+def activation_state_for_user(db: Session, user_id: uuid.UUID) -> str:
+    """Single-user variant of the same expression list_user_directory and
+    directory_summary use, for the detail page - one CASE, three call sites,
+    never three implementations to keep in sync."""
+    now = utcnow()
+    state = db.scalar(
+        select(_activation_state_expression(now)).where(User.id == user_id)
+    )
+    return state or STATE_ACTIVATION_NOT_ISSUED
+
+
+def roles_and_teams_for_user(
+    db: Session, user_id: uuid.UUID
+) -> tuple[list[str], list[str]]:
+    """Single-user convenience wrapper over the same bounded, page-shaped
+    lookups list_user_directory uses - still one query each, just for a page of
+    one instead of fifty."""
+    now = utcnow()
+    roles = _roles_for_users(db, [user_id], now).get(user_id, [])
+    teams = _teams_for_users(db, [user_id]).get(user_id, [])
+    return roles, teams
