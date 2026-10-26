@@ -70,6 +70,11 @@ def lease_next(
     # (which must never carry a body) combined with a declared Optional response model.
     try:
         result = work_service.lease_next(db, user.id)
+    except work_service.LeaseRateLimited as exc:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            {"code": "rate_limited", "message": str(exc)},
+        ) from None
     except FeatureDisabledError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     db.commit()

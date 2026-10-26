@@ -374,19 +374,32 @@ def campaign_detail(
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-@router.get("/{campaign_id}/export")
+@router.post("/{campaign_id}/export", dependencies=[Depends(verify_form_csrf)])
 def export_campaign(
     campaign_id: uuid.UUID,
     db: Session = Depends(get_session),
     user: User = Depends(require_page_user),
+    justification: str = Form(""),
+    approver: str = Form(""),
+    recipient: str = Form(""),
 ):
     campaign = db.get(Campaign, campaign_id)
     if campaign is None or not _can_access(db, user, EXPORT_COMPLETED_CAMPAIGN, campaign):
         # Same message either way - never confirm a campaign the caller may not
         # export even exists.
         return _index_redirect(error="Campaign not found or not authorized to export.")
+    if not justification.strip() or not approver.strip() or not recipient.strip():
+        # A raw-PII export is never anonymous: it must name why, who approved it and
+        # who receives it (risk finding 4), captured into the audit and the file.
+        return _campaign_redirect(
+            campaign_id,
+            error="Export needs a business justification, an approver and a recipient.",
+        )
     try:
-        data = campaign_export.export_completed_campaign(db, campaign, actor_id=user.id)
+        data = campaign_export.export_completed_campaign(
+            db, campaign, actor_id=user.id, exporter_name=user.display_name,
+            justification=justification, approver=approver, recipient=recipient,
+        )
     except campaign_export.CampaignNotExportable as exc:
         return _campaign_redirect(campaign_id, error=str(exc))
     db.commit()

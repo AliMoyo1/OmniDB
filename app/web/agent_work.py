@@ -214,6 +214,8 @@ def next_contact(
         return _redirect(error="Not authorized for agent work.")
     try:
         result = work_service.lease_next(db, user.id)
+    except work_service.LeaseRateLimited:
+        return _redirect(error="You are leasing contacts too quickly. Wait a moment and try again.")
     except FeatureDisabledError as exc:
         return _redirect(error=str(exc))
     db.commit()

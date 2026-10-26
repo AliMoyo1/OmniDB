@@ -88,6 +88,34 @@ def reset_account(account: str) -> None:
         return
 
 
+# Per-agent cap on how fast one agent can lease new contacts (anti-automation, risk
+# finding 3). Leasing is the disclosure vector: each lease reveals one contact, so a
+# script cycling complete->lease could pull the database one record at a time behind a
+# UI that only ever shows one. Per-agent only (no global or source tier): the risk is a
+# single agent account, and a shared counter would accumulate across the whole test
+# suite the way the login tiers did, whereas a per-agent window with distinct agents per
+# test never trips on volume. 300 per 15 minutes is about 20 a minute, far above any
+# human calling pace and tripped at once by a script, with headroom so normal per-agent
+# test volume never reaches it.
+_WORK_LEASE_LIMIT = 300
+
+
+def check_and_increment_work_lease(agent_id: str) -> bool:
+    """Whether this agent may lease another contact now, or has exceeded the per-agent
+    lease-velocity cap. Fails closed in production if Redis is unavailable, same as the
+    login limiter."""
+    try:
+        client = _client()
+        return _increment(
+            client,
+            _key("agent", agent_id, namespace="work_lease_attempts"),
+            _WORK_LEASE_LIMIT,
+        )
+    except Exception:
+        logger.exception("work-lease rate limiter unavailable")
+        return get_settings().app_env != "production"
+
+
 def check_and_increment_activation(source: str | None) -> bool:
     """Source and global tiers only - see the module-level comment on
     _ACTIVATION_SOURCE_LIMIT for why there is no account tier. Fails closed in

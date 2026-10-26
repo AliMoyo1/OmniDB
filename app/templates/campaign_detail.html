@@ -16,7 +16,13 @@
   Every number has a final disposition. This campaign's contact data will be auto-deleted
   {% if campaign.retention_delete_after %}on {{ campaign.retention_delete_after.strftime("%Y-%m-%d") }}{% endif %}. Export it before then if you need a record.
   {% if can_export_campaign %}<div style="margin-top:8px">
-    <a href="/campaigns/{{ campaign.id }}/export"><button type="button">Export to Excel</button></a>
+    <form method="post" action="/campaigns/{{ campaign.id }}/export" class="export-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Justification <input type="text" name="justification" maxlength="500" required placeholder="why this export is needed"></label>
+      <label>Approved by <input type="text" name="approver" maxlength="200" required placeholder="who authorised it"></label>
+      <label>Recipient <input type="text" name="recipient" maxlength="200" required placeholder="who receives the file"></label>
+      <button type="submit">Export to Excel</button>
+    </form>
     <form method="post" action="/campaigns/{{ campaign.id }}/delete-data" class="inline" onsubmit="return confirm('Delete this campaign\'s contact data now? This cannot be undone. Export first if you need a record.');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="quiet-danger">Delete data now</button>

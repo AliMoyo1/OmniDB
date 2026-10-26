@@ -2368,5 +2368,46 @@ formula cells and every dangerous value neutralized.
     does not exist for that field. The phone and the ISO timestamps are left exactly as-
     is; the injection test asserts the phone stays bare while the free text is neutralized.
 
+## 2026-10-26: close the two code gaps behind risk findings 4 and 3 (export controls + lease rate limiting)
+
+The deployment-readiness review named two genuinely-missing build items (the governance
+and pen-test portions are being handled separately). Both built here, no migration.
+
+Export accountability + watermark (finding 4). The export was gated, completed-only and
+audited, but recorded nothing about why it happened or for whom. The web route changed
+from a one-click GET to a POST (CSRF) that requires a business justification, an approver
+and a recipient; all three are rejected if blank, written into the `campaign.export`
+audit metadata, and rendered on a new "Export Info" sheet alongside a RESTRICTED
+classification line. The Contacts sheet also carries a print footer "RESTRICTED -
+CipherContact export - do not share". An `ExportContext` carries the provenance; the
+operator-entered fields are capped in length and run through the same sanitize_text
+formula-injection guard as the contact data. A context-less `build_export_workbook`
+(internal/test builds) is unchanged, so the injection and round-trip tests still hold.
+Not a second-person approval workflow, that was not asked for; accountability rests on
+the exporter's attestation plus the audit record (fast-follow if separation of duties is
+later required).
+
+Agent-lease rate limiting (finding 3). The hard controls (one active lease, no bulk
+endpoints, server-side scope) were already present; what was missing was a velocity cap
+on the one-at-a-time disclosure vector. Added `check_and_increment_work_lease` to the
+existing Redis limiter (per-agent only, 300 per 15 min, fails closed in production) and a
+check at the top of `work_service.lease_next` AFTER the active-lease resume and the
+feature gate, so only genuinely new leases count, not resumes. Placed in the service, not
+the routes, so the JSON API and the web workbench are both covered by one check and
+cannot drift (finding 3's own "server-side on every API call" wording). On a trip it logs
+a warning (the monitorable signal, captured by logging and Sentry) and raises
+`LeaseRateLimited`, which the API maps to 429 {"code": "rate_limited"} and the web
+workbench to a flash. A per-agent counter with distinct agents per test is immune to the
+cross-suite accumulation that forced the login limiter's headroom bump.
+
+Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 365 passed,
+unit 66, ruff/mypy (app) clean. The local `docker build` could not run this session: the
+build container's pip hit `SSL: CERTIFICATE_VERIFY_FAILED (self-signed certificate in
+chain)` reaching pypi.org for hatchling, a TLS-intercepting proxy on this network, not a
+code issue (the Dockerfile is unchanged and built earlier this session; the image's TLS
+verification was deliberately NOT weakened to work around it). CI builds in a clean
+network, so the build job validates the image on push. Plan + decision ledger:
+PLAN-export-controls-and-lease-ratelimit.md.
+
 Verified against real Postgres 16 + Redis 7 locally: `pytest -m integration` 210 (+4),
 unit suite 35, ruff/mypy clean, `docker build` clean. No migration.

@@ -10,6 +10,7 @@ suppresses the contact across every campaign that currently has pending work for
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit
+from app.auth import ratelimit
 from app.config import get_settings
 from app.db_locks import (
     lock_idempotency_key,
@@ -30,6 +32,8 @@ from app.models.campaign import Campaign, CampaignDispositionDefinition, Campaig
 from app.models.contact import CampaignContact, Contact, SuppressionEntry
 from app.models.work import CallAttempt, WorkItem
 from app.security.encryption import decrypt, encrypt
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL_STATES = ("completed", "suppressed", "cancelled")
 
@@ -77,6 +81,10 @@ class IdempotencyConflict(WorkItemError):
 
 
 class ReviewStateError(WorkItemError):
+    pass
+
+
+class LeaseRateLimited(WorkItemError):
     pass
 
 
@@ -422,6 +430,15 @@ def lease_next(db: Session, agent_id: uuid.UUID) -> LeaseResult | None:
     # means "pause new leases," not "abandon whatever an agent already holds" -
     # matches the master plan's own rollback guidance (RUNBOOKS.md).
     flags.require_enabled(db, "shared_pool_enabled")
+
+    # Rate-limit NEW leases only (the resume path above returned already): leasing is
+    # the one-contact-at-a-time disclosure vector, so a per-agent velocity cap is the
+    # anti-automation control against scripted complete-then-lease scraping (risk
+    # finding 3). Enforced here in the service so the JSON API and the web workbench
+    # are both covered by one check and cannot drift.
+    if not ratelimit.check_and_increment_work_lease(str(agent_id)):
+        logger.warning("agent %s exceeded the work-lease rate limit", agent_id)
+        raise LeaseRateLimited("you are leasing contacts too quickly; wait a moment")
 
     work_item: WorkItem | None = None
     campaign_contact: CampaignContact | None = None

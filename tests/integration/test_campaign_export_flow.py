@@ -27,6 +27,18 @@ pytestmark = pytest.mark.integration
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+def _export_post(client, campaign_id, *, justification="Audit request", approver="Head of Risk",
+                 recipient="risk@example.com", follow_redirects=True):
+    return client.post(
+        f"/campaigns/{campaign_id}/export",
+        data={
+            "csrf_token": client.cookies.get("cc_csrf"),
+            "justification": justification, "approver": approver, "recipient": recipient,
+        },
+        follow_redirects=follow_redirects,
+    )
+
+
 def _completed_campaign(*, phone: str, disposition_label: str) -> tuple[uuid.UUID, str, str]:
     """A completed, org-scoped campaign with one fully-dispositioned contact
     (real encrypted phone, agent, disposition). Returns
@@ -76,13 +88,13 @@ def test_completed_campaign_exports_xlsx_with_contact_rows(manager_client):
         phone=phone, disposition_label="Sale closed"
     )
 
-    resp = manager_client.get(f"/campaigns/{campaign_id}/export")
+    resp = _export_post(manager_client, campaign_id)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith(_XLSX)
     assert "attachment" in resp.headers["content-disposition"]
 
     workbook = load_workbook(io.BytesIO(resp.content))
-    sheet = workbook.active
+    sheet = workbook["Contacts"]
     rows = list(sheet.iter_rows(values_only=True))
     assert rows[0] == ("Phone", "Final disposition", "Agent", "Completed at", "Imported at")
     assert len(rows) == 2
@@ -106,6 +118,63 @@ def test_completed_campaign_exports_xlsx_with_contact_rows(manager_client):
         )
     assert len(events) == 1
     assert events[0].event_metadata["rows"] == 1
+
+
+def test_export_records_provenance_and_watermarks(manager_client):
+    """A raw-PII export captures why, who approved it and who receives it, into both
+    the audit event and an Export Info sheet, and the contact sheet is labelled
+    RESTRICTED (risk finding 4)."""
+    campaign_id, _, _ = _completed_campaign(phone="+263771234567", disposition_label="Sale closed")
+
+    resp = _export_post(
+        manager_client, campaign_id,
+        justification="Regulator request REF-2026-11", approver="Head of Risk",
+        recipient="regulator@example.com",
+    )
+    assert resp.status_code == 200, resp.text
+
+    with SessionLocal() as db:
+        event = db.scalar(
+            select(AuditEvent).where(
+                AuditEvent.action == "campaign.export", AuditEvent.target_id == campaign_id
+            )
+        )
+    assert event is not None and event.event_metadata is not None
+    assert event.event_metadata["justification"] == "Regulator request REF-2026-11"
+    assert event.event_metadata["approver"] == "Head of Risk"
+    assert event.event_metadata["recipient"] == "regulator@example.com"
+
+    workbook = load_workbook(io.BytesIO(resp.content))
+    assert "Export Info" in workbook.sheetnames
+    info = dict(workbook["Export Info"].iter_rows(values_only=True))
+    assert "RESTRICTED" in info["Classification"]
+    assert info["Recipient"] == "regulator@example.com"
+    assert info["Approved by"] == "Head of Risk"
+    assert info["Business justification"] == "Regulator request REF-2026-11"
+    # The contact sheet carries a visible restricted label on any printout.
+    assert "RESTRICTED" in workbook["Contacts"].oddFooter.center.text
+
+
+def test_export_requires_justification_approver_recipient(manager_client):
+    """The export is refused, and nothing is recorded, unless all three provenance
+    fields are supplied."""
+    campaign_id, _, _ = _completed_campaign(phone="+263770000000", disposition_label="Sale closed")
+
+    resp = _export_post(
+        manager_client, campaign_id, justification="   ", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert "flash_error" in resp.headers["location"]
+
+    with SessionLocal() as db:
+        events = list(
+            db.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.action == "campaign.export", AuditEvent.target_id == campaign_id
+                )
+            )
+        )
+    assert events == []  # nothing exported, nothing audited
 
 
 def test_export_neutralizes_spreadsheet_formula_injection():
@@ -193,7 +262,7 @@ def test_active_campaign_export_is_refused(manager_client):
     from tests.integration.test_web_campaign_operations import _create_via_form
 
     campaign_id = _create_via_form(manager_client)
-    resp = manager_client.get(f"/campaigns/{campaign_id}/export", follow_redirects=False)
+    resp = _export_post(manager_client, campaign_id, follow_redirects=False)
     assert resp.status_code == 303
     assert re.search(r"/campaigns/[0-9a-f-]+\?flash_error=", resp.headers["location"])
 
@@ -211,7 +280,7 @@ def test_export_requires_the_export_capability():
     client = TestClient(app, follow_redirects=False)
     login(client, agent_email, TEST_PASSWORD)
 
-    resp = client.get(f"/campaigns/{campaign_id}/export")
+    resp = _export_post(client, campaign_id, follow_redirects=False)
     # Redirected away (to the campaigns index) rather than served the file.
     assert resp.status_code == 303
     assert resp.headers["location"].startswith("/campaigns?flash_error=")
